@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "profile_id": "pdu500.rev02.example",
+  "display_name": "PDU500 0.2CT Rev02 Example",
+  "status": "example_only",
+  "templates": {
+    "default_template_root": "C:/PDU500/00_Template",
+    "main_report_template": "PDUD500442AM088_Test Report_0.2CT_Rev02_SN##.xlsx",
+    "print_report_template": "PDUD500442AA088_0.2CT Test Report Print.xlsx"
+  },
+  "workbooks": {
+    "main": {
+      "file_pattern": "PDUD500442AM088_Test Report_0.2CT_Rev02_SN*.xlsx"
+    },
+    "print": {
+      "file_pattern": "PDUD500442AA088*.xlsx"
+    }
+  },
+  "serial_number": {
+    "folder_pattern": "^(?<serial>\\d{6,})_(?<date>\\d{8})$",
+    "metadata_files": [
+      "SN.txt",
+      "serial_number.txt",
+      "info.txt",
+      "metadata.txt"
+    ]
+  },
+  "task_groups": [
+    {
+      "id": "208v",
+      "label": "208V",
+      "tasks": [
+        {
+          "id": "208v-transformer",
+          "label": "208V Transformer Check",
+          "step": 14,
+          "csv_pattern": "*STEP14_TRANSFORMER_TEST_DATA_AVG*.csv",
+          "mappings": [
+            {
+              "label": "Usum",
+              "source": {
+                "column": "Z",
+                "row": 2,
+                "required": true
+              },
+              "target": {
+                "workbook": "main",
+                "sheet": "XFMR Check_208VAC",
+                "cell": "B9",
+                "number_format": "0.00"
+              }
+            },
+            {
+              "label": "fU1",
+              "source": {
+                "column": "AE",
+                "row": 2,
+                "required": true
+              },
+              "target": {
+                "workbook": "main",
+                "sheet": "XFMR Check_208VAC",
+                "cell": "B10",
+                "number_format": "0.00"
+              }
+            }
+          ]
+        },
+        {
+          "id": "208v-system-100",
+          "label": "208V System - 100% Load",
+          "step": 15,
+          "csv_pattern": "*_STEP15_*SYSTEM_ACCURACY_TEST_DATA_AVG*.csv",
+          "mappings": [
+            {
+              "label": "Frequency",
+              "source": {
+                "column": "AF",
+                "row": "last_numeric",
+                "required": true
+              },
+              "target": {
+                "workbook": "main",
+                "sheet": "System Test - 480_208",
+                "cell": "E11",
+                "number_format": "0.00"
+              }
+            },
+            {
+              "label": "Active Power",
+              "source": {
+                "column": "AC",
+                "row": "last_numeric",
+                "required": true
+              },
+              "transform": {
+                "scale_by": 1000,
+                "round": 2
+              },
+              "target": {
+                "workbook": "main",
+                "sheet": "System Test - 480_208",
+                "cell": "E12",
+                "number_format": "0.00"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "burn-in",
+      "label": "Burn-In",
+      "tasks": [
+        {
+          "id": "system-burn-in",
+          "label": "System Burn-In",
+          "step": "to_confirm_71_or_72",
+          "csv_pattern": "*_STEP72_*.csv",
+          "notes": [
+            "Legacy GUI maps this to STEP71.",
+            "Legacy Burn-in System.py searches for STEP72.",
+            "Confirm the real instrument step before production use."
+          ],
+          "mappings": []
+        }
+      ]
+    }
+  ]
+}

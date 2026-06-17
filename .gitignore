@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Frontend build output
+frontend/dist/
+coverage/
+
+# Rust/Tauri output
+backend/target/
+backend/gen/
+
+# Release/build artifacts
+release/*.exe
+release/*.msi
+release/*.zip
+release/*.sig
+release/*.json
+release/*.sha256
+release/SHA256SUMS.txt
+
+# Runtime/app data
+*.log
+*.tmp
+.tmp/
+
+# Python leftovers from legacy scripts or migration spikes
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets
+*.key
+*.pem
+*.pfx
+.env
+.env.*
+!.env.example
