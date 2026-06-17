@@ -45,6 +45,7 @@ A layout profile should define:
 - CSV parsing mode
 - source columns and row selection
 - scaling and rounding rules
+- computed accuracy rules and pass/fail thresholds
 - destination workbook, sheet, cell, and number format
 - required vs optional mappings
 
@@ -71,6 +72,42 @@ A layout profile should define:
   "tasks": []
 }
 ```
+
+## Verification Rules
+
+The upgraded legacy scripts calculate accuracy values in Python before deciding pass/fail. The new layout profile should represent those checks explicitly instead of hiding them in code.
+
+Initial threshold behavior to preserve for 208V/415V system and breaker checks:
+
+| Metric | Threshold |
+| --- | --- |
+| Voltage | +/-0.3% |
+| Current | +/-0.3% |
+| Active/Apparent Power | +/-0.6% |
+| Power Factor | +/-2.0% |
+
+Suggested shape:
+
+```json
+{
+  "label": "Voltage A Accuracy",
+  "formula": "percent_error",
+  "meter_cell": "E17",
+  "detect_cell": "F17",
+  "target": {
+    "workbook": "main",
+    "sheet": "System Test - 480_208",
+    "cell": "G17",
+    "number_format": "0.00"
+  },
+  "pass_fail": {
+    "max_abs": 0.3,
+    "missing_is_fail": true
+  }
+}
+```
+
+Power factor uses a different formula in the upgraded scripts: `(detect - meter) * 100`. Other metrics use `(detect - meter) / meter * 100`.
 
 ## Mapping Rules
 
@@ -118,6 +155,7 @@ The app should reject a layout profile when:
 - source column names are invalid
 - scaling is zero or nonnumeric
 - required mappings do not define source rules
+- verification rules reference missing meter/detect/target cells
 
 The app should warn, not fail, when:
 

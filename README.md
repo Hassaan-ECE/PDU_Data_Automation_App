@@ -16,15 +16,21 @@ C:\Projects\Active\PDU_Data_Automation_App
 
 ## Status
 
-This is not a runnable app yet. It is the repo-ready planning and structure pass for the rebuild.
+This repository now has an initial runnable skeleton for the rebuild:
 
-The intended GitHub repository name is:
+- Tauri 2/Rust backend project
+- React/TypeScript/Vite/Tailwind frontend
+- Bun package workflow through `scripts/run-bun.mjs`
+- operator-panel UI shell with mock task states
+- report-layout JSON parsing and validation tests
+
+It is not a functional replacement for the legacy app yet. CSV processing, Excel report writing, installer signing, updater metadata, and production S-drive staging still need to be implemented and validated.
+
+GitHub repository:
 
 ```text
-PDU_Data_Automation_App
+https://github.com/Hassaan-ECE/PDU_Data_Automation_App.git
 ```
-
-The GitHub remote URL is still pending.
 
 ## Goal
 
@@ -99,22 +105,45 @@ The rebuilt app is not done until it can:
 
 ## First Implementation Milestones
 
-1. Create the Tauri/React/Bun/Rust skeleton.
-2. Build a UI shell that visually matches the legacy panel.
-3. Define typed test/task models and state transitions.
-4. Parse the example report-layout config.
+1. Create the Tauri/React/Bun/Rust skeleton. Initial pass complete.
+2. Build a UI shell that visually matches the legacy panel. Initial mock shell complete.
+3. Define typed test/task models and state transitions. Initial frontend model complete.
+4. Parse the example report-layout config. Initial Rust parser and validation tests complete.
 5. Spike Excel template modification in Rust against real copies of the current reports.
 6. Add CSV fixture tests for the known STEP files.
 7. Implement report writes one processor group at a time.
 8. Add installer and signed updater flow.
 
+## Current Development Commands
+
+Use the Bun helper so this repo does not depend on a broken global shim:
+
+```powershell
+node scripts/run-bun.mjs install
+node scripts/run-bun.mjs run dev:frontend
+node scripts/run-bun.mjs run build
+node scripts/run-bun.mjs run test
+node scripts/run-bun.mjs run lint
+```
+
+Backend checks:
+
+```powershell
+cd backend
+cargo test
+cargo fmt --check
+```
+
 ## Legacy Source Reference
 
-The legacy project was documented before this scaffold was created. Useful files:
+Use these legacy references deliberately:
 
 ```text
 C:\Projects\Active\PDU_Data_Automation\README.md
 C:\Projects\Active\PDU_Data_Automation\docs\PROJECT_MAP.md
 C:\Projects\Active\PDU_Data_Automation\docs\RUNBOOK.md
 C:\Projects\Active\PDU_Data_Automation\docs\KNOWN_ISSUES.md
+C:\Projects\Active\Data Automation Upgraded
 ```
+
+`Data Automation Upgraded` should be treated as the better behavior reference for 208V/415V system and breaker processing because those scripts add Python-side accuracy calculations and pass/fail verification. The transformer and burn-in scripts match the older legacy folder.

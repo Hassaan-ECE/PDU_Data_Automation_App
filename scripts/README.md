@@ -1,10 +1,10 @@
 # Scripts
 
-This folder will hold build, validation, smoke-test, and release helper scripts.
+This folder holds build, validation, smoke-test, and release helper scripts.
 
 Expected future scripts:
 
-- `run-bun.mjs` - Bun runner helper copied/adapted from `TE_Component_Inventory`
+- `run-bun.mjs` - Bun runner helper adapted from `TE_Component_Inventory`
 - version consistency check
 - fixture smoke runner
 - release staging script

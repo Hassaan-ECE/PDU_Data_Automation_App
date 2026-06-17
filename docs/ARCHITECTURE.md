@@ -58,6 +58,7 @@ The Rust backend should own:
 - checking if files are stable/readable
 - parsing CSV files
 - validating required columns and rows
+- computing accuracy and pass/fail checks from configured thresholds
 - loading report-layout config
 - writing Excel report workbooks
 - writing processing logs
@@ -75,6 +76,7 @@ The Rust backend should own:
 | `TaskState` | UI/process state: off, detected, waiting, processing, pass, warning, fail |
 | `ProcessingResult` | Backend result with written cells, skipped cells, warnings, errors, and source files |
 | `UnitSession` | A selected unit folder plus inferred serial number, reports, discovered files, and current task state |
+| `VerificationRule` | Configured pass/fail rule for computed accuracy values |
 
 ## State Model
 
@@ -100,10 +102,11 @@ Do not reuse the legacy behavior where missing data can become pass.
 4. Backend verifies the file is stable/readable.
 5. Backend parses required source columns and rows.
 6. Backend validates missing, nonnumeric, or out-of-range values.
-7. Backend writes mapped cells into one or more report workbooks.
-8. Backend saves the workbook or reports a locked-file error.
-9. Backend returns a structured `ProcessingResult`.
-10. Frontend updates the task state and displays summary/log details.
+7. Backend computes configured accuracy/verification values.
+8. Backend writes mapped cells into one or more report workbooks.
+9. Backend saves the workbook or reports a locked-file error.
+10. Backend returns a structured `ProcessingResult`.
+11. Frontend updates the task state and displays summary/log details.
 
 ## Excel Writer Spike
 
@@ -140,6 +143,7 @@ All of these should live in versioned config, not scattered source constants:
 - CSV source columns
 - source row selection rules
 - scaling rules
+- computed accuracy rules and pass/fail thresholds
 - Excel target cells
 - required vs optional fields
 - numeric formatting rules

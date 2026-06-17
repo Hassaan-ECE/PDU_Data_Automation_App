@@ -1,6 +1,6 @@
 # Backend
 
-Placeholder for the future Tauri/Rust backend.
+Initial Tauri/Rust backend for the rebuilt PDU app.
 
 Planned modules:
 
@@ -12,4 +12,10 @@ Planned modules:
 - `excel` - workbook editing and save behavior
 - `runtime` - settings, logging, updater, and release paths
 
-This folder is not runnable yet. Add Tauri/Rust source in the implementation phase.
+Current state:
+
+- Tauri command entry points are present
+- `get_app_status` exposes the app/backend version baseline
+- `load_example_layout_profile` parses and validates the example layout profile
+- Rust unit tests cover the current layout validation rules
+- CSV scanning and Excel writing are still pending

@@ -1,0 +1,549 @@
+use std::collections::{HashMap, HashSet};
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+const EXAMPLE_PROFILE_JSON: &str =
+    include_str!("../../../config/report-layouts/pdu500.layout.example.json");
+
+#[derive(Debug, Error)]
+pub enum LayoutProfileError {
+    #[error("layout profile JSON is invalid: {0}")]
+    InvalidJson(#[from] serde_json::Error),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReportLayoutProfile {
+    pub schema_version: u16,
+    pub profile_id: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    pub templates: ReportTemplates,
+    pub workbooks: HashMap<String, WorkbookDefinition>,
+    #[serde(default)]
+    pub serial_number: Option<SerialNumberRules>,
+    #[serde(default)]
+    pub task_groups: Vec<TaskGroup>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReportTemplates {
+    pub default_template_root: String,
+    pub main_report_template: String,
+    pub print_report_template: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkbookDefinition {
+    pub file_pattern: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SerialNumberRules {
+    pub folder_pattern: String,
+    #[serde(default)]
+    pub metadata_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TaskGroup {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub tasks: Vec<TaskDefinition>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TaskDefinition {
+    pub id: String,
+    pub label: String,
+    pub step: StepNumber,
+    pub csv_pattern: String,
+    #[serde(default)]
+    pub notes: Vec<String>,
+    #[serde(default)]
+    pub mappings: Vec<MappingDefinition>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum StepNumber {
+    Number(u16),
+    Pending(String),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MappingDefinition {
+    pub label: String,
+    #[serde(default)]
+    pub source: Option<MappingSource>,
+    #[serde(default)]
+    pub transform: Option<TransformDefinition>,
+    pub target: MappingTarget,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MappingSource {
+    pub column: String,
+    pub row: MappingRow,
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum MappingRow {
+    Index(u32),
+    Selector(String),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TransformDefinition {
+    #[serde(default)]
+    pub scale_by: Option<f64>,
+    #[serde(default)]
+    pub round: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MappingTarget {
+    pub workbook: String,
+    pub sheet: String,
+    pub cell: String,
+    #[serde(default)]
+    pub number_format: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ValidationResult {
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ProfileLoadSummary {
+    pub profile_id: String,
+    pub display_name: String,
+    pub task_count: usize,
+    pub validation: ValidationResult,
+}
+
+impl ValidationResult {
+    fn new() -> Self {
+        Self {
+            warnings: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.errors.is_empty()
+    }
+}
+
+impl ReportLayoutProfile {
+    pub fn from_json(json: &str) -> Result<Self, LayoutProfileError> {
+        Ok(serde_json::from_str(json)?)
+    }
+
+    pub fn validate(&self) -> ValidationResult {
+        let mut result = ValidationResult::new();
+        let example_only = self.status.as_deref() == Some("example_only");
+
+        if self.schema_version != 1 {
+            result.errors.push(format!(
+                "profile '{}' uses unsupported schema_version {}",
+                self.profile_id, self.schema_version
+            ));
+        }
+
+        if self.profile_id.trim().is_empty() {
+            result
+                .errors
+                .push("profile_id must not be empty".to_string());
+        }
+
+        if self.display_name.trim().is_empty() {
+            result
+                .errors
+                .push("display_name must not be empty".to_string());
+        }
+
+        validate_templates(&self.templates, &mut result);
+        validate_workbooks(&self.workbooks, &mut result);
+        validate_serial_number_rules(self.serial_number.as_ref(), &mut result);
+        validate_task_groups(self, example_only, &mut result);
+
+        result
+    }
+
+    pub fn task_count(&self) -> usize {
+        self.task_groups
+            .iter()
+            .map(|group| group.tasks.len())
+            .sum::<usize>()
+    }
+
+    pub fn to_load_summary(&self) -> ProfileLoadSummary {
+        ProfileLoadSummary {
+            profile_id: self.profile_id.clone(),
+            display_name: self.display_name.clone(),
+            task_count: self.task_count(),
+            validation: self.validate(),
+        }
+    }
+}
+
+pub fn load_example_profile() -> Result<ReportLayoutProfile, LayoutProfileError> {
+    ReportLayoutProfile::from_json(EXAMPLE_PROFILE_JSON)
+}
+
+fn validate_templates(templates: &ReportTemplates, result: &mut ValidationResult) {
+    if templates.default_template_root.trim().is_empty() {
+        result
+            .errors
+            .push("templates.default_template_root must not be empty".to_string());
+    }
+
+    if templates.main_report_template.trim().is_empty() {
+        result
+            .errors
+            .push("templates.main_report_template must not be empty".to_string());
+    }
+
+    if templates.print_report_template.trim().is_empty() {
+        result
+            .errors
+            .push("templates.print_report_template must not be empty".to_string());
+    }
+}
+
+fn validate_workbooks(
+    workbooks: &HashMap<String, WorkbookDefinition>,
+    result: &mut ValidationResult,
+) {
+    if workbooks.is_empty() {
+        result
+            .errors
+            .push("workbooks must define at least one workbook".to_string());
+    }
+
+    for (key, workbook) in workbooks {
+        if key.trim().is_empty() {
+            result
+                .errors
+                .push("workbook keys must not be empty".to_string());
+        }
+
+        if workbook.file_pattern.trim().is_empty() {
+            result
+                .errors
+                .push(format!("workbook '{}' must define file_pattern", key));
+        }
+    }
+}
+
+fn validate_serial_number_rules(
+    serial_number: Option<&SerialNumberRules>,
+    result: &mut ValidationResult,
+) {
+    let Some(serial_number) = serial_number else {
+        result
+            .warnings
+            .push("serial_number rules are not defined".to_string());
+        return;
+    };
+
+    if serial_number.folder_pattern.trim().is_empty() {
+        result
+            .errors
+            .push("serial_number.folder_pattern must not be empty".to_string());
+    }
+
+    if serial_number
+        .metadata_files
+        .iter()
+        .any(|file| file.trim().is_empty())
+    {
+        result
+            .errors
+            .push("serial_number.metadata_files must not contain empty entries".to_string());
+    }
+}
+
+fn validate_task_groups(
+    profile: &ReportLayoutProfile,
+    example_only: bool,
+    result: &mut ValidationResult,
+) {
+    if profile.task_groups.is_empty() {
+        result
+            .errors
+            .push("task_groups must not be empty".to_string());
+    }
+
+    let mut group_ids = HashSet::new();
+    let mut task_ids = HashSet::new();
+
+    for group in &profile.task_groups {
+        if group.id.trim().is_empty() {
+            result
+                .errors
+                .push("task group id must not be empty".to_string());
+        } else if !group_ids.insert(group.id.as_str()) {
+            result
+                .errors
+                .push(format!("duplicate task group id '{}'", group.id));
+        }
+
+        if group.label.trim().is_empty() {
+            result
+                .errors
+                .push(format!("task group '{}' label must not be empty", group.id));
+        }
+
+        if group.tasks.is_empty() {
+            result
+                .warnings
+                .push(format!("task group '{}' has no tasks", group.id));
+        }
+
+        for task in &group.tasks {
+            validate_task(task, profile, example_only, &mut task_ids, result);
+        }
+    }
+}
+
+fn validate_task<'a>(
+    task: &'a TaskDefinition,
+    profile: &ReportLayoutProfile,
+    example_only: bool,
+    task_ids: &mut HashSet<&'a str>,
+    result: &mut ValidationResult,
+) {
+    if task.id.trim().is_empty() {
+        result.errors.push("task id must not be empty".to_string());
+    } else if !task_ids.insert(task.id.as_str()) {
+        result
+            .errors
+            .push(format!("duplicate task id '{}'", task.id));
+    }
+
+    if task.label.trim().is_empty() {
+        result
+            .errors
+            .push(format!("task '{}' label must not be empty", task.id));
+    }
+
+    match &task.step {
+        StepNumber::Number(0) => result
+            .errors
+            .push(format!("task '{}' step must be greater than zero", task.id)),
+        StepNumber::Number(_) => {}
+        StepNumber::Pending(value) if example_only => result.warnings.push(format!(
+            "task '{}' has unresolved example step '{}'",
+            task.id, value
+        )),
+        StepNumber::Pending(value) => result.errors.push(format!(
+            "task '{}' must use a numeric step before production use, found '{}'",
+            task.id, value
+        )),
+    }
+
+    if task.csv_pattern.trim().is_empty() {
+        result
+            .errors
+            .push(format!("task '{}' csv_pattern must not be empty", task.id));
+    }
+
+    if task.mappings.is_empty() {
+        result
+            .warnings
+            .push(format!("task '{}' has no report mappings", task.id));
+    }
+
+    for mapping in &task.mappings {
+        validate_mapping(task, mapping, profile, result);
+    }
+}
+
+fn validate_mapping(
+    task: &TaskDefinition,
+    mapping: &MappingDefinition,
+    profile: &ReportLayoutProfile,
+    result: &mut ValidationResult,
+) {
+    if mapping.label.trim().is_empty() {
+        result.warnings.push(format!(
+            "task '{}' contains a mapping with no label",
+            task.id
+        ));
+    }
+
+    match &mapping.source {
+        Some(source) => validate_mapping_source(task, mapping, source, result),
+        None => result.warnings.push(format!(
+            "task '{}' mapping '{}' has no source rule",
+            task.id, mapping.label
+        )),
+    }
+
+    if let Some(transform) = &mapping.transform {
+        if transform.scale_by == Some(0.0) {
+            result.errors.push(format!(
+                "task '{}' mapping '{}' transform.scale_by must not be zero",
+                task.id, mapping.label
+            ));
+        }
+    }
+
+    validate_mapping_target(task, mapping, profile, result);
+}
+
+fn validate_mapping_source(
+    task: &TaskDefinition,
+    mapping: &MappingDefinition,
+    source: &MappingSource,
+    result: &mut ValidationResult,
+) {
+    if !is_valid_column_name(&source.column) {
+        result.errors.push(format!(
+            "task '{}' mapping '{}' source column '{}' is invalid",
+            task.id, mapping.label, source.column
+        ));
+    }
+
+    match &source.row {
+        MappingRow::Index(0) => result.errors.push(format!(
+            "task '{}' mapping '{}' source row must be greater than zero",
+            task.id, mapping.label
+        )),
+        MappingRow::Index(_) => {}
+        MappingRow::Selector(selector) if selector == "last_numeric" => {}
+        MappingRow::Selector(selector) => result.errors.push(format!(
+            "task '{}' mapping '{}' source row selector '{}' is not supported",
+            task.id, mapping.label, selector
+        )),
+    }
+}
+
+fn validate_mapping_target(
+    task: &TaskDefinition,
+    mapping: &MappingDefinition,
+    profile: &ReportLayoutProfile,
+    result: &mut ValidationResult,
+) {
+    if !profile.workbooks.contains_key(&mapping.target.workbook) {
+        result.errors.push(format!(
+            "task '{}' mapping '{}' references unknown workbook '{}'",
+            task.id, mapping.label, mapping.target.workbook
+        ));
+    }
+
+    if mapping.target.sheet.trim().is_empty() {
+        result.errors.push(format!(
+            "task '{}' mapping '{}' target sheet must not be empty",
+            task.id, mapping.label
+        ));
+    }
+
+    if !is_valid_cell_reference(&mapping.target.cell) {
+        result.errors.push(format!(
+            "task '{}' mapping '{}' target cell '{}' is invalid",
+            task.id, mapping.label, mapping.target.cell
+        ));
+    }
+
+    if mapping
+        .target
+        .number_format
+        .as_deref()
+        .is_some_and(str::is_empty)
+    {
+        result.warnings.push(format!(
+            "task '{}' mapping '{}' target number_format is empty",
+            task.id, mapping.label
+        ));
+    }
+}
+
+fn is_valid_column_name(column: &str) -> bool {
+    let trimmed = column.trim();
+
+    (1..=3).contains(&trimmed.len()) && trimmed.bytes().all(|byte| byte.is_ascii_uppercase())
+}
+
+fn is_valid_cell_reference(cell: &str) -> bool {
+    let trimmed = cell.trim();
+    let letter_count = trimmed.bytes().take_while(u8::is_ascii_uppercase).count();
+
+    if letter_count == 0 || letter_count > 3 || letter_count == trimmed.len() {
+        return false;
+    }
+
+    trimmed[letter_count..]
+        .parse::<u32>()
+        .is_ok_and(|row| row > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn example_profile_loads_with_expected_warnings_only() {
+        let profile = load_example_profile().expect("example profile should parse");
+        let validation = profile.validate();
+
+        assert!(validation.is_valid(), "{validation:#?}");
+        assert_eq!(profile.profile_id, "pdu500.rev02.example");
+        assert_eq!(profile.task_count(), 3);
+        assert!(validation
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("system-burn-in")));
+    }
+
+    #[test]
+    fn duplicate_task_ids_are_rejected() {
+        let mut profile = load_example_profile().expect("example profile should parse");
+        profile.task_groups[0].tasks[1].id = profile.task_groups[0].tasks[0].id.clone();
+
+        let validation = profile.validate();
+
+        assert!(!validation.is_valid());
+        assert!(validation
+            .errors
+            .iter()
+            .any(|error| error.contains("duplicate task id")));
+    }
+
+    #[test]
+    fn unknown_workbook_references_are_rejected() {
+        let mut profile = load_example_profile().expect("example profile should parse");
+        profile.task_groups[0].tasks[0].mappings[0].target.workbook = "missing".to_string();
+
+        let validation = profile.validate();
+
+        assert!(!validation.is_valid());
+        assert!(validation
+            .errors
+            .iter()
+            .any(|error| error.contains("unknown workbook")));
+    }
+
+    #[test]
+    fn production_profiles_cannot_keep_pending_steps() {
+        let mut profile = load_example_profile().expect("example profile should parse");
+        profile.status = None;
+
+        let validation = profile.validate();
+
+        assert!(!validation.is_valid());
+        assert!(validation
+            .errors
+            .iter()
+            .any(|error| error.contains("must use a numeric step")));
+    }
+}

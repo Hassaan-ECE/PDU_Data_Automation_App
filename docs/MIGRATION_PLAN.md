@@ -9,17 +9,32 @@ Acceptance criteria:
 - GitHub repository exists as `PDU_Data_Automation_App`.
 - This scaffold is committed.
 - Legacy source remains untouched and available at `C:\Projects\Active\PDU_Data_Automation`.
+- Newer verification reference remains available at `C:\Projects\Active\Data Automation Upgraded`.
 - Current legacy behavior is documented in this repo.
 - Sample safe copies of templates and CSVs are identified for fixture creation.
 
-Tasks:
+Current status:
 
-- Add remote after the GitHub repo is created.
+- GitHub remote is configured at `https://github.com/Hassaan-ECE/PDU_Data_Automation_App.git`.
+- The working sample data and templates are available under `C:\PDU500`.
+- Representative old and upgraded processors have been smoke-tested against copied sample folders.
+- STEP71/STEP72 system burn-in behavior is now understood: STEP71 is the long burn-in period, STEP72 is the quick report-data capture.
+
+Remaining tasks:
+
 - Confirm final app name, identifier, and S-drive release root.
 - Confirm whether the first release should be `0.1.0`.
 - Capture screenshots of the current PyQt panel for UI parity.
 
 ## Phase 1 - App Skeleton
+
+Current status:
+
+- Initial Tauri 2, React, TypeScript, Vite, Tailwind, Bun, and Rust skeleton is present.
+- Version is currently `0.1.0` in `package.json`, `backend/Cargo.toml`, and `backend/tauri.conf.json`.
+- Frontend build, frontend test, frontend lint, Rust formatting, and Rust unit tests have been run.
+- A release executable has been built by Tauri, but NSIS packaging hit a local Windows file-lock error during installer creation.
+- Signed updater keys and GitHub Release metadata are still pending.
 
 Acceptance criteria:
 
@@ -117,8 +132,10 @@ Recommended order:
 3. 415V system load tests.
 4. 208V breaker load tests.
 5. 415V breaker load tests.
-6. System burn-in after STEP71/STEP72 is resolved.
+6. System burn-in using STEP72 report-data capture while representing the STEP71 burn-in period in the workflow.
 7. Breaker burn-in.
+
+Use `C:\Projects\Active\Data Automation Upgraded` as the primary source for 208V/415V system and breaker verification thresholds and failure behavior.
 
 ## Phase 7 - Release And Update Flow
 

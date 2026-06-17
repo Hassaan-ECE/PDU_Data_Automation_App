@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PDU Data Automation",
+  "version": "0.1.0",
+  "identifier": "com.te.lab.pdu-data-automation",
+  "build": {
+    "beforeDevCommand": "node node_modules/vite/bin/vite.js --config frontend/vite.config.ts",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "node --max-old-space-size=4096 node_modules/typescript/bin/tsc -b tsconfig.json && node --max-old-space-size=4096 node_modules/vite/bin/vite.js build --config frontend/vite.config.ts",
+    "frontendDist": "../frontend/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Test Panel",
+        "width": 360,
+        "height": 900,
+        "minWidth": 360,
+        "minHeight": 400,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": false,
+    "targets": ["nsis"],
+    "publisher": "Syed Hassaan Shah",
+    "copyright": "Copyright (c) 2026 Syed Hassaan Shah",
+    "icon": ["icons/icon.ico"],
+    "resources": ["../config/report-layouts/*.json"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

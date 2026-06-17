@@ -1,10 +1,18 @@
 # Legacy Behavior To Preserve Or Correct
 
-The legacy app is the working Python/PyQt bundle in:
+The original legacy app is the working Python/PyQt bundle in:
 
 ```text
 C:\Projects\Active\PDU_Data_Automation
 ```
+
+There is also a newer legacy/reference folder:
+
+```text
+C:\Projects\Active\Data Automation Upgraded
+```
+
+Use `Data Automation Upgraded` as the preferred reference for 208V/415V system and breaker behavior. Its newer scripts add Python-side accuracy calculations and pass/fail verification. The transformer and burn-in scripts are the same as the older folder. Ignore `NOTHING.py`; it is not valid Python and appears to be a scratch HTML/CSS/JS prototype.
 
 This document records behavior the replacement must either preserve or intentionally correct.
 
@@ -64,6 +72,18 @@ The replacement must cover:
 - system burn-in
 - breaker burn-in 1-8
 
+### Accuracy Verification
+
+The upgraded 208V/415V system and breaker scripts calculate accuracy values in Python, write those accuracy cells, and return failure when thresholds are exceeded.
+
+The replacement should preserve this behavior:
+
+- voltage and current threshold: +/-0.3%
+- active and apparent power threshold: +/-0.6%
+- power factor threshold: +/-2.0%
+- missing accuracy data fails verification
+- verification failures stop the automated sequence and surface a clear operator warning
+
 ## Correct
 
 ### Exit Code 2 Handling
@@ -72,11 +92,14 @@ The legacy GUI maps processor exit code `2` to `detected`, then later converts `
 
 The replacement must not mark missing data as pass.
 
-### STEP71 / STEP72 Burn-In Mismatch
+### STEP71 / STEP72 Burn-In Workflow
 
-The legacy GUI maps system burn-in to STEP71 and ignores STEP72. The legacy `Burn-in System.py` searches for `_STEP72_`.
+This is intentional:
 
-The replacement must confirm the real instrument step number and use one consistent definition.
+- STEP71 is the long system burn-in/soak period.
+- STEP72 is the quick burn-in data capture used for report values.
+
+The replacement should model both concepts clearly. The UI may show the system burn-in workflow as one operator step, but the report writer should use STEP72 data for the system burn-in report values.
 
 ### Silent Zeroes
 
@@ -108,6 +131,5 @@ The replacement should have one backend path resolution flow.
 - What is the final production S-drive root for PDU releases?
 - What should the app identifier be? Proposed: `com.te.pdu.data.automation`.
 - Should the template directory remain hardcoded by default or be user-configurable in settings?
-- Does system burn-in really belong to STEP71 or STEP72?
 - Which Rust Excel writer safely preserves the current templates?
 - Should the app keep local session history, or only write per-unit logs?

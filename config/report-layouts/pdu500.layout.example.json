@@ -115,12 +115,12 @@
         {
           "id": "system-burn-in",
           "label": "System Burn-In",
-          "step": "to_confirm_71_or_72",
+          "step": "workflow_71_data_72",
           "csv_pattern": "*_STEP72_*.csv",
           "notes": [
-            "Legacy GUI maps this to STEP71.",
-            "Legacy Burn-in System.py searches for STEP72.",
-            "Confirm the real instrument step before production use."
+            "STEP71 is the long system burn-in/soak period.",
+            "STEP72 is the quick data capture used for report values.",
+            "The current schema needs a separate workflow step and data source step before production use."
           ],
           "mappings": []
         }

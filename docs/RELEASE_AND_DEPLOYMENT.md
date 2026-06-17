@@ -17,7 +17,7 @@ To confirm before implementation:
 | Field | Proposed value |
 | --- | --- |
 | Product name | `PDU Data Automation` |
-| Repository | `PDU_Data_Automation_App` |
+| Repository | `https://github.com/Hassaan-ECE/PDU_Data_Automation_App` |
 | Tauri identifier | `com.te.pdu.data.automation` |
 | First version | `0.1.0` |
 | Installer type | Tauri NSIS, current-user install |

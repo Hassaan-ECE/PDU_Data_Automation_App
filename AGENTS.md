@@ -12,7 +12,7 @@ The goal is to preserve the current operator layout and workflow while rebuildin
 
 ## Current Status
 
-This repository is currently a planning scaffold. Do not present it as a runnable app until the Tauri frontend/backend files and build tooling are actually added and validated.
+This repository now has an initial Tauri 2 / React / TypeScript / Vite / Tailwind / Bun / Rust skeleton. It is useful for frontend and architecture work, but it is not a functional replacement for the legacy Python app until CSV processing, Excel report writing, installer signing, updater metadata, and S-drive release staging are implemented and validated.
 
 ## High-Priority Constraints
 
@@ -53,6 +53,7 @@ For meaningful changes:
 ## Important Legacy Risks To Carry Forward
 
 - The legacy GUI currently treats processor exit code `2` as `detected`, then converts that to `pass`; this must not be copied.
-- The legacy app has a STEP71/STEP72 system burn-in mismatch that must be resolved with real instrument data.
+- System burn-in uses two related steps: STEP71 is the long burn-in/soak period, and STEP72 is the quick burn-in data capture used for report values.
+- `C:\Projects\Active\Data Automation Upgraded` is the stronger reference for 208V/415V system and breaker verification logic because it adds Python-side accuracy calculations and pass/fail checks.
 - Missing or unparsable CSV values must not silently become valid-looking zeroes.
 - Excel template preservation is a technical spike. Confirm that the chosen Rust Excel writer preserves the required workbook formatting, formulas, merged cells, and sheets before committing to it.
