@@ -7,6 +7,16 @@
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "dialog:allow-open",
-    "opener:allow-open-path"
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        {
+          "path": "C:/PDU500/**"
+        },
+        {
+          "path": "$HOME/**"
+        }
+      ]
+    }
   ]
 }

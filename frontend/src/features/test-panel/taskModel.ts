@@ -1,18 +1,6 @@
-import type { PanelItem, TaskState } from "./types";
+import type { PanelItem } from "./types";
 
 const loads = ["100% Load", "50% Load", "20% Load"] as const;
-
-function stateForStep(step: number): TaskState {
-  if (step === 14 || step === 16 || step === 43 || step === 45 || step === 73) {
-    return "detected";
-  }
-
-  if (step === 15 || step === 44) {
-    return "pass";
-  }
-
-  return "off";
-}
 
 function loadTasks(prefix: string, firstStep: number): PanelItem[] {
   return loads.map((load, index) => {
@@ -23,7 +11,7 @@ function loadTasks(prefix: string, firstStep: number): PanelItem[] {
       id: `${prefix}-${load}`,
       label: load,
       step: String(step),
-      state: stateForStep(step),
+      state: "off",
     };
   });
 }
@@ -54,7 +42,7 @@ function burnInBreakerTasks(): PanelItem[] {
       id: `breaker-burn-in-${breakerNumber}`,
       label: `Breaker ${breakerNumber}`,
       step: String(step),
-      state: stateForStep(step),
+      state: "off",
     };
   });
 }
@@ -65,7 +53,7 @@ export const legacyPanelItems: PanelItem[] = [
     id: "208v-transformer",
     label: "208V Transformer Check",
     step: "14",
-    state: stateForStep(14),
+    state: "off",
   },
   {
     kind: "section",
@@ -84,7 +72,7 @@ export const legacyPanelItems: PanelItem[] = [
     id: "415v-transformer",
     label: "415V Transformer Check",
     step: "43",
-    state: stateForStep(43),
+    state: "off",
   },
   {
     kind: "section",
@@ -103,7 +91,7 @@ export const legacyPanelItems: PanelItem[] = [
     id: "system-burn-in",
     label: "System Burn-In",
     step: "71/72",
-    state: "warning",
+    state: "off",
   },
   {
     kind: "section",

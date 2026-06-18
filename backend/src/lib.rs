@@ -1,3 +1,4 @@
+pub mod automation;
 pub mod config;
 
 use serde::Serialize;
@@ -25,13 +26,52 @@ fn load_example_layout_profile() -> Result<config::ProfileLoadSummary, String> {
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn setup_unit_folder(unit_folder: String) -> Result<automation::UnitFolderSummary, String> {
+    automation::setup_unit_folder(unit_folder).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn scan_unit_folder(unit_folder: String) -> Result<automation::UnitFolderSummary, String> {
+    automation::scan_unit_folder(unit_folder).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn process_automation_task(
+    unit_folder: String,
+    task_id: String,
+) -> Result<automation::TaskProcessResult, String> {
+    automation::process_task(unit_folder, task_id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn open_report_path(unit_folder: String, path: String) -> Result<(), String> {
+    automation::open_report_path(unit_folder, path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn open_report_location(
+    unit_folder: String,
+    path: String,
+    sheet: String,
+    cell: String,
+) -> Result<(), String> {
+    automation::open_report_location(unit_folder, path, sheet, cell)
+        .map_err(|error| error.to_string())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_app_status,
-            load_example_layout_profile
+            load_example_layout_profile,
+            setup_unit_folder,
+            scan_unit_folder,
+            process_automation_task,
+            open_report_path,
+            open_report_location
         ])
         .run(tauri::generate_context!())
         .expect("error while running PDU Data Automation");

@@ -1,4 +1,12 @@
-export type TaskState = "off" | "detected" | "waiting" | "processing" | "pass" | "warning" | "fail";
+export type TaskState =
+  | "off"
+  | "detected"
+  | "waiting"
+  | "processing"
+  | "pass"
+  | "warning"
+  | "fail"
+  | "skipped";
 
 export interface TaskItem {
   kind: "task";

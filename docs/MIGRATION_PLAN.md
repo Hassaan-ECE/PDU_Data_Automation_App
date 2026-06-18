@@ -125,6 +125,11 @@ Acceptance criteria:
 - Written cells match the legacy output for known fixture cases.
 - Missing required data fails the task instead of writing fake zeroes.
 
+Current status:
+
+- Rust processors exist for transformer, 208V/415V system, 208V/415V breaker, system burn-in, and breaker burn-in.
+- 208V and 415V breaker accuracy now preserve the upgraded Python scripts' voltage-specific rounding behavior: 208V verifies from rounded report values at 4 decimals, while 415V verifies from raw scaled values at 2 decimals.
+
 Recommended order:
 
 1. Transformer checks.

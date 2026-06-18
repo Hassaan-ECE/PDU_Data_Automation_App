@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "profile_id": "pdu500.rev02.accuracy-thresholds",
+  "display_name": "PDU500 Rev02 Accuracy Thresholds",
+  "notes": [
+    "Threshold values are percentages.",
+    "The app reloads this file each time a report-processing step runs.",
+    "Power factor accuracy is calculated as (detect - meter) * 100."
+  ],
+  "system": {
+    "100_percent": {
+      "active_power": 0.6,
+      "apparent_power": 0.6,
+      "power_factor": 2.0,
+      "voltage": 0.3,
+      "current": 0.3
+    },
+    "50_percent": {
+      "active_power": 0.69,
+      "apparent_power": 0.69,
+      "power_factor": 2.0,
+      "voltage": 0.3,
+      "current": 0.39
+    },
+    "20_percent": {
+      "active_power": 0.75,
+      "apparent_power": 0.75,
+      "power_factor": 2.0,
+      "voltage": 0.3,
+      "current": 0.45
+    }
+  },
+  "breaker": {
+    "all_loads": {
+      "voltage": 0.3,
+      "current": 0.3,
+      "active_power": 0.6,
+      "power_factor": 2.0
+    }
+  }
+}
