@@ -46,7 +46,9 @@ pub struct FailureLocation {
 #[derive(Debug, thiserror::Error)]
 enum ProcessorError {
     #[error("{0}")]
-    Csv(#[from] CsvDataError),
+    Csv(CsvDataError),
+    #[error("{0}")]
+    CsvNotReady(String),
     #[error("{0}")]
     Config(#[from] AccuracyThresholdError),
     #[error("{0}")]
@@ -55,11 +57,32 @@ enum ProcessorError {
     MissingCsv(String),
 }
 
+impl From<CsvDataError> for ProcessorError {
+    fn from(error: CsvDataError) -> Self {
+        if error.is_transient_file_access() {
+            ProcessorError::CsvNotReady(format!(
+                "CSV is still being written by ATS; waiting for it to unlock. {error}"
+            ))
+        } else {
+            ProcessorError::Csv(error)
+        }
+    }
+}
+
 type ProcessorAttempt<T> = Result<T, ProcessorError>;
 
 pub fn process_task(task: &AutomationTask, unit_folder: &Path) -> ProcessorResult {
     match process_task_inner(task, unit_folder) {
         Ok(result) => result,
+        Err(ProcessorError::CsvNotReady(message)) => ProcessorResult {
+            state: "waiting".to_string(),
+            code: 2,
+            failure: None,
+            message,
+            log: Vec::new(),
+            report_path: None,
+            print_report_path: None,
+        },
         Err(ProcessorError::MissingCsv(message)) => ProcessorResult {
             state: "warning".to_string(),
             code: 2,

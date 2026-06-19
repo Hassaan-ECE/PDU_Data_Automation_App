@@ -11,6 +11,7 @@ import {
   processAutomationTask,
   scanUnitFolder,
   setupUnitFolder,
+  type BackendTaskStatus,
   type BackendStatus,
   type FailureDetail,
   type FailureLocation,
@@ -136,7 +137,11 @@ function findNextTaskForRunner(
   processDetectedBacklog: boolean,
 ) {
   if (processDetectedBacklog) {
-    const detectedTask = tasks.find((task) => (states[task.id] ?? task.state) === "detected");
+    const detectedTask = tasks.find((task) => {
+      const state = states[task.id] ?? task.state;
+
+      return state === "detected" || state === "waiting" || state === "warning";
+    });
 
     if (detectedTask) {
       return detectedTask;
@@ -160,6 +165,20 @@ function taskDurationSeconds(taskId: string) {
   }
 
   return DEFAULT_LOAD_DURATION_SECONDS;
+}
+
+function csvWaitSecondsRemaining(
+  taskId: string,
+  task: BackendTaskStatus | undefined,
+  processDetectedBacklog: boolean,
+) {
+  if (processDetectedBacklog || !task?.latest_csv_created_ms) {
+    return 0;
+  }
+
+  const elapsedSeconds = Math.floor(Math.max(0, Date.now() - task.latest_csv_created_ms) / 1000);
+
+  return Math.max(0, taskDurationSeconds(taskId) - elapsedSeconds);
 }
 
 function remainingSecondsForStates(tasks: TaskItem[], states: Record<string, TaskState>) {
@@ -499,7 +518,7 @@ export function OperatorPanel() {
   const [isSettingUpReports, setIsSettingUpReports] = useState(false);
   const [backlogPrompt, setBacklogPrompt] = useState<BacklogPromptState>(null);
   const [resetClearsSelectionNext, setResetClearsSelectionNext] = useState(false);
-  const appVersion = backendStatus?.version ?? "0.2.2";
+  const appVersion = backendStatus?.version ?? "0.2.3";
   const panelItems = useMemo(() => applyTaskStates(legacyPanelItems, taskStates), [taskStates]);
   const detectedTaskCount = useMemo(
     () => Object.values(taskStates).filter((state) => state === "detected").length,
@@ -871,6 +890,10 @@ export function OperatorPanel() {
           setReportPath(result.report_path);
         }
 
+        if (result.state === "waiting") {
+          return "waiting";
+        }
+
         if (result.state !== "pass") {
           setFailureNotices((current) => ({
             ...current,
@@ -1038,9 +1061,15 @@ export function OperatorPanel() {
           }
 
           applyFolderSummary(summary);
-          const latestState = summary.tasks.find((task) => task.task_id === nextTask.id)?.state;
+          const latestTask = summary.tasks.find((task) => task.task_id === nextTask.id);
+          const latestState = latestTask?.state;
+          const csvWaitSeconds = csvWaitSecondsRemaining(
+            nextTask.id,
+            latestTask,
+            processDetectedBacklogRef.current === true,
+          );
 
-          if (latestState === "detected") {
+          if (latestState === "detected" && csvWaitSeconds <= 0) {
             const resultState = await runTask(nextTask.id, true);
 
             if (
@@ -1058,6 +1087,11 @@ export function OperatorPanel() {
             }
           } else {
             updateTaskState(nextTask.id, "waiting");
+
+            if (latestState === "detected") {
+              setRemainingSeconds(csvWaitSeconds);
+              setLastMessage(`Waiting for ${nextTask.label} CSV to finish`);
+            }
           }
 
           return;

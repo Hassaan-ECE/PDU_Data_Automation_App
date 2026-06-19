@@ -29,14 +29,14 @@ Remaining tasks:
 Current status:
 
 - Initial Tauri 2, React, TypeScript, Vite, Tailwind, Bun, and Rust skeleton is present.
-- Version is currently `0.2.2` in `package.json`, `backend/Cargo.toml`, and `backend/tauri.conf.json`.
+- Version is currently `0.2.3` in `package.json`, `backend/Cargo.toml`, and `backend/tauri.conf.json`.
 - Frontend build, frontend test, frontend lint, Rust formatting, and Rust unit tests have been run.
-- Signed NSIS current-user installers have been built for `0.1.0`, `0.2.0`, `0.2.1`, and the updater-test `0.2.2` release.
+- Signed NSIS current-user installers have been built for `0.1.0`, `0.2.0`, `0.2.1`, `0.2.2`, and the CSV-readiness `0.2.3` release.
 - A PDU-specific updater key has been generated outside the repo and the public key is configured in Tauri.
 - The `0.1.0` installer has been staged at `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation`.
-- GitHub Releases `v0.1.0`, `v0.2.0`, `v0.2.1`, and `v0.2.2` have been published with the installer, updater signature, `latest.json`, and `SHA256SUMS.txt`.
+- GitHub Releases `v0.1.0`, `v0.2.0`, `v0.2.1`, `v0.2.2`, and `v0.2.3` have been published with the installer, updater signature, `latest.json`, and `SHA256SUMS.txt`.
 - `latest.json` resolves and points to the uploaded GitHub release asset.
-- A real updater upgrade smoke test is pending from `v0.2.1` to `v0.2.2`. `v0.1.0` and `v0.2.0` cannot initiate the updater flow because their Tauri capability file did not grant updater permissions.
+- A real updater upgrade smoke test is pending from `v0.2.2` to `v0.2.3`. `v0.1.0` and `v0.2.0` cannot initiate the updater flow because their Tauri capability file did not grant updater permissions.
 
 Acceptance criteria:
 
@@ -125,7 +125,7 @@ Remaining:
 Acceptance criteria:
 
 - Backend discovers CSVs recursively by STEP number.
-- Backend can tell file detected, stable, locked, missing, and unreadable states apart.
+- Backend can treat active ATS-written CSV sharing violations as not ready without failing the task.
 - CSV parsing distinguishes missing values from numeric zero.
 - Processing returns structured results.
 
@@ -135,11 +135,12 @@ Current status:
 - CSV parsing and required numeric extraction are implemented.
 - Processing distinguishes missing/unparsable required values from valid numeric zeroes.
 - Per-task processing returns structured state, code, message, log, report paths, and failure detail.
+- Active ATS-written CSV files now keep the task in a waiting state instead of showing an I/O-bound processing failure.
 
 Remaining:
 
 - Add scrubbed fixture tests for representative production CSV files.
-- Harden file readiness classification so missing, still-writing, locked, unreadable, and stable files are reported distinctly.
+- Add more structured diagnostics for unusual unreadable-file cases beyond active writer locks.
 - Add more structured logging around CSV selection and parse failures.
 
 ## Phase 6 - Report Writers By Section
@@ -188,7 +189,7 @@ Current status:
 
 Remaining:
 
-- Test a real updater upgrade by publishing a newer version and updating an installed `v0.1.0` app.
+- Test a real updater upgrade from `v0.2.2` to `v0.2.3` on the operator PC.
 - Validate uninstall and reinstall behavior on the production machine.
 - Keep the S-drive root clean as new releases are staged.
 

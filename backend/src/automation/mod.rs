@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 use serde::Serialize;
@@ -46,6 +47,7 @@ pub struct TaskStatus {
     pub state: String,
     pub detected_steps: Vec<u16>,
     pub latest_csv: Option<String>,
+    pub latest_csv_created_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -122,20 +124,25 @@ fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> UnitFolderSum
                 .copied()
                 .filter(|step| steps_to_paths.contains_key(step))
                 .collect::<Vec<_>>();
-            let latest_csv = task
+            let latest_csv_info = task
                 .detection_steps
                 .iter()
                 .filter_map(|step| steps_to_paths.get(step))
                 .flat_map(|paths| paths.iter())
                 .filter_map(|path| {
-                    let modified = path
-                        .metadata()
-                        .and_then(|metadata| metadata.modified())
-                        .ok()?;
-                    Some((path, modified))
+                    let metadata = path.metadata().ok()?;
+                    let modified = metadata.modified().ok()?;
+                    let created_ms = csv_start_time_millis(&metadata);
+
+                    Some((path, modified, created_ms))
                 })
-                .max_by_key(|(_, modified)| *modified)
-                .map(|(path, _)| path.display().to_string());
+                .max_by_key(|(_, modified, _)| *modified);
+            let latest_csv = latest_csv_info
+                .as_ref()
+                .map(|(path, _, _)| path.display().to_string());
+            let latest_csv_created_ms = latest_csv_info
+                .as_ref()
+                .and_then(|(_, _, created_ms)| *created_ms);
             let state = if detected_for_task.is_empty() {
                 "off"
             } else {
@@ -150,6 +157,7 @@ fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> UnitFolderSum
                 state: state.to_string(),
                 detected_steps: detected_for_task,
                 latest_csv,
+                latest_csv_created_ms,
             }
         })
         .collect::<Vec<_>>();
@@ -163,6 +171,20 @@ fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> UnitFolderSum
         tasks,
         warnings: report_setup.warnings,
     }
+}
+
+fn csv_start_time_millis(metadata: &fs::Metadata) -> Option<u64> {
+    metadata
+        .created()
+        .or_else(|_| metadata.modified())
+        .ok()
+        .and_then(system_time_millis)
+}
+
+fn system_time_millis(time: SystemTime) -> Option<u64> {
+    let millis = time.duration_since(UNIX_EPOCH).ok()?.as_millis();
+
+    u64::try_from(millis).ok()
 }
 
 fn to_task_process_result(task_id: String, result: ProcessorResult) -> TaskProcessResult {

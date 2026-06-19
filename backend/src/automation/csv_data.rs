@@ -42,6 +42,19 @@ pub enum CsvDataError {
 
 pub type CsvResult<T> = Result<T, CsvDataError>;
 
+impl CsvDataError {
+    pub fn is_transient_file_access(&self) -> bool {
+        match self {
+            CsvDataError::Io(source) => is_transient_file_access_error(source),
+            CsvDataError::Csv { source, .. } => match source.kind() {
+                csv::ErrorKind::Io(source) => is_transient_file_access_error(source),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CsvTable {
     path: PathBuf,
@@ -267,9 +280,18 @@ fn sniff_delimiter(path: &Path) -> CsvResult<u8> {
     }
 }
 
+fn is_transient_file_access_error(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(32 | 33))
+        || matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::ErrorKind;
 
     #[test]
     fn excel_columns_are_zero_based() {
@@ -283,5 +305,31 @@ mod tests {
     fn round_to_uses_decimal_places() {
         assert_eq!(round_to(12.3456, 2), 12.35);
         assert_eq!(round_to(12.344, 2), 12.34);
+    }
+
+    #[test]
+    fn sharing_violation_is_transient_file_access() {
+        let error = CsvDataError::Io(std::io::Error::from_raw_os_error(32));
+
+        assert!(error.is_transient_file_access());
+    }
+
+    #[test]
+    fn would_block_is_transient_file_access() {
+        let error = CsvDataError::Io(std::io::Error::from(ErrorKind::WouldBlock));
+
+        assert!(error.is_transient_file_access());
+    }
+
+    #[test]
+    fn malformed_values_are_not_transient_file_access() {
+        let error = CsvDataError::NonnumericValue {
+            file: "sample.csv".to_string(),
+            label: "Current".to_string(),
+            column: "A".to_string(),
+            value: "bad".to_string(),
+        };
+
+        assert!(!error.is_transient_file_access());
     }
 }

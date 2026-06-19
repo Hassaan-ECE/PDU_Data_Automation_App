@@ -16,13 +16,13 @@ C:\Projects\Active\PDU_Data_Automation_App
 
 ## Status
 
-`v0.2.2` is the current released pilot build. `v0.1.0` remains the first released pilot.
+`v0.2.3` is the current released pilot build. `v0.1.0` remains the first released pilot.
 
 Current release:
 
-- tag: `v0.2.2`
-- GitHub release: `https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.2`
-- S-drive installer: `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.2_x64-setup.exe`
+- tag: `v0.2.3`
+- GitHub release: `https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.3`
+- S-drive installer: `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.3_x64-setup.exe`
 
 Implemented in the pilot:
 
@@ -36,6 +36,7 @@ Implemented in the pilot:
 - delayed startup updater checks, unused font cleanup, and lightweight startup timing logs
 - updater plugin permissions for future in-app updates
 - three-step reset flow: collapse tests, reset current SN, then clear SN selection
+- legacy-style CSV readiness waiting for active ATS-written files
 - signed NSIS installer, updater signature, `latest.json`, and release checksum publication
 
 A known-good unit folder has been run through the installed app successfully, and the generated Excel workbook opened without repair prompts. Keep the legacy app available until several production units have been processed cleanly.
@@ -106,7 +107,7 @@ scripts/                 Build, release, smoke-test, and helper scripts
 - Compare generated reports against legacy output cell-by-cell for representative units.
 - Test the real updater upgrade path from this patched build to a newer release.
 - Add scrubbed fixture coverage for representative CSV/report cases so regressions are caught without private production data.
-- Harden CSV readiness handling so missing, still-writing, locked, unreadable, and stable files are reported distinctly.
+- Continue hardening CSV readiness diagnostics for unusual unreadable-file cases.
 - Keep the legacy Python app as fallback during the initial pilot.
 - Optionally move more hardcoded processor cell logic into the production layout profile over time.
 
