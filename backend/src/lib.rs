@@ -2,20 +2,31 @@ pub mod automation;
 pub mod config;
 
 use serde::Serialize;
+use std::sync::OnceLock;
+use std::time::Instant;
+
+static PROCESS_START: OnceLock<Instant> = OnceLock::new();
+static WINDOW_SETUP_UPTIME_MS: OnceLock<u128> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
 struct BackendStatus {
     app_name: String,
     version: String,
     backend: String,
+    process_uptime_ms: u128,
+    window_setup_uptime_ms: Option<u128>,
 }
 
 #[tauri::command]
 fn get_app_status() -> BackendStatus {
+    let process_start = PROCESS_START.get_or_init(Instant::now);
+
     BackendStatus {
         app_name: "PDU Data Automation".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         backend: "tauri-rust".to_string(),
+        process_uptime_ms: process_start.elapsed().as_millis(),
+        window_setup_uptime_ms: WINDOW_SETUP_UPTIME_MS.get().copied(),
     }
 }
 
@@ -61,10 +72,16 @@ fn open_report_location(
 }
 
 pub fn run() {
+    let process_start = *PROCESS_START.get_or_init(Instant::now);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(move |_app| {
+            let _ = WINDOW_SETUP_UPTIME_MS.set(process_start.elapsed().as_millis());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_app_status,
             load_layout_profile,

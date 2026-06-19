@@ -16,13 +16,13 @@ C:\Projects\Active\PDU_Data_Automation_App
 
 ## Status
 
-`v0.1.0` is the first released pilot build.
+`v0.2.0` is the current released pilot build. `v0.1.0` remains the first released pilot.
 
 Current release:
 
-- commit/tag: `9f70de4` / `v0.1.0`
-- GitHub release: `https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.1.0`
-- S-drive installer: `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.1.0_x64-setup.exe`
+- tag: `v0.2.0`
+- GitHub release: `https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.0`
+- S-drive installer: `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.0_x64-setup.exe`
 
 Implemented in the pilot:
 
@@ -32,6 +32,8 @@ Implemented in the pilot:
 - active production layout profile at `config/report-layouts/pdu500.rev02.layout.json`
 - unit-folder setup, template copying/renaming, report discovery, CSV detection/parsing, and Excel workbook patching
 - built-in Rust processors for transformer, 208V/415V system, 208V/415V breaker, system burn-in, and breaker burn-in tasks
+- faster unit-folder detection by scanning CSVs before report setup completes
+- delayed startup updater checks, unused font cleanup, and lightweight startup timing logs
 - signed NSIS installer, updater signature, `latest.json`, and release checksum publication
 
 A known-good unit folder has been run through the installed app successfully, and the generated Excel workbook opened without repair prompts. Keep the legacy app available until several production units have been processed cleanly.
@@ -100,7 +102,7 @@ scripts/                 Build, release, smoke-test, and helper scripts
 
 - Run several more real or copied production unit folders, including known-good, known-fail, borderline, missing CSV, missing template, and workbook-open-in-Excel cases.
 - Compare generated reports against legacy output cell-by-cell for representative units.
-- Test a real updater upgrade path by releasing a newer version, then updating an installed `v0.1.0` app through the updater.
+- Test the real updater upgrade path from an installed `v0.1.0` app to the `v0.2.0` release.
 - Add scrubbed fixture coverage for representative CSV/report cases so regressions are caught without private production data.
 - Harden CSV readiness handling so missing, still-writing, locked, unreadable, and stable files are reported distinctly.
 - Keep the legacy Python app as fallback during the initial pilot.

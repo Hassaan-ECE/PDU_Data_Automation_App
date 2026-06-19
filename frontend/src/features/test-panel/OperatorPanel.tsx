@@ -18,6 +18,7 @@ import {
   type TaskProcessResult,
   type UnitFolderSummary,
 } from "@/integrations/tauri/backend";
+import { markStartup } from "@/shared/lib/startupTiming";
 import { cn } from "@/shared/lib/utils";
 
 import { stateStyles } from "./stateStyles";
@@ -184,6 +185,18 @@ function failureNoticeFromResult(
     location: failure?.location ?? null,
     fromRunner,
   };
+}
+
+function detectedReadyMessage(count: number) {
+  return count > 0
+    ? `${count} detected test${count === 1 ? "" : "s"} ready. Press Start to choose how to continue.`
+    : "Ready to start";
+}
+
+function detectedSetupMessage(count: number) {
+  return count > 0
+    ? `${count} detected test${count === 1 ? "" : "s"} ready. Setting up reports.`
+    : "No completed tests detected. Setting up reports.";
 }
 
 function panelDepthWidth(depth: number) {
@@ -435,6 +448,10 @@ export function OperatorPanel() {
   const stopAfterCurrentTaskRef = useRef(false);
   const taskStatesRef = useRef<Record<string, TaskState>>({});
   const processDetectedBacklogRef = useRef<boolean | null>(null);
+  const selectedFolderRef = useRef("");
+  const folderScanPendingRef = useRef(false);
+  const setupPromiseRef = useRef<Promise<boolean> | null>(null);
+  const setupErrorRef = useRef<string | null>(null);
   const allTaskOrder = useMemo(() => flattenTasks(legacyPanelItems), []);
   const [unitFolder, setUnitFolder] = useState("");
   const [serialNumber, setSerialNumber] = useState("");
@@ -452,9 +469,11 @@ export function OperatorPanel() {
   const [detectedCount, setDetectedCount] = useState(0);
   const [lastMessage, setLastMessage] = useState("");
   const [setupWarnings, setSetupWarnings] = useState<string[]>([]);
+  const [isScanningFolder, setIsScanningFolder] = useState(false);
+  const [isSettingUpReports, setIsSettingUpReports] = useState(false);
   const [backlogPrompt, setBacklogPrompt] = useState<BacklogPromptState>(null);
   const [resetClearsSelectionNext, setResetClearsSelectionNext] = useState(false);
-  const appVersion = backendStatus?.version ?? "0.1.0";
+  const appVersion = backendStatus?.version ?? "0.2.0";
   const panelItems = useMemo(() => applyTaskStates(legacyPanelItems, taskStates), [taskStates]);
   const detectedTaskCount = useMemo(
     () => Object.values(taskStates).filter((state) => state === "detected").length,
@@ -479,8 +498,34 @@ export function OperatorPanel() {
   }, [isRunning, lastMessage, unitFolder]);
 
   useEffect(() => {
-    void getBackendStatus().then(setBackendStatus);
-    void loadLayoutProfile().then(setLayoutProfile);
+    markStartup("react_mounted");
+    void getBackendStatus().then((status) => {
+      setBackendStatus(status);
+      markStartup(
+        "backend_status_loaded",
+        status
+          ? {
+              process_uptime_ms: status.process_uptime_ms ?? null,
+              version: status.version,
+              window_setup_uptime_ms: status.window_setup_uptime_ms ?? null,
+            }
+          : null,
+      );
+    });
+    void loadLayoutProfile().then((profile) => {
+      setLayoutProfile(profile);
+      markStartup(
+        "layout_profile_loaded",
+        profile
+          ? {
+              errors: profile.validation.errors.length,
+              profile_id: profile.profile_id,
+              task_count: profile.task_count,
+              warnings: profile.validation.warnings.length,
+            }
+          : null,
+      );
+    });
   }, []);
 
   useEffect(() => {
@@ -494,6 +539,10 @@ export function OperatorPanel() {
   useEffect(() => {
     isRunningRef.current = isRunning;
   }, [isRunning]);
+
+  useEffect(() => {
+    selectedFolderRef.current = unitFolder;
+  }, [unitFolder]);
 
   const setRunnerActive = useCallback((active: boolean) => {
     isRunningRef.current = active;
@@ -669,6 +718,88 @@ export function OperatorPanel() {
     replaceTaskStates(next);
   }, [replaceTaskStates]);
 
+  const beginReportSetup = useCallback(
+    (selected: string) => {
+      setupErrorRef.current = null;
+      setIsSettingUpReports(true);
+
+      const setupPromise = setupUnitFolder(selected)
+        .then((summary) => {
+          if (selectedFolderRef.current !== selected) {
+            return true;
+          }
+
+          if (!summary) {
+            const folderName = selected.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
+
+            setSerialNumber(folderName.match(/\d{6,}/)?.[0] ?? "");
+            setLastMessage("Ready to start");
+            return true;
+          }
+
+          applyFolderSummary(summary);
+          setLastMessage(detectedReadyMessage(summary.detected_count));
+          return true;
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+
+          if (selectedFolderRef.current === selected) {
+            setupErrorRef.current = message;
+            setLastMessage(message);
+          }
+
+          return false;
+        });
+
+      setupPromiseRef.current = setupPromise;
+      void setupPromise.finally(() => {
+        if (setupPromiseRef.current === setupPromise) {
+          setupPromiseRef.current = null;
+          setIsSettingUpReports(false);
+        }
+      });
+
+      return setupPromise;
+    },
+    [applyFolderSummary],
+  );
+
+  const ensureReportSetupReady = useCallback(async (expectedFolder?: string) => {
+    if (expectedFolder && selectedFolderRef.current !== expectedFolder) {
+      return false;
+    }
+
+    if (folderScanPendingRef.current) {
+      setLastMessage("Scanning unit folder");
+      return false;
+    }
+
+    const setupPromise = setupPromiseRef.current;
+
+    if (!setupPromise) {
+      if (setupErrorRef.current) {
+        setLastMessage(setupErrorRef.current);
+        return false;
+      }
+
+      return true;
+    }
+
+    setLastMessage("Finishing report setup");
+    const setupOk = await setupPromise;
+
+    if (expectedFolder && selectedFolderRef.current !== expectedFolder) {
+      return false;
+    }
+
+    if (!setupOk && setupErrorRef.current) {
+      setLastMessage(setupErrorRef.current);
+    }
+
+    return setupOk && !setupErrorRef.current;
+  }, []);
+
   const runTask = useCallback(
     async (taskId: string, fromRunner = false): Promise<TaskState | null> => {
       if (!unitFolder || processingTaskRef.current) {
@@ -677,6 +808,10 @@ export function OperatorPanel() {
 
       if (!fromRunner && isRunningRef.current) {
         setLastMessage("Pause the runner before rerunning an individual task");
+        return null;
+      }
+
+      if (!(await ensureReportSetupReady(unitFolder))) {
         return null;
       }
 
@@ -741,7 +876,7 @@ export function OperatorPanel() {
         processingTaskRef.current = false;
       }
     },
-    [activateTask, reportPath, setRunnerActive, unitFolder, updateTaskState],
+    [activateTask, ensureReportSetupReady, reportPath, setRunnerActive, unitFolder, updateTaskState],
   );
 
   const handleSkipTask = useCallback(
@@ -934,31 +1069,42 @@ export function OperatorPanel() {
     processDetectedBacklogRef.current = null;
     setFailureNotices({});
     activateTask(null);
-    setLastMessage("Setting up unit folder");
+    selectedFolderRef.current = selected;
+    setupPromiseRef.current = null;
+    setupErrorRef.current = null;
+    folderScanPendingRef.current = true;
+    setIsScanningFolder(true);
+    setIsSettingUpReports(false);
+    setLastMessage("Scanning unit folder");
 
     try {
-      const summary = await setupUnitFolder(selected);
+      const summary = await scanUnitFolder(selected);
+
+      if (selectedFolderRef.current !== selected) {
+        return;
+      }
+
+      folderScanPendingRef.current = false;
+      setIsScanningFolder(false);
 
       if (!summary) {
         const folderName = selected.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
         setSerialNumber(folderName.match(/\d{6,}/)?.[0] ?? "");
-        setLastMessage("Ready to start");
+        setLastMessage("Setting up reports");
+        void beginReportSetup(selected);
         return;
       }
 
       applyFolderSummary(summary, true);
-      setLastMessage(
-        summary.detected_count > 0
-          ? `${summary.detected_count} detected test${summary.detected_count === 1 ? "" : "s"} ready`
-          : "Ready to start",
-      );
-
-      if (summary.detected_count > 0) {
-        setLastMessage(
-          `${summary.detected_count} detected test${summary.detected_count === 1 ? "" : "s"} ready. Press Start to choose how to continue.`,
-        );
-      }
+      setLastMessage(detectedSetupMessage(summary.detected_count));
+      void beginReportSetup(selected);
     } catch (error) {
+      if (selectedFolderRef.current !== selected) {
+        return;
+      }
+
+      folderScanPendingRef.current = false;
+      setIsScanningFolder(false);
       setTaskStates({});
       setFailureNotices({});
       setLastMessage(error instanceof Error ? error.message : String(error));
@@ -979,6 +1125,10 @@ export function OperatorPanel() {
       const promptDetectedCount = detectedTaskCount || detectedCount;
 
       setResetClearsSelectionNext(false);
+
+      if (!(await ensureReportSetupReady(unitFolder))) {
+        return;
+      }
 
       if (shouldProcessBacklog === null && promptDetectedCount > 0) {
         shouldProcessBacklog = await requestBacklogChoice(promptDetectedCount);
@@ -1024,6 +1174,12 @@ export function OperatorPanel() {
       setSetupWarnings([]);
       setFailureNotices({});
       replaceTaskStates({});
+      selectedFolderRef.current = "";
+      folderScanPendingRef.current = false;
+      setupPromiseRef.current = null;
+      setupErrorRef.current = null;
+      setIsScanningFolder(false);
+      setIsSettingUpReports(false);
       setProcessDetectedBacklog(null);
       processDetectedBacklogRef.current = null;
       setResetClearsSelectionNext(false);
@@ -1092,6 +1248,10 @@ export function OperatorPanel() {
 
   const footerText = setupWarnings.length
     ? setupWarnings[0]
+    : isScanningFolder
+      ? "Scanning unit folder..."
+    : isSettingUpReports
+      ? "Setting up reports..."
     : (detectedTaskCount || detectedCount) > 0 && !isRunning
       ? `${detectedTaskCount || detectedCount} detected task${(detectedTaskCount || detectedCount) === 1 ? "" : "s"}`
       : layoutProfile?.validation.warnings.length

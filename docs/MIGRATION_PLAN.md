@@ -29,14 +29,14 @@ Remaining tasks:
 Current status:
 
 - Initial Tauri 2, React, TypeScript, Vite, Tailwind, Bun, and Rust skeleton is present.
-- Version is currently `0.1.0` in `package.json`, `backend/Cargo.toml`, and `backend/tauri.conf.json`.
+- Version is currently `0.2.0` in `package.json`, `backend/Cargo.toml`, and `backend/tauri.conf.json`.
 - Frontend build, frontend test, frontend lint, Rust formatting, and Rust unit tests have been run.
-- A signed NSIS current-user installer has been built for `0.1.0`.
+- Signed NSIS current-user installers have been built for `0.1.0` and the updater-test `0.2.0` release.
 - A PDU-specific updater key has been generated outside the repo and the public key is configured in Tauri.
 - The `0.1.0` installer has been staged at `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation`.
-- GitHub Release `v0.1.0` has been published with the installer, updater signature, `latest.json`, and `SHA256SUMS.txt`.
+- GitHub Releases `v0.1.0` and `v0.2.0` have been published with the installer, updater signature, `latest.json`, and `SHA256SUMS.txt`.
 - `latest.json` resolves and points to the uploaded GitHub release asset.
-- A real updater upgrade smoke test is still pending because it requires a newer release than the installed `v0.1.0`.
+- A real updater upgrade smoke test is still pending from the installed `v0.1.0` app to `v0.2.0`.
 
 Acceptance criteria:
 

@@ -33,11 +33,11 @@ Current release root:
 
 ```text
 S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\
-  PDU Data Automation_0.1.0_x64-setup.exe
+  PDU Data Automation_0.2.0_x64-setup.exe
   release-support\
-    v0.1.0\
+    v0.2.0\
       latest.json
-      PDU Data Automation_0.1.0_x64-setup.exe.sig
+      PDU Data Automation_0.2.0_x64-setup.exe.sig
       SHA256SUMS.txt
   archive\
   shared\
@@ -61,7 +61,7 @@ Each release should publish:
 - `SHA256SUMS.txt`
 - release notes
 
-`v0.1.0` has been published with these assets. Keep this list as the checklist for future releases.
+`v0.2.0` has been published with these assets. Keep this list as the checklist for future releases.
 
 The Tauri updater endpoint should point at:
 
@@ -143,7 +143,7 @@ For each release candidate:
 - run updater check against release metadata
 - uninstall cleanly
 
-The installed `v0.1.0` app has processed one known-good unit and produced an Excel workbook that opened without repair prompts. A real updater upgrade smoke test still requires a newer published version.
+The installed `v0.1.0` app has processed one known-good unit and produced an Excel workbook that opened without repair prompts. Use the `v0.2.0` release to smoke test the updater upgrade path from `v0.1.0`.
 
 ## Local Release Folder
 

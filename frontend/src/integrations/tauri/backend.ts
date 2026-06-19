@@ -5,6 +5,8 @@ export interface BackendStatus {
   app_name: string;
   version: string;
   backend: string;
+  process_uptime_ms?: number;
+  window_setup_uptime_ms?: number | null;
 }
 
 export interface LayoutValidationResult {

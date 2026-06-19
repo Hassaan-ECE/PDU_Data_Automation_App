@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use regex::Regex;
 use serde::Serialize;
@@ -55,6 +56,12 @@ pub struct ReportSetup {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ReportDiscovery {
+    main_report: Option<PathBuf>,
+    print_report: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone)]
 pub enum CellValue {
     Number(f64),
@@ -100,35 +107,44 @@ pub fn setup_reports(unit_folder: &Path) -> ReportResult<ReportSetup> {
     let mut warnings = Vec::new();
     let serial_number = extract_serial_number(unit_folder);
     let template_root = Path::new(TEMPLATE_DIR);
+    let mut reports = discover_reports(unit_folder);
+    let mut touched_reports = Vec::<PathBuf>::new();
 
     if !template_root.is_dir() {
         warnings.push(format!("template folder not found: {TEMPLATE_DIR}"));
     } else {
-        copy_templates(
+        touched_reports.extend(copy_templates(
             unit_folder,
             template_root,
+            &reports,
             serial_number.as_deref(),
             &mut warnings,
-        )?;
+        )?);
+        reports = discover_reports(unit_folder);
     }
 
-    ensure_report_named_correctly(unit_folder, serial_number.as_deref(), &mut warnings)?;
-
-    if let Some(report_path) = find_main_report(unit_folder) {
-        repair_workbook(&report_path)?;
+    if let Some(touched_report) = ensure_report_named_correctly(
+        unit_folder,
+        &reports,
+        serial_number.as_deref(),
+        &mut warnings,
+    )? {
+        touched_reports.push(touched_report);
     }
 
-    if let Some(print_report_path) = find_print_report(unit_folder) {
-        repair_workbook(&print_report_path)?;
+    let mut repaired = HashSet::<PathBuf>::new();
+    for report_path in touched_reports {
+        if repaired.insert(report_path.clone()) {
+            repair_workbook(&report_path)?;
+        }
     }
 
-    let report_path = find_main_report(unit_folder).map(|path| path.display().to_string());
-    let print_report_path = find_print_report(unit_folder).map(|path| path.display().to_string());
+    reports = discover_reports(unit_folder);
 
     Ok(ReportSetup {
         serial_number,
-        report_path,
-        print_report_path,
+        report_path: reports.main_report.map(|path| path.display().to_string()),
+        print_report_path: reports.print_report.map(|path| path.display().to_string()),
         warnings,
     })
 }
@@ -140,10 +156,12 @@ pub fn inspect_reports(unit_folder: &Path) -> ReportResult<ReportSetup> {
         ));
     }
 
+    let reports = discover_reports(unit_folder);
+
     Ok(ReportSetup {
         serial_number: extract_serial_number(unit_folder),
-        report_path: find_main_report(unit_folder).map(|path| path.display().to_string()),
-        print_report_path: find_print_report(unit_folder).map(|path| path.display().to_string()),
+        report_path: reports.main_report.map(|path| path.display().to_string()),
+        print_report_path: reports.print_report.map(|path| path.display().to_string()),
         warnings: Vec::new(),
     })
 }
@@ -322,9 +340,11 @@ fn rewrite_workbook(
 fn copy_templates(
     unit_folder: &Path,
     template_root: &Path,
+    reports: &ReportDiscovery,
     serial_number: Option<&str>,
     warnings: &mut Vec<String>,
-) -> ReportResult<()> {
+) -> ReportResult<Vec<PathBuf>> {
+    let mut touched_reports = Vec::new();
     let main_template = template_root.join(MAIN_TEMPLATE_NAME);
     let print_template = template_root.join(PRINT_TEMPLATE_NAME);
 
@@ -333,7 +353,7 @@ fn copy_templates(
             "main report template missing: {}",
             main_template.display()
         ));
-    } else if find_main_report(unit_folder).is_none() {
+    } else if reports.main_report.is_none() {
         let target_name = serial_number
             .map(|serial| format!("{MAIN_REPORT_PREFIX}SN{serial}.xlsx"))
             .unwrap_or_else(|| MAIN_TEMPLATE_NAME.to_string());
@@ -347,6 +367,8 @@ fn copy_templates(
                 &[CellUpdate::text("Test Summary", "B2", serial.to_string())],
             )?;
         }
+
+        touched_reports.push(target_path);
     }
 
     if !print_template.is_file() {
@@ -354,40 +376,43 @@ fn copy_templates(
             "print report template missing: {}",
             print_template.display()
         ));
-    } else if find_print_report(unit_folder).is_none() {
-        fs::copy(&print_template, unit_folder.join(PRINT_TEMPLATE_NAME))?;
+    } else if reports.print_report.is_none() {
+        let target_path = unit_folder.join(PRINT_TEMPLATE_NAME);
+        fs::copy(&print_template, &target_path)?;
+        touched_reports.push(target_path);
     }
 
-    Ok(())
+    Ok(touched_reports)
 }
 
 fn ensure_report_named_correctly(
     unit_folder: &Path,
+    reports: &ReportDiscovery,
     serial_number: Option<&str>,
     warnings: &mut Vec<String>,
-) -> ReportResult<()> {
+) -> ReportResult<Option<PathBuf>> {
     let Some(serial_number) = serial_number else {
-        return Ok(());
+        return Ok(None);
     };
 
     let target = unit_folder.join(format!("{MAIN_REPORT_PREFIX}SN{serial_number}.xlsx"));
 
     if target.exists() {
-        return Ok(());
+        return Ok(None);
     }
 
-    let Some(source) = find_main_report(unit_folder).or_else(|| {
+    let Some(source) = reports.main_report.clone().or_else(|| {
         let template_copy = unit_folder.join(MAIN_TEMPLATE_NAME);
         template_copy.exists().then_some(template_copy)
     }) else {
         warnings.push(format!(
             "main report was not found and could not be named for serial {serial_number}"
         ));
-        return Ok(());
+        return Ok(None);
     };
 
     if source == target {
-        return Ok(());
+        return Ok(None);
     }
 
     fs::copy(source, &target)?;
@@ -400,65 +425,68 @@ fn ensure_report_named_correctly(
         )],
     )?;
 
-    Ok(())
+    Ok(Some(target))
 }
 
 fn find_main_report(unit_folder: &Path) -> Option<PathBuf> {
-    latest_file(unit_folder, true, |file_name| {
-        file_name.starts_with(MAIN_REPORT_SN_PREFIX) && file_name.ends_with(".xlsx")
-    })
-    .or_else(|| {
-        latest_file(unit_folder, true, |file_name| {
-            file_name.starts_with(MAIN_REPORT_PREFIX) && file_name.ends_with(".xlsx")
-        })
-    })
-    .or_else(|| {
-        latest_file(unit_folder, true, |file_name| {
-            file_name.starts_with("PDUD500442AM088") && file_name.ends_with(".xlsx")
-        })
-    })
+    discover_reports(unit_folder).main_report
 }
 
 fn find_print_report(unit_folder: &Path) -> Option<PathBuf> {
-    latest_file(unit_folder, true, |file_name| {
-        file_name.starts_with(PRINT_REPORT_PREFIX) && file_name.ends_with(".xlsx")
-    })
+    discover_reports(unit_folder).print_report
 }
 
-fn latest_file(root: &Path, recursive: bool, predicate: impl Fn(&str) -> bool) -> Option<PathBuf> {
-    let paths = if recursive {
-        WalkDir::new(root)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_type().is_file())
-            .map(|entry| entry.into_path())
-            .collect::<Vec<_>>()
-    } else {
-        fs::read_dir(root)
-            .ok()?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| path.is_file())
-            .collect::<Vec<_>>()
-    };
+fn discover_reports(root: &Path) -> ReportDiscovery {
+    let mut main_sn = None;
+    let mut main_prefixed = None;
+    let mut main_any = None;
+    let mut print_report = None;
 
-    paths
+    for entry in WalkDir::new(root)
+        .follow_links(false)
         .into_iter()
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| predicate(name))
-        })
-        .filter_map(|path| {
-            let modified = path
-                .metadata()
-                .and_then(|metadata| metadata.modified())
-                .ok()?;
-            Some((path, modified))
-        })
-        .max_by_key(|(_, modified)| *modified)
-        .map(|(path, _)| path)
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+    {
+        let path = entry.into_path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+
+        if !file_name.ends_with(".xlsx") {
+            continue;
+        }
+
+        let Ok(modified) = path.metadata().and_then(|metadata| metadata.modified()) else {
+            continue;
+        };
+
+        if file_name.starts_with(MAIN_REPORT_SN_PREFIX) {
+            retain_latest(&mut main_sn, path.clone(), modified);
+        } else if file_name.starts_with(MAIN_REPORT_PREFIX) {
+            retain_latest(&mut main_prefixed, path.clone(), modified);
+        } else if file_name.starts_with("PDUD500442AM088") {
+            retain_latest(&mut main_any, path.clone(), modified);
+        }
+
+        if file_name.starts_with(PRINT_REPORT_PREFIX) {
+            retain_latest(&mut print_report, path, modified);
+        }
+    }
+
+    ReportDiscovery {
+        main_report: main_sn.or(main_prefixed).or(main_any).map(|(path, _)| path),
+        print_report: print_report.map(|(path, _)| path),
+    }
+}
+
+fn retain_latest(current: &mut Option<(PathBuf, SystemTime)>, path: PathBuf, modified: SystemTime) {
+    if current
+        .as_ref()
+        .map_or(true, |(_, current_modified)| modified > *current_modified)
+    {
+        *current = Some((path, modified));
+    }
 }
 
 #[derive(Debug)]

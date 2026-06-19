@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 
 import { isTauriRuntime } from "@/integrations/tauri/backend";
+import { markStartup } from "@/shared/lib/startupTiming";
 
 import { buildIdleUpdateState, chooseFreshUpdateState, type UpdateState } from "./updateTypes";
 
+const INITIAL_UPDATE_CHECK_DELAY_MS = 15_000;
 const UPDATE_CHECK_INTERVAL_MS = 5 * 60_000;
 
 interface UseDesktopUpdatesOptions {
@@ -14,6 +16,7 @@ interface UseDesktopUpdatesOptions {
 
 export function useDesktopUpdates({ announceStatus, currentVersion }: UseDesktopUpdatesOptions) {
   const [updateState, setUpdateState] = useState<UpdateState>(() => buildIdleUpdateState(currentVersion));
+  const firstUpdateCheckLoggedRef = useRef(false);
   const pendingUpdateRef = useRef<Update | null>(null);
   const updateStateRef = useRef(updateState);
 
@@ -27,9 +30,25 @@ export function useDesktopUpdates({ announceStatus, currentVersion }: UseDesktop
     return state;
   }, []);
 
+  const publishUpdateCheckResult = useCallback(
+    (state: UpdateState): UpdateState => {
+      if (!firstUpdateCheckLoggedRef.current) {
+        firstUpdateCheckLoggedRef.current = true;
+        markStartup("updater_check_finished", {
+          error: state.error ?? null,
+          latestVersion: state.latestVersion ?? null,
+          status: state.status,
+        });
+      }
+
+      return publishUpdateState(state);
+    },
+    [publishUpdateState],
+  );
+
   const checkForUpdate = useCallback(async (): Promise<UpdateState> => {
     if (!isTauriRuntime()) {
-      return publishUpdateState(buildIdleUpdateState(currentVersion));
+      return publishUpdateCheckResult(buildIdleUpdateState(currentVersion));
     }
 
     publishUpdateState({
@@ -44,7 +63,7 @@ export function useDesktopUpdates({ announceStatus, currentVersion }: UseDesktop
       pendingUpdateRef.current = update;
 
       if (!update) {
-        return publishUpdateState({
+        return publishUpdateCheckResult({
           available: false,
           currentVersion,
           notes: "PDU Data Automation is up to date.",
@@ -52,12 +71,12 @@ export function useDesktopUpdates({ announceStatus, currentVersion }: UseDesktop
         });
       }
 
-      return publishUpdateState(updateStateFromUpdate(update, "available", currentVersion));
+      return publishUpdateCheckResult(updateStateFromUpdate(update, "available", currentVersion));
     } catch (error) {
       pendingUpdateRef.current = null;
-      return publishUpdateState(errorUpdateState(error, currentVersion));
+      return publishUpdateCheckResult(errorUpdateState(error, currentVersion));
     }
-  }, [currentVersion, publishUpdateState]);
+  }, [currentVersion, publishUpdateCheckResult, publishUpdateState]);
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -90,14 +109,25 @@ export function useDesktopUpdates({ announceStatus, currentVersion }: UseDesktop
       }
     };
 
-    runUpdateCheck();
-    const intervalId = window.setInterval(runUpdateCheck, UPDATE_CHECK_INTERVAL_MS);
-    window.addEventListener("focus", runUpdateCheck);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
+    let intervalId: number | undefined;
+    const startUpdateChecks = (): void => {
+      if (!active) {
+        return;
+      }
+
+      runUpdateCheck();
+      intervalId = window.setInterval(runUpdateCheck, UPDATE_CHECK_INTERVAL_MS);
+      window.addEventListener("focus", runUpdateCheck);
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    };
+    const startupDelayId = window.setTimeout(startUpdateChecks, INITIAL_UPDATE_CHECK_DELAY_MS);
 
     return () => {
       active = false;
-      window.clearInterval(intervalId);
+      window.clearTimeout(startupDelayId);
+      if (intervalId !== undefined) {
+        window.clearInterval(intervalId);
+      }
       window.removeEventListener("focus", runUpdateCheck);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
