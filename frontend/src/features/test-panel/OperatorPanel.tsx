@@ -46,6 +46,8 @@ type TaskFailureNotice = {
   fromRunner: boolean;
 };
 
+type BackendTaskStatusMap = Record<string, BackendTaskStatus | undefined>;
+
 function formatTime(seconds: number) {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
@@ -135,6 +137,7 @@ function findNextTaskForRunner(
   tasks: TaskItem[],
   states: Record<string, TaskState>,
   processDetectedBacklog: boolean,
+  backendTasks: BackendTaskStatusMap = {},
 ) {
   if (processDetectedBacklog) {
     const detectedTask = tasks.find((task) => {
@@ -146,6 +149,16 @@ function findNextTaskForRunner(
     if (detectedTask) {
       return detectedTask;
     }
+  }
+
+  const inProgressDetectedTask = tasks.find((task) => {
+    const state = states[task.id] ?? task.state;
+
+    return state === "detected" && detectedCsvStillInProgress(task.id, backendTasks[task.id]);
+  });
+
+  if (inProgressDetectedTask) {
+    return inProgressDetectedTask;
   }
 
   return tasks.find((task) => {
@@ -170,15 +183,28 @@ function taskDurationSeconds(taskId: string) {
 function csvWaitSecondsRemaining(
   taskId: string,
   task: BackendTaskStatus | undefined,
-  processDetectedBacklog: boolean,
 ) {
-  if (processDetectedBacklog || !task?.latest_csv_created_ms) {
+  const timerStartMs = task?.timer_start_ms ?? task?.latest_csv_created_ms;
+
+  if (!timerStartMs) {
     return 0;
   }
 
-  const elapsedSeconds = Math.floor(Math.max(0, Date.now() - task.latest_csv_created_ms) / 1000);
+  const elapsedSeconds = Math.floor(Math.max(0, Date.now() - timerStartMs) / 1000);
 
   return Math.max(0, taskDurationSeconds(taskId) - elapsedSeconds);
+}
+
+function detectedCsvStillInProgress(taskId: string, task: BackendTaskStatus | undefined) {
+  return csvWaitSecondsRemaining(taskId, task) > 0 || task?.latest_csv_readable === false;
+}
+
+function shouldProcessDetectedCsv(taskId: string, task: BackendTaskStatus | undefined) {
+  return csvWaitSecondsRemaining(taskId, task) <= 0 && task?.latest_csv_readable !== false;
+}
+
+function backendTaskStatusMap(tasks: BackendTaskStatus[]) {
+  return Object.fromEntries(tasks.map((task) => [task.task_id, task])) as BackendTaskStatusMap;
 }
 
 function remainingSecondsForStates(tasks: TaskItem[], states: Record<string, TaskState>) {
@@ -492,6 +518,7 @@ export function OperatorPanel() {
   const isRunningRef = useRef(false);
   const stopAfterCurrentTaskRef = useRef(false);
   const taskStatesRef = useRef<Record<string, TaskState>>({});
+  const latestTaskStatusesRef = useRef<BackendTaskStatusMap>({});
   const processDetectedBacklogRef = useRef<boolean | null>(null);
   const selectedFolderRef = useRef("");
   const folderScanPendingRef = useRef(false);
@@ -518,7 +545,7 @@ export function OperatorPanel() {
   const [isSettingUpReports, setIsSettingUpReports] = useState(false);
   const [backlogPrompt, setBacklogPrompt] = useState<BacklogPromptState>(null);
   const [resetClearsSelectionNext, setResetClearsSelectionNext] = useState(false);
-  const appVersion = backendStatus?.version ?? "0.2.3";
+  const appVersion = backendStatus?.version ?? "0.2.4";
   const panelItems = useMemo(() => applyTaskStates(legacyPanelItems, taskStates), [taskStates]);
   const detectedTaskCount = useMemo(
     () => Object.values(taskStates).filter((state) => state === "detected").length,
@@ -738,6 +765,7 @@ export function OperatorPanel() {
     setReportPath(summary.report_path ?? "");
     setDetectedCount(summary.detected_count);
     setSetupWarnings(summary.warnings);
+    latestTaskStatusesRef.current = backendTaskStatusMap(summary.tasks);
 
     if (replace) {
       setFailureNotices({});
@@ -953,6 +981,7 @@ export function OperatorPanel() {
         allTaskOrder,
         taskStatesRef.current,
         processDetectedBacklogRef.current === true,
+        latestTaskStatusesRef.current,
       );
 
       activateTask(nextTask?.id ?? null);
@@ -1017,6 +1046,7 @@ export function OperatorPanel() {
           allTaskOrder,
           taskStatesRef.current,
           processDetectedBacklogRef.current === true,
+          latestTaskStatusesRef.current,
         );
 
         if (!nextTask) {
@@ -1029,7 +1059,7 @@ export function OperatorPanel() {
         activateTask(nextTask.id);
         const state = taskStatesRef.current[nextTask.id] ?? nextTask.state;
 
-        if (state === "detected") {
+        if (state === "detected" && shouldProcessDetectedCsv(nextTask.id, latestTaskStatusesRef.current[nextTask.id])) {
           const resultState = await runTask(nextTask.id, true);
 
           if (
@@ -1063,13 +1093,9 @@ export function OperatorPanel() {
           applyFolderSummary(summary);
           const latestTask = summary.tasks.find((task) => task.task_id === nextTask.id);
           const latestState = latestTask?.state;
-          const csvWaitSeconds = csvWaitSecondsRemaining(
-            nextTask.id,
-            latestTask,
-            processDetectedBacklogRef.current === true,
-          );
+          const csvWaitSeconds = csvWaitSecondsRemaining(nextTask.id, latestTask);
 
-          if (latestState === "detected" && csvWaitSeconds <= 0) {
+          if (latestState === "detected" && shouldProcessDetectedCsv(nextTask.id, latestTask)) {
             const resultState = await runTask(nextTask.id, true);
 
             if (
@@ -1127,6 +1153,7 @@ export function OperatorPanel() {
     setRemainingSeconds(0);
     setProcessDetectedBacklog(null);
     processDetectedBacklogRef.current = null;
+    latestTaskStatusesRef.current = {};
     setFailureNotices({});
     activateTask(null);
     selectedFolderRef.current = selected;
@@ -1200,6 +1227,7 @@ export function OperatorPanel() {
         allTaskOrder,
         taskStatesRef.current,
         shouldProcessBacklog === true,
+        latestTaskStatusesRef.current,
       );
 
       activateTask(nextTask?.id ?? null);
@@ -1245,6 +1273,7 @@ export function OperatorPanel() {
       setIsSettingUpReports(false);
       setProcessDetectedBacklog(null);
       processDetectedBacklogRef.current = null;
+      latestTaskStatusesRef.current = {};
       setResetClearsSelectionNext(false);
       setLastMessage("");
       return;
@@ -1261,6 +1290,7 @@ export function OperatorPanel() {
     setRemainingSeconds(0);
     setProcessDetectedBacklog(null);
     processDetectedBacklogRef.current = null;
+    latestTaskStatusesRef.current = {};
     setFailureNotices({});
     activateTask(null);
     setExpandedIds(new Set());

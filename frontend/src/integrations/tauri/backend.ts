@@ -31,6 +31,8 @@ export interface BackendTaskStatus {
   detected_steps: number[];
   latest_csv: string | null;
   latest_csv_created_ms: number | null;
+  latest_csv_readable: boolean | null;
+  timer_start_ms: number | null;
 }
 
 export interface UnitFolderSummary {

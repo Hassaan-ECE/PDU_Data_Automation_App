@@ -29,14 +29,14 @@ Remaining tasks:
 Current status:
 
 - Initial Tauri 2, React, TypeScript, Vite, Tailwind, Bun, and Rust skeleton is present.
-- Version is currently `0.2.3` in `package.json`, `backend/Cargo.toml`, and `backend/tauri.conf.json`.
+- Version is currently `0.2.4` in `package.json`, `backend/Cargo.toml`, and `backend/tauri.conf.json`.
 - Frontend build, frontend test, frontend lint, Rust formatting, and Rust unit tests have been run.
-- Signed NSIS current-user installers have been built for `0.1.0`, `0.2.0`, `0.2.1`, `0.2.2`, and the CSV-readiness `0.2.3` release.
+- Signed NSIS current-user installers have been built for `0.1.0`, `0.2.0`, `0.2.1`, `0.2.2`, `0.2.3`, and the mid-test countdown `0.2.4` release.
 - A PDU-specific updater key has been generated outside the repo and the public key is configured in Tauri.
 - The `0.1.0` installer has been staged at `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation`.
-- GitHub Releases `v0.1.0`, `v0.2.0`, `v0.2.1`, `v0.2.2`, and `v0.2.3` have been published with the installer, updater signature, `latest.json`, and `SHA256SUMS.txt`.
+- GitHub Releases `v0.1.0`, `v0.2.0`, `v0.2.1`, `v0.2.2`, `v0.2.3`, and `v0.2.4` have been published with the installer, updater signature, `latest.json`, and `SHA256SUMS.txt`.
 - `latest.json` resolves and points to the uploaded GitHub release asset.
-- A real updater upgrade smoke test is pending from `v0.2.2` to `v0.2.3`. `v0.1.0` and `v0.2.0` cannot initiate the updater flow because their Tauri capability file did not grant updater permissions.
+- A real updater upgrade smoke test is pending from `v0.2.3` to `v0.2.4`. `v0.1.0` and `v0.2.0` cannot initiate the updater flow because their Tauri capability file did not grant updater permissions.
 
 Acceptance criteria:
 
@@ -136,6 +136,7 @@ Current status:
 - Processing distinguishes missing/unparsable required values from valid numeric zeroes.
 - Per-task processing returns structured state, code, message, log, report paths, and failure detail.
 - Active ATS-written CSV files now keep the task in a waiting state instead of showing an I/O-bound processing failure.
+- When starting mid-test, detected CSVs that still have nominal time remaining are treated as the current waiting task instead of skipped backlog.
 
 Remaining:
 
@@ -189,7 +190,7 @@ Current status:
 
 Remaining:
 
-- Test a real updater upgrade from `v0.2.2` to `v0.2.3` on the operator PC.
+- Test a real updater upgrade from `v0.2.3` to `v0.2.4` on the operator PC.
 - Validate uninstall and reinstall behavior on the production machine.
 - Keep the S-drive root clean as new releases are staged.
 

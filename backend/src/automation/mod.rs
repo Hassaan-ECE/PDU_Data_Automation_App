@@ -5,6 +5,7 @@ pub mod tasks;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -48,6 +49,8 @@ pub struct TaskStatus {
     pub detected_steps: Vec<u16>,
     pub latest_csv: Option<String>,
     pub latest_csv_created_ms: Option<u64>,
+    pub latest_csv_readable: Option<bool>,
+    pub timer_start_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -124,25 +127,15 @@ fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> UnitFolderSum
                 .copied()
                 .filter(|step| steps_to_paths.contains_key(step))
                 .collect::<Vec<_>>();
-            let latest_csv_info = task
-                .detection_steps
-                .iter()
-                .filter_map(|step| steps_to_paths.get(step))
-                .flat_map(|paths| paths.iter())
-                .filter_map(|path| {
-                    let metadata = path.metadata().ok()?;
-                    let modified = metadata.modified().ok()?;
-                    let created_ms = csv_start_time_millis(&metadata);
-
-                    Some((path, modified, created_ms))
-                })
-                .max_by_key(|(_, modified, _)| *modified);
+            let latest_csv_info = latest_csv_for_steps(&task.detection_steps, &steps_to_paths);
             let latest_csv = latest_csv_info
                 .as_ref()
-                .map(|(path, _, _)| path.display().to_string());
-            let latest_csv_created_ms = latest_csv_info
-                .as_ref()
-                .and_then(|(_, _, created_ms)| *created_ms);
+                .map(|info| info.path.display().to_string());
+            let latest_csv_created_ms = latest_csv_info.as_ref().and_then(|info| info.created_ms);
+            let latest_csv_readable = latest_csv_info.as_ref().map(|info| info.readable);
+            let timer_start_ms =
+                timer_start_millis_for_steps(&task.detection_steps, &steps_to_paths)
+                    .or(latest_csv_created_ms);
             let state = if detected_for_task.is_empty() {
                 "off"
             } else {
@@ -158,6 +151,8 @@ fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> UnitFolderSum
                 detected_steps: detected_for_task,
                 latest_csv,
                 latest_csv_created_ms,
+                latest_csv_readable,
+                timer_start_ms,
             }
         })
         .collect::<Vec<_>>();
@@ -171,6 +166,65 @@ fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> UnitFolderSum
         tasks,
         warnings: report_setup.warnings,
     }
+}
+
+#[derive(Debug, Clone)]
+struct CsvFileInfo {
+    path: PathBuf,
+    modified: SystemTime,
+    created_ms: Option<u64>,
+    readable: bool,
+}
+
+fn latest_csv_for_steps(
+    steps: &[u16],
+    steps_to_paths: &HashMap<u16, Vec<PathBuf>>,
+) -> Option<CsvFileInfo> {
+    steps
+        .iter()
+        .filter_map(|step| steps_to_paths.get(step))
+        .filter_map(|paths| latest_csv_for_paths(paths))
+        .max_by_key(|info| info.modified)
+}
+
+fn timer_start_millis_for_steps(
+    steps: &[u16],
+    steps_to_paths: &HashMap<u16, Vec<PathBuf>>,
+) -> Option<u64> {
+    steps.iter().find_map(|step| {
+        steps_to_paths
+            .get(step)
+            .and_then(|paths| latest_csv_for_paths(paths))
+            .and_then(|info| info.created_ms)
+    })
+}
+
+fn latest_csv_for_paths(paths: &[PathBuf]) -> Option<CsvFileInfo> {
+    paths
+        .iter()
+        .filter_map(|path| {
+            let metadata = path.metadata().ok()?;
+            let modified = metadata.modified().ok()?;
+            let created_ms = csv_start_time_millis(&metadata);
+            let readable = csv_file_is_readable(path);
+
+            Some(CsvFileInfo {
+                path: path.clone(),
+                modified,
+                created_ms,
+                readable,
+            })
+        })
+        .max_by_key(|info| info.modified)
+}
+
+fn csv_file_is_readable(path: &Path) -> bool {
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    let mut buffer = [0_u8; 1];
+
+    file.read(&mut buffer).is_ok()
 }
 
 fn csv_start_time_millis(metadata: &fs::Metadata) -> Option<u64> {
@@ -449,6 +503,29 @@ mod smoke_tests {
         assert!(error
             .to_string()
             .contains("outside the selected unit folder"));
+    }
+
+    #[test]
+    fn timer_start_prefers_first_detection_step_for_multistep_tasks() {
+        let temp = TempDir::new().expect("temp dir");
+        let step71 = temp.path().join("unit_STEP71_system.csv");
+        let step72 = temp.path().join("unit_STEP72_system.csv");
+
+        fs::write(&step71, "a,b\n1,2\n").expect("write step71");
+        fs::write(&step72, "a,b\n3,4\n").expect("write step72");
+
+        let mut steps_to_paths = HashMap::<u16, Vec<PathBuf>>::new();
+        steps_to_paths.insert(71, vec![step71.clone()]);
+        steps_to_paths.insert(72, vec![step72]);
+
+        let expected = latest_csv_for_paths(&[step71])
+            .and_then(|info| info.created_ms)
+            .expect("step71 should have a start time");
+
+        assert_eq!(
+            timer_start_millis_for_steps(&[71, 72], &steps_to_paths),
+            Some(expected)
+        );
     }
 
     #[test]
