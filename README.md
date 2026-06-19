@@ -16,13 +16,13 @@ C:\Projects\Active\PDU_Data_Automation_App
 
 ## Status
 
-`v0.2.1` is the current released pilot build. `v0.1.0` remains the first released pilot.
+`v0.2.2` is the current released pilot build. `v0.1.0` remains the first released pilot.
 
 Current release:
 
-- tag: `v0.2.1`
-- GitHub release: `https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.1`
-- S-drive installer: `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.1_x64-setup.exe`
+- tag: `v0.2.2`
+- GitHub release: `https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.2`
+- S-drive installer: `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.2_x64-setup.exe`
 
 Implemented in the pilot:
 
@@ -35,6 +35,7 @@ Implemented in the pilot:
 - faster unit-folder detection by scanning CSVs before report setup completes
 - delayed startup updater checks, unused font cleanup, and lightweight startup timing logs
 - updater plugin permissions for future in-app updates
+- three-step reset flow: collapse tests, reset current SN, then clear SN selection
 - signed NSIS installer, updater signature, `latest.json`, and release checksum publication
 
 A known-good unit folder has been run through the installed app successfully, and the generated Excel workbook opened without repair prompts. Keep the legacy app available until several production units have been processed cleanly.

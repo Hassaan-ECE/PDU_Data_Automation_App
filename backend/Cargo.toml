@@ -1,6 +1,6 @@
 [package]
 name = "pdu-data-automation-app"
-version = "0.2.1"
+version = "0.2.2"
 description = "PDU data automation desktop app"
 authors = ["Syed Hassaan Shah"]
 edition = "2021"

@@ -199,6 +199,32 @@ function detectedSetupMessage(count: number) {
     : "No completed tests detected. Setting up reports.";
 }
 
+function resetButtonLabel({
+  expandedCount,
+  hasUnitFolder,
+  isRunning,
+  clearsSelectionNext,
+}: {
+  expandedCount: number;
+  hasUnitFolder: boolean;
+  isRunning: boolean;
+  clearsSelectionNext: boolean;
+}) {
+  if (!hasUnitFolder) {
+    return "Reset Panel";
+  }
+
+  if (clearsSelectionNext) {
+    return "Clear SN";
+  }
+
+  if (!isRunning && expandedCount > 0) {
+    return "Collapse Tests";
+  }
+
+  return "Reset Current SN";
+}
+
 function panelDepthWidth(depth: number) {
   if (depth <= 0) {
     return "mx-auto w-[calc(100%_-_0.5rem)]";
@@ -473,7 +499,7 @@ export function OperatorPanel() {
   const [isSettingUpReports, setIsSettingUpReports] = useState(false);
   const [backlogPrompt, setBacklogPrompt] = useState<BacklogPromptState>(null);
   const [resetClearsSelectionNext, setResetClearsSelectionNext] = useState(false);
-  const appVersion = backendStatus?.version ?? "0.2.1";
+  const appVersion = backendStatus?.version ?? "0.2.2";
   const panelItems = useMemo(() => applyTaskStates(legacyPanelItems, taskStates), [taskStates]);
   const detectedTaskCount = useMemo(
     () => Object.values(taskStates).filter((state) => state === "detected").length,
@@ -1161,7 +1187,9 @@ export function OperatorPanel() {
     if (!unitFolder) {
       setTaskStates({});
       setFailureNotices({});
+      setExpandedIds(new Set());
       setRemainingSeconds(0);
+      setResetClearsSelectionNext(false);
       setLastMessage("");
       return;
     }
@@ -1173,6 +1201,7 @@ export function OperatorPanel() {
       setDetectedCount(0);
       setSetupWarnings([]);
       setFailureNotices({});
+      setExpandedIds(new Set());
       replaceTaskStates({});
       selectedFolderRef.current = "";
       folderScanPendingRef.current = false;
@@ -1187,6 +1216,12 @@ export function OperatorPanel() {
       return;
     }
 
+    if (!resetClearsSelectionNext && !isRunningRef.current && !processingTaskRef.current && expandedIds.size > 0) {
+      setExpandedIds(new Set());
+      setLastMessage("Collapsed all test groups. Press Reset again to reset the current SN.");
+      return;
+    }
+
     stopAfterCurrentTaskRef.current = false;
     setRunnerActive(false);
     setRemainingSeconds(0);
@@ -1194,6 +1229,7 @@ export function OperatorPanel() {
     processDetectedBacklogRef.current = null;
     setFailureNotices({});
     activateTask(null);
+    setExpandedIds(new Set());
     setResetClearsSelectionNext(true);
     setLastMessage("Refreshing unit folder");
 
@@ -1260,6 +1296,12 @@ export function OperatorPanel() {
           ? "Ready."
           : "Ready.";
   const appVersionText = `v${appVersion}`;
+  const nextResetButtonLabel = resetButtonLabel({
+    clearsSelectionNext: resetClearsSelectionNext,
+    expandedCount: expandedIds.size,
+    hasUnitFolder: Boolean(unitFolder),
+    isRunning,
+  });
 
   return (
     <main className="flex h-screen min-h-[400px] w-full min-w-[360px] max-w-full flex-col overflow-hidden bg-[#20201f] p-3.5 text-white">
@@ -1368,7 +1410,7 @@ export function OperatorPanel() {
           onClick={() => void handleResetPanel()}
           className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#3a3a38] px-3 py-2 text-[9pt] font-semibold text-white shadow-sm transition hover:bg-[#454542]"
         >
-          Reset Panel
+          {nextResetButtonLabel}
         </button>
       </div>
 

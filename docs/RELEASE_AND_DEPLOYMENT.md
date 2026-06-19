@@ -33,11 +33,11 @@ Current release root:
 
 ```text
 S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\
-  PDU Data Automation_0.2.1_x64-setup.exe
+  PDU Data Automation_0.2.2_x64-setup.exe
   release-support\
-    v0.2.1\
+    v0.2.2\
       latest.json
-      PDU Data Automation_0.2.1_x64-setup.exe.sig
+      PDU Data Automation_0.2.2_x64-setup.exe.sig
       SHA256SUMS.txt
   archive\
   shared\
@@ -61,7 +61,7 @@ Each release should publish:
 - `SHA256SUMS.txt`
 - release notes
 
-`v0.2.1` has been published with these assets. Keep this list as the checklist for future releases.
+`v0.2.2` has been published with these assets. Keep this list as the checklist for future releases.
 
 The Tauri updater endpoint should point at:
 
