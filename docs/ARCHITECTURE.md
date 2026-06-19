@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the target architecture for the rebuilt PDU Data Automation App.
+This document describes the current architecture and remaining target direction for the rebuilt PDU Data Automation App.
 
 ## Design Principles
 
@@ -10,7 +10,7 @@ This document describes the target architecture for the rebuilt PDU Data Automat
 - Make every data-processing result explicit: success, missing data, parse failure, write failure, or user-cancelled.
 - Keep release and update behavior aligned with the `TE_Component_Inventory` app.
 
-## Target Runtime Shape
+## Runtime Shape
 
 ```text
 React frontend
@@ -108,11 +108,11 @@ Do not reuse the legacy behavior where missing data can become pass.
 10. Backend returns a structured `ProcessingResult`.
 11. Frontend updates the task state and displays summary/log details.
 
-## Excel Writer Spike
+## Workbook Patching
 
-This is the main technical risk.
+The legacy app uses `openpyxl` to modify existing `.xlsx` files. The Rust backend now patches the workbook Open XML package directly for report writes.
 
-The legacy app uses `openpyxl` to modify existing `.xlsx` files. The Rust replacement must prove that its chosen approach can:
+This remains an area to validate whenever templates or report-writing logic change. The implementation must continue to:
 
 - open the current main and print report templates
 - preserve sheet names
@@ -123,13 +123,16 @@ The legacy app uses `openpyxl` to modify existing `.xlsx` files. The Rust replac
 - write numeric and text values into target cells
 - save a workbook Excel can open without repair prompts
 
-Candidate approaches:
+Current coverage:
 
-- Rust-only workbook editing with a crate that can read and write existing `.xlsx` files
-- a small dedicated sidecar only if Rust cannot safely preserve templates
-- Excel COM automation only as a last resort because it depends on installed Excel and is harder to test
+- unit tests cover patched-cell style preservation, inserted rows/cells, shared formula expansion, calc-chain removal, and workbook recalculation flags
+- the installed `v0.1.0` app processed one known-good unit and produced a workbook that opened in Excel without repair prompts
 
-The preferred direction is Rust-only if the spike passes.
+Remaining coverage:
+
+- broaden validation across more real or copied units
+- compare generated reports against legacy output cell-by-cell
+- test workbook-open-in-Excel and failure/error paths
 
 ## Configuration Boundary
 

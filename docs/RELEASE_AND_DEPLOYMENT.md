@@ -10,16 +10,14 @@ This document defines the intended release flow for the rebuilt PDU Data Automat
 - Publish signed updater metadata through GitHub Releases.
 - Avoid committing secrets or generated release artifacts.
 
-## Proposed App Identity
+## App Identity
 
-To confirm before implementation:
-
-| Field | Proposed value |
+| Field | Value |
 | --- | --- |
 | Product name | `PDU Data Automation` |
 | Repository | `https://github.com/Hassaan-ECE/PDU_Data_Automation_App` |
 | Tauri identifier | `com.te.lab.pdu-data-automation` |
-| First version | `0.1.0` |
+| First released version | `0.1.0` |
 | Installer type | Tauri NSIS, current-user install |
 | Updater | Signed Tauri updater |
 
@@ -31,7 +29,7 @@ Version should stay synchronized across:
 
 ## S-Drive Layout
 
-Confirmed first-test release root:
+Current release root:
 
 ```text
 S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\
@@ -62,6 +60,8 @@ Each release should publish:
 - `latest.json`
 - `SHA256SUMS.txt`
 - release notes
+
+`v0.1.0` has been published with these assets. Keep this list as the checklist for future releases.
 
 The Tauri updater endpoint should point at:
 
@@ -142,6 +142,8 @@ For each release candidate:
 - close and relaunch the app
 - run updater check against release metadata
 - uninstall cleanly
+
+The installed `v0.1.0` app has processed one known-good unit and produced an Excel workbook that opened without repair prompts. A real updater upgrade smoke test still requires a newer published version.
 
 ## Local Release Folder
 

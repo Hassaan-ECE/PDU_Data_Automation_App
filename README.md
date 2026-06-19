@@ -1,8 +1,8 @@
 # PDU Data Automation App
 
-Planning scaffold for the rebuilt PDU data automation desktop app.
+Released pilot build for the rebuilt PDU data automation desktop app.
 
-This repository will replace the current working legacy script bundle at:
+This repository is the pilot replacement for the current working legacy script bundle at:
 
 ```text
 C:\Projects\Active\PDU_Data_Automation
@@ -16,15 +16,25 @@ C:\Projects\Active\PDU_Data_Automation_App
 
 ## Status
 
-This repository now has an initial runnable skeleton for the rebuild:
+`v0.1.0` is the first released pilot build.
 
-- Tauri 2/Rust backend project
-- React/TypeScript/Vite/Tailwind frontend
+Current release:
+
+- commit/tag: `9f70de4` / `v0.1.0`
+- GitHub release: `https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.1.0`
+- S-drive installer: `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.1.0_x64-setup.exe`
+
+Implemented in the pilot:
+
+- Tauri 2/Rust backend and React/TypeScript/Vite/Tailwind frontend
 - Bun package workflow through `scripts/run-bun.mjs`
-- operator-panel UI shell with mock task states
-- report-layout JSON parsing and validation tests
+- operator-panel workflow with unit folder selection, timer/status area, expandable breaker groups, rerun controls, and report opening
+- active production layout profile at `config/report-layouts/pdu500.rev02.layout.json`
+- unit-folder setup, template copying/renaming, report discovery, CSV detection/parsing, and Excel workbook patching
+- built-in Rust processors for transformer, 208V/415V system, 208V/415V breaker, system burn-in, and breaker burn-in tasks
+- signed NSIS installer, updater signature, `latest.json`, and release checksum publication
 
-It is not a functional replacement for the legacy app yet. CSV processing, Excel report writing, installer signing, updater metadata, and production S-drive staging still need to be implemented and validated.
+A known-good unit folder has been run through the installed app successfully, and the generated Excel workbook opened without repair prompts. Keep the legacy app available until several production units have been processed cleanly.
 
 GitHub repository:
 
@@ -63,9 +73,9 @@ Use the same general stack as `TE_Component_Inventory`:
 - Tauri NSIS current-user installer
 - signed Tauri updater with GitHub Releases metadata
 
-The exact Rust Excel writer must be validated early. The legacy app modifies existing Excel templates with `openpyxl`; the replacement must preserve workbook formatting, formulas, merged cells, and existing sheets.
+The backend patches the Excel Open XML package directly. Any workbook/template change should be revalidated against safe copies to confirm formatting, formulas, merged cells, print settings, and existing sheets remain intact.
 
-## Proposed Project Layout
+## Project Layout
 
 ```text
 backend/                 Tauri/Rust backend source, report engine, file scanning, native commands
@@ -79,40 +89,33 @@ scripts/                 Build, release, smoke-test, and helper scripts
 
 ## Documentation Index
 
-- `docs/ARCHITECTURE.md` - target architecture and responsibilities
+- `docs/ARCHITECTURE.md` - current architecture, responsibilities, and remaining target direction
 - `docs/MIGRATION_PLAN.md` - phased plan from legacy scripts to the new app
 - `docs/LEGACY_BEHAVIOR.md` - behavior that must be preserved or intentionally corrected
 - `docs/CONFIGURATION_MODEL.md` - data-driven report layout design
 - `docs/RELEASE_AND_DEPLOYMENT.md` - GitHub, updater, S-drive, and installer plan
 - `docs/decisions/0001-adopt-tauri-react-rust.md` - stack decision record
 
-## Current Acceptance Criteria For The Rebuild
+## Remaining Work Before Broad Cutover
 
-The rebuilt app is not done until it can:
+- Run several more real or copied production unit folders, including known-good, known-fail, borderline, missing CSV, missing template, and workbook-open-in-Excel cases.
+- Compare generated reports against legacy output cell-by-cell for representative units.
+- Test a real updater upgrade path by releasing a newer version, then updating an installed `v0.1.0` app through the updater.
+- Add scrubbed fixture coverage for representative CSV/report cases so regressions are caught without private production data.
+- Harden CSV readiness handling so missing, still-writing, locked, unreadable, and stable files are reported distinctly.
+- Keep the legacy Python app as fallback during the initial pilot.
+- Optionally move more hardcoded processor cell logic into the production layout profile over time.
 
-- select a unit folder and infer or accept the unit serial number
-- copy or locate the required report templates
-- scan existing CSV files and mark matching tests as detected
-- run or process the same logical test sequence as the legacy app
-- handle 208V transformer, system, breaker, 415V transformer, system, breaker, system burn-in, and breaker burn-in data
-- write values into the correct sheets and cells using versioned layout config
-- distinguish missing data from numeric zero
-- produce clear per-step logs
-- keep the UI responsive while watching and processing files
-- build a current-user NSIS installer
-- publish/update through GitHub Release metadata
-- stage the current installer and release support files on the S-drive
+## Completed Implementation Milestones
 
-## First Implementation Milestones
-
-1. Create the Tauri/React/Bun/Rust skeleton. Initial pass complete.
-2. Build a UI shell that visually matches the legacy panel. Initial mock shell complete.
-3. Define typed test/task models and state transitions. Initial frontend model complete.
-4. Parse the example report-layout config. Initial Rust parser and validation tests complete.
-5. Spike Excel template modification in Rust against real copies of the current reports.
-6. Add CSV fixture tests for the known STEP files.
-7. Implement report writes one processor group at a time.
-8. Add installer and signed updater flow.
+1. Create the Tauri/React/Bun/Rust skeleton.
+2. Build a UI shell that visually matches the legacy panel.
+3. Define typed test/task models and state transitions.
+4. Promote the active production layout profile to `pdu500.rev02.layout.json`.
+5. Implement Excel workbook patching against copied report templates.
+6. Implement CSV detection/parsing and report writes for the current PDU500 Rev02 workflow.
+7. Add signed installer and GitHub Release updater artifacts.
+8. Stage the current installer on the S-drive.
 
 ## Current Development Commands
 

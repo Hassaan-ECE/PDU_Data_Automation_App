@@ -7,7 +7,7 @@ This plan moves the current working Python/PyQt script bundle into a maintainabl
 Acceptance criteria:
 
 - GitHub repository exists as `PDU_Data_Automation_App`.
-- This scaffold is committed.
+- Initial app and release work is committed.
 - Legacy source remains untouched and available at `C:\Projects\Active\PDU_Data_Automation`.
 - Newer verification reference remains available at `C:\Projects\Active\Data Automation Upgraded`.
 - Current legacy behavior is documented in this repo.
@@ -34,7 +34,9 @@ Current status:
 - A signed NSIS current-user installer has been built for `0.1.0`.
 - A PDU-specific updater key has been generated outside the repo and the public key is configured in Tauri.
 - The `0.1.0` installer has been staged at `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation`.
-- GitHub Release publication and real updater smoke testing are still pending.
+- GitHub Release `v0.1.0` has been published with the installer, updater signature, `latest.json`, and `SHA256SUMS.txt`.
+- `latest.json` resolves and points to the uploaded GitHub release asset.
+- A real updater upgrade smoke test is still pending because it requires a newer release than the installed `v0.1.0`.
 
 Acceptance criteria:
 
@@ -44,12 +46,12 @@ Acceptance criteria:
 - Version source is consistent across `package.json`, `backend/Cargo.toml`, and `backend/tauri.conf.json`.
 - Basic lint/test/build commands exist.
 
-Tasks:
+Completed setup work:
 
 - Add root `package.json`, `bun.lock`, TypeScript configs, Vite config, and frontend source.
 - Add backend `Cargo.toml`, Tauri config, capabilities, and Rust entry points.
-- Add app icon placeholder.
-- Add scripts for Bun and release staging.
+- Add app icon asset.
+- Add scripts for Bun and release builds.
 
 ## Phase 2 - UI Parity Shell
 
@@ -61,12 +63,15 @@ Acceptance criteria:
 - Test states are color-coded.
 - Folder selection, start, pause/resume, reset, manual rerun, and open report buttons exist.
 
-Tasks:
+Current status:
 
-- Model task sections in TypeScript.
-- Build the panel layout.
-- Add responsive sizing suitable for the existing operator station.
-- Add non-destructive mock data mode.
+- Operator panel renders the current PDU500 workflow with expandable 208V, 415V, and burn-in groups.
+- Folder selection, setup, start/pause, reset, rerun, open report, update status, and error-card controls are present.
+- Browser-only mock fallback exists for frontend development outside Tauri.
+
+Remaining:
+
+- Continue operator-machine smoke testing for screen fit, long-session readability, and failure-state ergonomics.
 
 ## Phase 3 - Layout Config Model
 
@@ -75,14 +80,19 @@ Acceptance criteria:
 - App can load and validate a report-layout config file.
 - Config describes STEP numbers, CSV source columns, scaling, report sheets, and target cells.
 - Invalid config produces clear errors.
-- No Excel writing is required yet.
 
-Tasks:
+Current status:
 
-- Define Rust and TypeScript types for layout profiles.
-- Add schema-like validation.
-- Promote the active profile to `config/report-layouts/pdu500.rev02.layout.json`.
-- Convert legacy mappings group by group.
+- Rust and TypeScript layout-summary types are present.
+- The active bundled profile is `config/report-layouts/pdu500.rev02.layout.json`.
+- The production profile validates with zero warnings and matches the 65 built-in task IDs.
+- `PDU_LAYOUT_PROFILE_PATH` can override the bundled profile for testing an edited profile.
+- Current production tasks use `processor` fields where report writing is still handled by built-in Rust processors.
+
+Remaining:
+
+- Move more hardcoded processor cell/source logic into data-driven mappings when the workflow is stable.
+- Add fixture validation for any future profile revision before making it the default.
 
 ## Phase 4 - Excel Template Spike
 
@@ -96,10 +106,19 @@ Acceptance criteria:
 
 Tasks:
 
-- Test candidate Rust workbook crates against real template copies.
-- Compare before/after workbook structure.
-- Decide final workbook writer strategy.
-- Document the decision under `docs/decisions/`.
+- Keep testing workbook patching against safe template copies.
+- Compare before/after workbook structure when templates change.
+- Document the final workbook patching decision under `docs/decisions/`.
+
+Current status:
+
+- The backend patches workbook XML directly inside the `.xlsx` package instead of using Excel automation for report writes.
+- Unit tests cover cell insertion/replacement, style preservation for patched cells, shared formula expansion, calc chain removal, and recalculation flags.
+- A known-good unit was processed through the installed `v0.1.0` app, and the generated workbook opened in Excel without repair prompts.
+
+Remaining:
+
+- Repeat workbook validation across more real or copied units, including reports with existing formulas and workbooks already open in Excel.
 
 ## Phase 5 - CSV Discovery And Processing
 
@@ -110,12 +129,18 @@ Acceptance criteria:
 - CSV parsing distinguishes missing values from numeric zero.
 - Processing returns structured results.
 
-Tasks:
+Current status:
 
-- Implement unit-folder scanning.
-- Implement CSV source parser.
-- Add fixture tests for representative CSV files.
-- Add structured logs.
+- Unit-folder scanning detects existing STEP CSV files and maps them to task states.
+- CSV parsing and required numeric extraction are implemented.
+- Processing distinguishes missing/unparsable required values from valid numeric zeroes.
+- Per-task processing returns structured state, code, message, log, report paths, and failure detail.
+
+Remaining:
+
+- Add scrubbed fixture tests for representative production CSV files.
+- Harden file readiness classification so missing, still-writing, locked, unreadable, and stable files are reported distinctly.
+- Add more structured logging around CSV selection and parse failures.
 
 ## Phase 6 - Report Writers By Section
 
@@ -129,8 +154,9 @@ Current status:
 
 - Rust processors exist for transformer, 208V/415V system, 208V/415V breaker, system burn-in, and breaker burn-in.
 - 208V and 415V breaker accuracy now preserve the upgraded Python scripts' voltage-specific rounding behavior: 208V verifies from rounded report values at 4 decimals, while 415V verifies from raw scaled values at 2 decimals.
+- The installed `v0.1.0` app has processed one known-good unit successfully, and the generated Excel report opened without repair prompts.
 
-Recommended order:
+Remaining validation order:
 
 1. Transformer checks.
 2. 208V system load tests.
@@ -152,12 +178,19 @@ Acceptance criteria:
 - S-drive root contains one obvious current installer.
 - Release support files live under a support/archive folder, not mixed with runtime data.
 
-Tasks:
+Current status:
 
-- Generate a PDU-specific updater key outside the repo.
-- Add release staging script.
-- Add manual smoke checklist.
-- Validate install, launch, update check, and uninstall.
+- A PDU-specific updater key has been generated outside the repo.
+- The public updater key is configured in Tauri.
+- The signed `v0.1.0` installer, `.sig`, `latest.json`, and checksums have been published to GitHub Release `v0.1.0`.
+- The corrected installer has been staged on the S-drive at `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation`.
+- The installed app launches without a console window.
+
+Remaining:
+
+- Test a real updater upgrade by publishing a newer version and updating an installed `v0.1.0` app.
+- Validate uninstall and reinstall behavior on the production machine.
+- Keep the S-drive root clean as new releases are staged.
 
 ## Phase 8 - Cutover
 
@@ -168,9 +201,13 @@ Acceptance criteria:
 - Legacy app remains available as fallback during initial rollout.
 - Release notes clearly describe any intentional behavior corrections.
 
-Tasks:
+Current status:
 
-- Run side-by-side report comparison.
-- Run operator smoke on the production machine.
-- Tag first release.
-- Archive the legacy app only after successful production use.
+- The installed `v0.1.0` app has been run against one known-good unit and produced a report that opened cleanly in Excel.
+
+Remaining:
+
+- Run side-by-side report comparison against legacy output for representative known-good and known-fail units.
+- Run operator smoke on the production machine across normal, warning, failure, and rerun paths.
+- Keep the legacy app available as fallback during initial pilot use.
+- Archive the legacy app only after successful production use across multiple units.

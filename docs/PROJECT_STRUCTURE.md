@@ -17,9 +17,9 @@ PDU_Data_Automation_App/
 
 ## `backend/`
 
-Planned Tauri/Rust backend.
+Tauri/Rust backend.
 
-Expected future responsibilities:
+Current responsibilities:
 
 - Tauri command handlers
 - unit-folder scanning
@@ -31,22 +31,25 @@ Expected future responsibilities:
 
 ## `frontend/`
 
-Planned React/Vite frontend.
+React/Vite frontend.
 
-Expected future responsibilities:
+Current responsibilities:
 
 - operator test panel
 - status and timer display
 - task state rendering
-- settings screens
 - log/error display
 - updater status display
+
+Possible future responsibilities:
+
+- settings screens for template path, active layout profile, and release/update controls
 
 ## `config/report-layouts/`
 
 Versioned report layout profiles.
 
-These files should describe the Excel/CSV mapping that was hardcoded in the legacy scripts.
+These files describe the production task/profile shape. The current profile uses `processor` fields for tasks whose cell/source logic still lives in Rust processors.
 
 ## `fixtures/`
 
@@ -65,9 +68,12 @@ Do not store confidential production data here.
 
 Build, smoke-test, and release helper scripts.
 
-Likely scripts:
+Current script:
 
 - Bun runner helper
+
+Possible future scripts:
+
 - release staging script
 - version consistency check
 - fixture smoke script

@@ -2,7 +2,7 @@
 
 ## Project Role
 
-This repository is the planned replacement for the legacy PDU data automation script bundle at:
+This repository is the pilot replacement for the legacy PDU data automation script bundle at:
 
 ```text
 C:\Projects\Active\PDU_Data_Automation
@@ -12,7 +12,9 @@ The goal is to preserve the current operator layout and workflow while rebuildin
 
 ## Current Status
 
-This repository now has an initial Tauri 2 / React / TypeScript / Vite / Tailwind / Bun / Rust skeleton. It is useful for frontend and architecture work, but it is not a functional replacement for the legacy Python app until CSV processing, Excel report writing, installer signing, updater metadata, and S-drive release staging are implemented and validated.
+This repository has a `v0.1.0` pilot release of the replacement app. The released build includes the Tauri 2 / React / TypeScript / Vite / Tailwind / Bun / Rust stack, the production PDU500 Rev02 layout profile, CSV detection/parsing, Excel workbook patching, built-in Rust processors for the current workflow, a signed current-user NSIS installer, GitHub Release updater artifacts, and S-drive staging.
+
+Treat it as pilot-ready, not fully cut over. Keep the legacy Python app available until several production units have been processed cleanly, generated reports have been compared against legacy output, and the updater upgrade path has been tested with a newer release.
 
 ## High-Priority Constraints
 
@@ -56,4 +58,4 @@ For meaningful changes:
 - System burn-in uses two related steps: STEP71 is the long burn-in/soak period, and STEP72 is the quick burn-in data capture used for report values.
 - `C:\Projects\Active\Data Automation Upgraded` is the stronger reference for 208V/415V system and breaker verification logic because it adds Python-side accuracy calculations and pass/fail checks.
 - Missing or unparsable CSV values must not silently become valid-looking zeroes.
-- Excel template preservation is a technical spike. Confirm that the chosen Rust Excel writer preserves the required workbook formatting, formulas, merged cells, and sheets before committing to it.
+- Excel template preservation must continue to be checked whenever workbook templates or report-writing logic change. Generated workbooks should open in Excel without repair prompts and preserve required formatting, formulas, merged cells, and sheets.
