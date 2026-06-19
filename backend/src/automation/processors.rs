@@ -749,6 +749,17 @@ fn system_thresholds_for_load(
     }
 }
 
+fn breaker_thresholds_for_load(
+    load: LoadLevel,
+    thresholds: &AccuracyThresholdConfig,
+) -> &BreakerMetricThresholds {
+    match load {
+        LoadLevel::Full => &thresholds.breaker.full_load,
+        LoadLevel::Half => &thresholds.breaker.half_load,
+        LoadLevel::Low => &thresholds.breaker.low_load,
+    }
+}
+
 fn add_system_accuracy_updates(
     updates: &mut Vec<CellUpdate>,
     values: &HashMap<String, f64>,
@@ -975,11 +986,12 @@ fn add_breaker_load_updates(
     thresholds: &AccuracyThresholdConfig,
 ) -> ProcessorAttempt<Vec<VerificationIssue>> {
     let base_row = breaker_base_row(load) + (u32::from(breaker) - 1) * 12;
+    let load_thresholds = breaker_thresholds_for_load(load, thresholds);
     let mut failures = Vec::new();
 
     for (metric_index, metric) in ["V", "I", "P", "PF"].iter().enumerate() {
         let target_row = base_row + metric_index as u32;
-        let threshold = breaker_threshold(metric, &thresholds.breaker.all_loads);
+        let threshold = breaker_threshold(metric, load_thresholds);
 
         for (phase_index, phase) in ["A", "B", "C"].iter().enumerate() {
             let meter_col = breaker_meter_columns(metric)[phase_index];
@@ -1473,8 +1485,56 @@ mod tests {
         let v415_accuracy =
             breaker_accuracy_for_verification(VoltageSet::V415, "V", raw_meter, raw_detect);
 
-        assert!(v208_accuracy > breaker_threshold("V", &thresholds.breaker.all_loads));
+        assert!(v208_accuracy > breaker_threshold("V", &thresholds.breaker.full_load));
         assert_eq!(v415_accuracy, 0.3);
-        assert!(v415_accuracy <= breaker_threshold("V", &thresholds.breaker.all_loads));
+        assert!(v415_accuracy <= breaker_threshold("V", &thresholds.breaker.full_load));
+    }
+
+    #[test]
+    fn breaker_accuracy_thresholds_follow_excel_formula_by_load() {
+        let thresholds = default_thresholds();
+
+        assert_eq!(
+            breaker_threshold(
+                "I",
+                breaker_thresholds_for_load(LoadLevel::Full, &thresholds)
+            ),
+            0.3
+        );
+        assert_eq!(
+            breaker_threshold(
+                "P",
+                breaker_thresholds_for_load(LoadLevel::Full, &thresholds)
+            ),
+            0.6
+        );
+        assert_eq!(
+            breaker_threshold(
+                "I",
+                breaker_thresholds_for_load(LoadLevel::Half, &thresholds)
+            ),
+            0.39
+        );
+        assert_eq!(
+            breaker_threshold(
+                "P",
+                breaker_thresholds_for_load(LoadLevel::Half, &thresholds)
+            ),
+            0.69
+        );
+        assert_eq!(
+            breaker_threshold(
+                "I",
+                breaker_thresholds_for_load(LoadLevel::Low, &thresholds)
+            ),
+            0.45
+        );
+        assert_eq!(
+            breaker_threshold(
+                "P",
+                breaker_thresholds_for_load(LoadLevel::Low, &thresholds)
+            ),
+            0.75
+        );
     }
 }

@@ -1,15 +1,29 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+const PROFILE_FILE_NAME: &str = "pdu500.rev02.layout.json";
+const DEFAULT_PROFILE_JSON: &str =
+    include_str!("../../../config/report-layouts/pdu500.rev02.layout.json");
+#[cfg(test)]
 const EXAMPLE_PROFILE_JSON: &str =
     include_str!("../../../config/report-layouts/pdu500.layout.example.json");
 
 #[derive(Debug, Error)]
 pub enum LayoutProfileError {
-    #[error("layout profile JSON is invalid: {0}")]
-    InvalidJson(#[from] serde_json::Error),
+    #[error("layout profile could not be read from {path}: {source}")]
+    ReadFailed {
+        path: String,
+        source: std::io::Error,
+    },
+    #[error("layout profile JSON is invalid in {path}: {source}")]
+    InvalidJson {
+        path: String,
+        source: serde_json::Error,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -59,6 +73,10 @@ pub struct TaskDefinition {
     pub id: String,
     pub label: String,
     pub step: StepNumber,
+    #[serde(default)]
+    pub detection_steps: Vec<u16>,
+    #[serde(default)]
+    pub processor: Option<String>,
     pub csv_pattern: String,
     #[serde(default)]
     pub notes: Vec<String>,
@@ -144,7 +162,12 @@ impl ValidationResult {
 
 impl ReportLayoutProfile {
     pub fn from_json(json: &str) -> Result<Self, LayoutProfileError> {
-        Ok(serde_json::from_str(json)?)
+        Self::from_json_with_path("inline layout profile".to_string(), json)
+    }
+
+    fn from_json_with_path(path: String, json: &str) -> Result<Self, LayoutProfileError> {
+        serde_json::from_str(json)
+            .map_err(|source| LayoutProfileError::InvalidJson { path, source })
     }
 
     pub fn validate(&self) -> ValidationResult {
@@ -195,8 +218,66 @@ impl ReportLayoutProfile {
     }
 }
 
-pub fn load_example_profile() -> Result<ReportLayoutProfile, LayoutProfileError> {
-    ReportLayoutProfile::from_json(EXAMPLE_PROFILE_JSON)
+pub fn load_layout_profile() -> Result<ReportLayoutProfile, LayoutProfileError> {
+    if let Some(path) = configured_profile_path() {
+        return load_from_path(path);
+    }
+
+    for path in candidate_profile_paths() {
+        if path.is_file() {
+            return load_from_path(path);
+        }
+    }
+
+    ReportLayoutProfile::from_json_with_path("built-in defaults".to_string(), DEFAULT_PROFILE_JSON)
+}
+
+fn configured_profile_path() -> Option<PathBuf> {
+    std::env::var_os("PDU_LAYOUT_PROFILE_PATH").map(PathBuf::from)
+}
+
+fn candidate_profile_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        paths.push(
+            current_dir
+                .join("config")
+                .join("report-layouts")
+                .join(PROFILE_FILE_NAME),
+        );
+        paths.push(
+            current_dir
+                .join("..")
+                .join("config")
+                .join("report-layouts")
+                .join(PROFILE_FILE_NAME),
+        );
+    }
+
+    paths.push(
+        PathBuf::from("C:/PDU500")
+            .join("config")
+            .join("report-layouts")
+            .join(PROFILE_FILE_NAME),
+    );
+
+    paths
+}
+
+fn load_from_path(path: PathBuf) -> Result<ReportLayoutProfile, LayoutProfileError> {
+    let display_path = path.display().to_string();
+    let json = fs::read_to_string(&path).map_err(|source| LayoutProfileError::ReadFailed {
+        path: display_path.clone(),
+        source,
+    })?;
+
+    ReportLayoutProfile::from_json_with_path(display_path, &json)
+}
+
+#[cfg(test)]
+fn parse_example_profile_fixture() -> Result<ReportLayoutProfile, LayoutProfileError> {
+    ReportLayoutProfile::from_json_with_path("example profile".to_string(), EXAMPLE_PROFILE_JSON)
 }
 
 fn validate_templates(templates: &ReportTemplates, result: &mut ValidationResult) {
@@ -351,13 +432,31 @@ fn validate_task<'a>(
         )),
     }
 
+    if task.detection_steps.iter().any(|step| *step == 0) {
+        result.errors.push(format!(
+            "task '{}' detection_steps must be greater than zero",
+            task.id
+        ));
+    }
+
+    let has_processor = task
+        .processor
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|processor| !processor.is_empty());
+    if task.processor.is_some() && !has_processor {
+        result
+            .errors
+            .push(format!("task '{}' processor must not be empty", task.id));
+    }
+
     if task.csv_pattern.trim().is_empty() {
         result
             .errors
             .push(format!("task '{}' csv_pattern must not be empty", task.id));
     }
 
-    if task.mappings.is_empty() {
+    if task.mappings.is_empty() && !has_processor {
         result
             .warnings
             .push(format!("task '{}' has no report mappings", task.id));
@@ -490,10 +589,42 @@ fn is_valid_cell_reference(cell: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::automation::tasks::automation_tasks;
+
+    #[test]
+    fn default_layout_profile_loads_without_warnings() {
+        let profile =
+            ReportLayoutProfile::from_json(DEFAULT_PROFILE_JSON).expect("profile should parse");
+        let validation = profile.validate();
+
+        assert!(validation.is_valid(), "{validation:#?}");
+        assert_eq!(validation.warnings, Vec::<String>::new());
+        assert_eq!(profile.profile_id, "pdu500.rev02");
+        assert_eq!(profile.task_count(), 65);
+    }
+
+    #[test]
+    fn default_layout_profile_matches_automation_task_ids() {
+        let profile =
+            ReportLayoutProfile::from_json(DEFAULT_PROFILE_JSON).expect("profile should parse");
+        let profile_task_ids = profile
+            .task_groups
+            .iter()
+            .flat_map(|group| group.tasks.iter())
+            .map(|task| task.id.as_str())
+            .collect::<HashSet<_>>();
+        let automation_tasks = automation_tasks();
+        let automation_task_ids = automation_tasks
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<HashSet<_>>();
+
+        assert_eq!(profile_task_ids, automation_task_ids);
+    }
 
     #[test]
     fn example_profile_loads_with_expected_warnings_only() {
-        let profile = load_example_profile().expect("example profile should parse");
+        let profile = parse_example_profile_fixture().expect("example profile should parse");
         let validation = profile.validate();
 
         assert!(validation.is_valid(), "{validation:#?}");
@@ -507,7 +638,7 @@ mod tests {
 
     #[test]
     fn duplicate_task_ids_are_rejected() {
-        let mut profile = load_example_profile().expect("example profile should parse");
+        let mut profile = parse_example_profile_fixture().expect("example profile should parse");
         profile.task_groups[0].tasks[1].id = profile.task_groups[0].tasks[0].id.clone();
 
         let validation = profile.validate();
@@ -521,7 +652,7 @@ mod tests {
 
     #[test]
     fn unknown_workbook_references_are_rejected() {
-        let mut profile = load_example_profile().expect("example profile should parse");
+        let mut profile = parse_example_profile_fixture().expect("example profile should parse");
         profile.task_groups[0].tasks[0].mappings[0].target.workbook = "missing".to_string();
 
         let validation = profile.validate();
@@ -535,7 +666,7 @@ mod tests {
 
     #[test]
     fn production_profiles_cannot_keep_pending_steps() {
-        let mut profile = load_example_profile().expect("example profile should parse");
+        let mut profile = parse_example_profile_fixture().expect("example profile should parse");
         profile.status = None;
 
         let validation = profile.validate();

@@ -6,6 +6,6 @@ pub use accuracy::{
     BreakerMetricThresholds, SystemMetricThresholds,
 };
 pub use profile::{
-    load_example_profile, LayoutProfileError, ProfileLoadSummary, ReportLayoutProfile,
+    load_layout_profile, LayoutProfileError, ProfileLoadSummary, ReportLayoutProfile,
     ValidationResult,
 };

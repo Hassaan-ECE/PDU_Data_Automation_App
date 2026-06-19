@@ -20,8 +20,8 @@ fn get_app_status() -> BackendStatus {
 }
 
 #[tauri::command]
-fn load_example_layout_profile() -> Result<config::ProfileLoadSummary, String> {
-    config::load_example_profile()
+fn load_layout_profile() -> Result<config::ProfileLoadSummary, String> {
+    config::load_layout_profile()
         .map(|profile| profile.to_load_summary())
         .map_err(|error| error.to_string())
 }
@@ -64,9 +64,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_app_status,
-            load_example_layout_profile,
+            load_layout_profile,
             setup_unit_folder,
             scan_unit_folder,
             process_automation_task,

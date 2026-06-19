@@ -75,12 +75,12 @@ export async function getBackendStatus(): Promise<BackendStatus | null> {
   return invoke<BackendStatus>("get_app_status");
 }
 
-export async function loadExampleLayoutProfile(): Promise<LayoutLoadResponse | null> {
+export async function loadLayoutProfile(): Promise<LayoutLoadResponse | null> {
   if (!isTauriRuntime()) {
     return null;
   }
 
-  return invoke<LayoutLoadResponse>("load_example_layout_profile");
+  return invoke<LayoutLoadResponse>("load_layout_profile");
 }
 
 export async function chooseUnitFolder(): Promise<string | null> {

@@ -31,10 +31,22 @@
     }
   },
   "breaker": {
-    "all_loads": {
+    "100_percent": {
       "voltage": 0.3,
       "current": 0.3,
       "active_power": 0.6,
+      "power_factor": 2.0
+    },
+    "50_percent": {
+      "voltage": 0.3,
+      "current": 0.39,
+      "active_power": 0.69,
+      "power_factor": 2.0
+    },
+    "20_percent": {
+      "voltage": 0.3,
+      "current": 0.45,
+      "active_power": 0.75,
       "power_factor": 2.0
     }
   }

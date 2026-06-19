@@ -18,13 +18,13 @@ Report layouts live under:
 config/report-layouts/
 ```
 
-Initial example:
+Active production profile:
 
 ```text
-config/report-layouts/pdu500.layout.example.json
+config/report-layouts/pdu500.rev02.layout.json
 ```
 
-Production profiles should use explicit names, for example:
+Reference examples should stay clearly marked as examples. Future production profiles should use explicit names, for example:
 
 ```text
 pdu500.rev02.layout.json
@@ -48,6 +48,8 @@ A layout profile should define:
 - computed accuracy rules and pass/fail thresholds
 - destination workbook, sheet, cell, and number format
 - required vs optional mappings
+
+The current production profile uses `processor` on tasks whose report writing is still handled by the built-in Rust processors. Those tasks can carry full `mappings` later as each processor is moved to data-driven layout execution.
 
 ## Suggested Shape
 
@@ -173,7 +175,7 @@ For future Excel layout changes:
 4. Run config validation.
 5. Run fixture tests against safe workbook copies.
 6. Commit the new profile.
-7. Change the app default profile only after validation.
+7. Change the app default profile only after validation, or set `PDU_LAYOUT_PROFILE_PATH` to test a profile outside the repo.
 
 ## Why JSON For Now
 

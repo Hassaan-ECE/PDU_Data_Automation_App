@@ -16,6 +16,6 @@ Current state:
 
 - Tauri command entry points are present
 - `get_app_status` exposes the app/backend version baseline
-- `load_example_layout_profile` parses and validates the example layout profile
+- `load_layout_profile` parses and validates the active production layout profile
 - Rust unit tests cover the current layout validation rules
 - CSV scanning and Excel writing are still pending

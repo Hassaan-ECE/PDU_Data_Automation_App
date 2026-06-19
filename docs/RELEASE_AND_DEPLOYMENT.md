@@ -18,7 +18,7 @@ To confirm before implementation:
 | --- | --- |
 | Product name | `PDU Data Automation` |
 | Repository | `https://github.com/Hassaan-ECE/PDU_Data_Automation_App` |
-| Tauri identifier | `com.te.pdu.data.automation` |
+| Tauri identifier | `com.te.lab.pdu-data-automation` |
 | First version | `0.1.0` |
 | Installer type | Tauri NSIS, current-user install |
 | Updater | Signed Tauri updater |
@@ -31,10 +31,10 @@ Version should stay synchronized across:
 
 ## S-Drive Layout
 
-Final path still needs confirmation. Proposed pattern:
+Confirmed first-test release root:
 
 ```text
-S:\Engineering\Public\Syed_Hassaan_Shah\InventoryApps\PDU_Data_Automation\
+S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\
   PDU Data Automation_0.1.0_x64-setup.exe
   release-support\
     v0.1.0\

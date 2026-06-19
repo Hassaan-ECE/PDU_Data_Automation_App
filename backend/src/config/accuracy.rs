@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use thiserror::Error;
 
 const ACCURACY_THRESHOLDS_FILE_NAME: &str = "pdu500.accuracy-thresholds.json";
@@ -54,9 +54,11 @@ pub struct SystemMetricThresholds {
     pub current: f64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct BreakerAccuracyThresholds {
-    pub all_loads: BreakerMetricThresholds,
+    pub full_load: BreakerMetricThresholds,
+    pub half_load: BreakerMetricThresholds,
+    pub low_load: BreakerMetricThresholds,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,6 +67,46 @@ pub struct BreakerMetricThresholds {
     pub current: f64,
     pub active_power: f64,
     pub power_factor: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawBreakerAccuracyThresholds {
+    #[serde(rename = "100_percent")]
+    full_load: Option<BreakerMetricThresholds>,
+    #[serde(rename = "50_percent")]
+    half_load: Option<BreakerMetricThresholds>,
+    #[serde(rename = "20_percent")]
+    low_load: Option<BreakerMetricThresholds>,
+    #[serde(default)]
+    all_loads: Option<BreakerMetricThresholds>,
+}
+
+impl<'de> Deserialize<'de> for BreakerAccuracyThresholds {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawBreakerAccuracyThresholds::deserialize(deserializer)?;
+        let legacy_all_loads = raw.all_loads;
+        let full_load = raw
+            .full_load
+            .or_else(|| legacy_all_loads.clone())
+            .ok_or_else(|| <D::Error as serde::de::Error>::missing_field("breaker.100_percent"))?;
+        let half_load = raw
+            .half_load
+            .or_else(|| legacy_all_loads.clone())
+            .ok_or_else(|| <D::Error as serde::de::Error>::missing_field("breaker.50_percent"))?;
+        let low_load = raw
+            .low_load
+            .or(legacy_all_loads)
+            .ok_or_else(|| <D::Error as serde::de::Error>::missing_field("breaker.20_percent"))?;
+
+        Ok(Self {
+            full_load,
+            half_load,
+            low_load,
+        })
+    }
 }
 
 impl AccuracyThresholdConfig {
@@ -102,26 +144,9 @@ impl AccuracyThresholdConfig {
         validate_system_thresholds(path, "system.100_percent", &self.system.full_load)?;
         validate_system_thresholds(path, "system.50_percent", &self.system.half_load)?;
         validate_system_thresholds(path, "system.20_percent", &self.system.low_load)?;
-        validate_threshold(
-            path,
-            "breaker.all_loads.voltage",
-            self.breaker.all_loads.voltage,
-        )?;
-        validate_threshold(
-            path,
-            "breaker.all_loads.current",
-            self.breaker.all_loads.current,
-        )?;
-        validate_threshold(
-            path,
-            "breaker.all_loads.active_power",
-            self.breaker.all_loads.active_power,
-        )?;
-        validate_threshold(
-            path,
-            "breaker.all_loads.power_factor",
-            self.breaker.all_loads.power_factor,
-        )?;
+        validate_breaker_thresholds(path, "breaker.100_percent", &self.breaker.full_load)?;
+        validate_breaker_thresholds(path, "breaker.50_percent", &self.breaker.half_load)?;
+        validate_breaker_thresholds(path, "breaker.20_percent", &self.breaker.low_load)?;
 
         Ok(())
     }
@@ -211,6 +236,25 @@ fn validate_system_thresholds(
     validate_threshold(path, &format!("{prefix}.current"), thresholds.current)
 }
 
+fn validate_breaker_thresholds(
+    path: &str,
+    prefix: &str,
+    thresholds: &BreakerMetricThresholds,
+) -> Result<(), AccuracyThresholdError> {
+    validate_threshold(path, &format!("{prefix}.voltage"), thresholds.voltage)?;
+    validate_threshold(path, &format!("{prefix}.current"), thresholds.current)?;
+    validate_threshold(
+        path,
+        &format!("{prefix}.active_power"),
+        thresholds.active_power,
+    )?;
+    validate_threshold(
+        path,
+        &format!("{prefix}.power_factor"),
+        thresholds.power_factor,
+    )
+}
+
 fn validate_threshold(path: &str, name: &str, value: f64) -> Result<(), AccuracyThresholdError> {
     if value.is_finite() && value >= 0.0 {
         return Ok(());
@@ -244,7 +288,31 @@ mod tests {
         assert_eq!(config.system.full_load.current, 0.3);
         assert_eq!(config.system.half_load.current, 0.39);
         assert_eq!(config.system.low_load.active_power, 0.75);
-        assert_eq!(config.breaker.all_loads.power_factor, 2.0);
+        assert_eq!(config.breaker.full_load.power_factor, 2.0);
+        assert_eq!(config.breaker.half_load.current, 0.39);
+        assert_eq!(config.breaker.low_load.active_power, 0.75);
+    }
+
+    #[test]
+    fn legacy_breaker_all_loads_config_is_still_accepted() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(DEFAULT_ACCURACY_THRESHOLDS_JSON).expect("valid JSON");
+        value["breaker"] = serde_json::json!({
+            "all_loads": {
+                "voltage": 0.3,
+                "current": 0.3,
+                "active_power": 0.6,
+                "power_factor": 2.0
+            }
+        });
+        let json = serde_json::to_string(&value).expect("JSON should serialize");
+
+        let config = AccuracyThresholdConfig::from_json("legacy.json".to_string(), &json)
+            .expect("legacy all_loads thresholds should parse");
+
+        assert_eq!(config.breaker.full_load.current, 0.3);
+        assert_eq!(config.breaker.half_load.current, 0.3);
+        assert_eq!(config.breaker.low_load.active_power, 0.6);
     }
 
     #[test]

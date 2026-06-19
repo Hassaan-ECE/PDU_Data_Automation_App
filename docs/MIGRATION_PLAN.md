@@ -22,8 +22,6 @@ Current status:
 
 Remaining tasks:
 
-- Confirm final app name, identifier, and S-drive release root.
-- Confirm whether the first release should be `0.1.0`.
 - Capture screenshots of the current PyQt panel for UI parity.
 
 ## Phase 1 - App Skeleton
@@ -33,8 +31,10 @@ Current status:
 - Initial Tauri 2, React, TypeScript, Vite, Tailwind, Bun, and Rust skeleton is present.
 - Version is currently `0.1.0` in `package.json`, `backend/Cargo.toml`, and `backend/tauri.conf.json`.
 - Frontend build, frontend test, frontend lint, Rust formatting, and Rust unit tests have been run.
-- A release executable has been built by Tauri, but NSIS packaging hit a local Windows file-lock error during installer creation.
-- Signed updater keys and GitHub Release metadata are still pending.
+- A signed NSIS current-user installer has been built for `0.1.0`.
+- A PDU-specific updater key has been generated outside the repo and the public key is configured in Tauri.
+- The `0.1.0` installer has been staged at `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation`.
+- GitHub Release publication and real updater smoke testing are still pending.
 
 Acceptance criteria:
 
@@ -81,7 +81,7 @@ Tasks:
 
 - Define Rust and TypeScript types for layout profiles.
 - Add schema-like validation.
-- Start with `config/report-layouts/pdu500.layout.example.json`.
+- Promote the active profile to `config/report-layouts/pdu500.rev02.layout.json`.
 - Convert legacy mappings group by group.
 
 ## Phase 4 - Excel Template Spike

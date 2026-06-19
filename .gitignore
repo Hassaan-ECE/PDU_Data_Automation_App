@@ -18,6 +18,13 @@ release/*.sig
 release/*.json
 release/*.sha256
 release/SHA256SUMS.txt
+release/**/*.exe
+release/**/*.msi
+release/**/*.zip
+release/**/*.sig
+release/**/*.json
+release/**/*.sha256
+release/**/SHA256SUMS.txt
 
 # Runtime/app data
 *.log

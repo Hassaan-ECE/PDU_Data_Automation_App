@@ -5,7 +5,7 @@ import { ExternalLink, RotateCcw, SkipForward } from "lucide-react";
 import {
   chooseUnitFolder,
   getBackendStatus,
-  loadExampleLayoutProfile,
+  loadLayoutProfile,
   openReportLocation,
   openReportPath,
   processAutomationTask,
@@ -23,6 +23,8 @@ import { cn } from "@/shared/lib/utils";
 import { stateStyles } from "./stateStyles";
 import { legacyPanelItems } from "./taskModel";
 import { isSectionItem, type PanelItem, type SectionItem, type TaskItem, type TaskState } from "./types";
+import { UpdateActionButton } from "./UpdateActionButton";
+import { useDesktopUpdates } from "./useDesktopUpdates";
 
 const DEFAULT_LOAD_DURATION_SECONDS = 3 * 60;
 const TRANSFORMER_DURATION_SECONDS = 60;
@@ -186,14 +188,14 @@ function failureNoticeFromResult(
 
 function panelDepthWidth(depth: number) {
   if (depth <= 0) {
-    return "mx-auto w-[calc(100%_-_1rem)]";
+    return "mx-auto w-[calc(100%_-_0.5rem)]";
   }
 
   if (depth === 1) {
-    return "mx-auto w-[92%]";
+    return "mx-auto w-[88%]";
   }
 
-  return "mx-auto w-[78%]";
+  return "mx-auto w-[76%]";
 }
 
 function PanelButton({
@@ -452,11 +454,17 @@ export function OperatorPanel() {
   const [setupWarnings, setSetupWarnings] = useState<string[]>([]);
   const [backlogPrompt, setBacklogPrompt] = useState<BacklogPromptState>(null);
   const [resetClearsSelectionNext, setResetClearsSelectionNext] = useState(false);
+  const appVersion = backendStatus?.version ?? "0.1.0";
   const panelItems = useMemo(() => applyTaskStates(legacyPanelItems, taskStates), [taskStates]);
   const detectedTaskCount = useMemo(
     () => Object.values(taskStates).filter((state) => state === "detected").length,
     [taskStates],
   );
+  const announceUpdateStatus = useCallback((message: string) => setLastMessage(message), []);
+  const { handleUpdateAction, updateState } = useDesktopUpdates({
+    announceStatus: announceUpdateStatus,
+    currentVersion: appVersion,
+  });
 
   const statusText = useMemo(() => {
     if (!unitFolder) {
@@ -472,7 +480,7 @@ export function OperatorPanel() {
 
   useEffect(() => {
     void getBackendStatus().then(setBackendStatus);
-    void loadExampleLayoutProfile().then(setLayoutProfile);
+    void loadLayoutProfile().then(setLayoutProfile);
   }, []);
 
   useEffect(() => {
@@ -1089,8 +1097,9 @@ export function OperatorPanel() {
       : layoutProfile?.validation.warnings.length
         ? `${layoutProfile.display_name} - ${layoutProfile.validation.warnings.length} config warning`
         : backendStatus
-          ? `Ready. v${backendStatus.version}`
+          ? "Ready."
           : "Ready.";
+  const appVersionText = `v${appVersion}`;
 
   return (
     <main className="flex h-screen min-h-[400px] w-full min-w-[360px] max-w-full flex-col overflow-hidden bg-[#20201f] p-3.5 text-white">
@@ -1173,7 +1182,11 @@ export function OperatorPanel() {
         </div>
       </section>
 
-      <div className="px-1 py-1.5 text-[8.5pt] leading-tight text-[#d8d2c8]">
+      <div className="px-1 pt-1.5">
+        <UpdateActionButton state={updateState} onClick={() => void handleUpdateAction()} />
+      </div>
+
+      <div className="px-1 pb-1.5 text-[8.5pt] leading-tight text-[#d8d2c8]">
         {serialNumber ? `SN ${serialNumber} | ${footerText}` : footerText}
       </div>
 
@@ -1198,6 +1211,13 @@ export function OperatorPanel() {
           Reset Panel
         </button>
       </div>
+
+      <footer className="mt-2 border-t border-[#454542] pt-2 text-[7.5pt] leading-tight text-[#d8d2c8]">
+        <div className="flex items-center justify-between gap-3">
+          <span>{appVersionText}</span>
+          <span className="font-medium">Built by Syed Hassaan Shah</span>
+        </div>
+      </footer>
 
       {backlogPrompt ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">

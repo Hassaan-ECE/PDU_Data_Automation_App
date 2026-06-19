@@ -1,0 +1,507 @@
+{
+  "schema_version": 1,
+  "profile_id": "pdu500.rev02",
+  "display_name": "PDU500 0.2CT Rev02",
+  "templates": {
+    "default_template_root": "C:/PDU500/00_Template",
+    "main_report_template": "PDUD500442AM088_Test Report_0.2CT_Rev02_SN##.xlsx",
+    "print_report_template": "PDUD500442AA088_0.2CT Test Report Print.xlsx"
+  },
+  "workbooks": {
+    "main": {
+      "file_pattern": "PDUD500442AM088_Test Report_0.2CT_Rev02_SN*.xlsx"
+    },
+    "print": {
+      "file_pattern": "PDUD500442AA088*.xlsx"
+    }
+  },
+  "serial_number": {
+    "folder_pattern": "^(?<serial>\\d{6,})$",
+    "metadata_files": [
+      "SN.txt",
+      "serial_number.txt",
+      "info.txt",
+      "metadata.txt"
+    ]
+  },
+  "task_groups": [
+    {
+      "id": "208v",
+      "label": "208V",
+      "tasks": [
+        {
+          "id": "208v-transformer",
+          "label": "208V Transformer Check",
+          "step": 14,
+          "processor": "transformer",
+          "csv_pattern": "*STEP14*TRANSFORMER_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-system-100% Load",
+          "label": "208V System - 100% Load",
+          "step": 15,
+          "processor": "system_accuracy",
+          "csv_pattern": "*STEP15*SYSTEM_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-system-50% Load",
+          "label": "208V System - 50% Load",
+          "step": 16,
+          "processor": "system_accuracy",
+          "csv_pattern": "*STEP16*SYSTEM_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-system-20% Load",
+          "label": "208V System - 20% Load",
+          "step": 17,
+          "processor": "system_accuracy",
+          "csv_pattern": "*STEP17*SYSTEM_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-1-100% Load",
+          "label": "208V Breaker 1 - 100% Load",
+          "step": 18,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP18*SUB_FEED_01_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-1-50% Load",
+          "label": "208V Breaker 1 - 50% Load",
+          "step": 19,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP19*SUB_FEED_01_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-1-20% Load",
+          "label": "208V Breaker 1 - 20% Load",
+          "step": 20,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP20*SUB_FEED_01_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-2-100% Load",
+          "label": "208V Breaker 2 - 100% Load",
+          "step": 21,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP21*SUB_FEED_02_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-2-50% Load",
+          "label": "208V Breaker 2 - 50% Load",
+          "step": 22,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP22*SUB_FEED_02_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-2-20% Load",
+          "label": "208V Breaker 2 - 20% Load",
+          "step": 23,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP23*SUB_FEED_02_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-3-100% Load",
+          "label": "208V Breaker 3 - 100% Load",
+          "step": 24,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP24*SUB_FEED_03_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-3-50% Load",
+          "label": "208V Breaker 3 - 50% Load",
+          "step": 25,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP25*SUB_FEED_03_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-3-20% Load",
+          "label": "208V Breaker 3 - 20% Load",
+          "step": 26,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP26*SUB_FEED_03_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-4-100% Load",
+          "label": "208V Breaker 4 - 100% Load",
+          "step": 27,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP27*SUB_FEED_04_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-4-50% Load",
+          "label": "208V Breaker 4 - 50% Load",
+          "step": 28,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP28*SUB_FEED_04_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-4-20% Load",
+          "label": "208V Breaker 4 - 20% Load",
+          "step": 29,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP29*SUB_FEED_04_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-5-100% Load",
+          "label": "208V Breaker 5 - 100% Load",
+          "step": 30,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP30*SUB_FEED_05_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-5-50% Load",
+          "label": "208V Breaker 5 - 50% Load",
+          "step": 31,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP31*SUB_FEED_05_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-5-20% Load",
+          "label": "208V Breaker 5 - 20% Load",
+          "step": 32,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP32*SUB_FEED_05_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-6-100% Load",
+          "label": "208V Breaker 6 - 100% Load",
+          "step": 33,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP33*SUB_FEED_06_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-6-50% Load",
+          "label": "208V Breaker 6 - 50% Load",
+          "step": 34,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP34*SUB_FEED_06_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-6-20% Load",
+          "label": "208V Breaker 6 - 20% Load",
+          "step": 35,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP35*SUB_FEED_06_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-7-100% Load",
+          "label": "208V Breaker 7 - 100% Load",
+          "step": 36,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP36*SUB_FEED_07_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-7-50% Load",
+          "label": "208V Breaker 7 - 50% Load",
+          "step": 37,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP37*SUB_FEED_07_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-7-20% Load",
+          "label": "208V Breaker 7 - 20% Load",
+          "step": 38,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP38*SUB_FEED_07_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-8-100% Load",
+          "label": "208V Breaker 8 - 100% Load",
+          "step": 39,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP39*SUB_FEED_08_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-8-50% Load",
+          "label": "208V Breaker 8 - 50% Load",
+          "step": 40,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP40*SUB_FEED_08_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "208v-breaker-8-20% Load",
+          "label": "208V Breaker 8 - 20% Load",
+          "step": 41,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP41*SUB_FEED_08_ACCURACY_TEST_DATA_AVG*.csv"
+        }
+      ]
+    },
+    {
+      "id": "415v",
+      "label": "415V",
+      "tasks": [
+        {
+          "id": "415v-transformer",
+          "label": "415V Transformer Check",
+          "step": 43,
+          "processor": "transformer",
+          "csv_pattern": "*STEP43*TRANSFORMER_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-system-100% Load",
+          "label": "415V System - 100% Load",
+          "step": 44,
+          "processor": "system_accuracy",
+          "csv_pattern": "*STEP44*SYSTEM_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-system-50% Load",
+          "label": "415V System - 50% Load",
+          "step": 45,
+          "processor": "system_accuracy",
+          "csv_pattern": "*STEP45*SYSTEM_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-system-20% Load",
+          "label": "415V System - 20% Load",
+          "step": 46,
+          "processor": "system_accuracy",
+          "csv_pattern": "*STEP46*SYSTEM_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-1-100% Load",
+          "label": "415V Breaker 1 - 100% Load",
+          "step": 47,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP47*SUB_FEED_01_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-1-50% Load",
+          "label": "415V Breaker 1 - 50% Load",
+          "step": 48,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP48*SUB_FEED_01_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-1-20% Load",
+          "label": "415V Breaker 1 - 20% Load",
+          "step": 49,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP49*SUB_FEED_01_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-2-100% Load",
+          "label": "415V Breaker 2 - 100% Load",
+          "step": 50,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP50*SUB_FEED_02_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-2-50% Load",
+          "label": "415V Breaker 2 - 50% Load",
+          "step": 51,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP51*SUB_FEED_02_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-2-20% Load",
+          "label": "415V Breaker 2 - 20% Load",
+          "step": 52,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP52*SUB_FEED_02_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-3-100% Load",
+          "label": "415V Breaker 3 - 100% Load",
+          "step": 53,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP53*SUB_FEED_03_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-3-50% Load",
+          "label": "415V Breaker 3 - 50% Load",
+          "step": 54,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP54*SUB_FEED_03_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-3-20% Load",
+          "label": "415V Breaker 3 - 20% Load",
+          "step": 55,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP55*SUB_FEED_03_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-4-100% Load",
+          "label": "415V Breaker 4 - 100% Load",
+          "step": 56,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP56*SUB_FEED_04_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-4-50% Load",
+          "label": "415V Breaker 4 - 50% Load",
+          "step": 57,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP57*SUB_FEED_04_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-4-20% Load",
+          "label": "415V Breaker 4 - 20% Load",
+          "step": 58,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP58*SUB_FEED_04_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-5-100% Load",
+          "label": "415V Breaker 5 - 100% Load",
+          "step": 59,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP59*SUB_FEED_05_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-5-50% Load",
+          "label": "415V Breaker 5 - 50% Load",
+          "step": 60,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP60*SUB_FEED_05_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-5-20% Load",
+          "label": "415V Breaker 5 - 20% Load",
+          "step": 61,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP61*SUB_FEED_05_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-6-100% Load",
+          "label": "415V Breaker 6 - 100% Load",
+          "step": 62,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP62*SUB_FEED_06_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-6-50% Load",
+          "label": "415V Breaker 6 - 50% Load",
+          "step": 63,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP63*SUB_FEED_06_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-6-20% Load",
+          "label": "415V Breaker 6 - 20% Load",
+          "step": 64,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP64*SUB_FEED_06_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-7-100% Load",
+          "label": "415V Breaker 7 - 100% Load",
+          "step": 65,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP65*SUB_FEED_07_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-7-50% Load",
+          "label": "415V Breaker 7 - 50% Load",
+          "step": 66,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP66*SUB_FEED_07_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-7-20% Load",
+          "label": "415V Breaker 7 - 20% Load",
+          "step": 67,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP67*SUB_FEED_07_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-8-100% Load",
+          "label": "415V Breaker 8 - 100% Load",
+          "step": 68,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP68*SUB_FEED_08_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-8-50% Load",
+          "label": "415V Breaker 8 - 50% Load",
+          "step": 69,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP69*SUB_FEED_08_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "415v-breaker-8-20% Load",
+          "label": "415V Breaker 8 - 20% Load",
+          "step": 70,
+          "processor": "breaker_accuracy",
+          "csv_pattern": "*STEP70*SUB_FEED_08_ACCURACY_TEST_DATA_AVG*.csv"
+        }
+      ]
+    },
+    {
+      "id": "burn-in",
+      "label": "Burn-In",
+      "tasks": [
+        {
+          "id": "system-burn-in",
+          "label": "System Burn-In",
+          "step": 72,
+          "detection_steps": [71, 72],
+          "processor": "system_burn_in",
+          "csv_pattern": "*STEP72*SYSTEM_ACCURACY_TEST_DATA_AVG*.csv",
+          "notes": [
+            "STEP71 is the long system burn-in/soak period.",
+            "STEP72 is the quick data capture used for report values."
+          ]
+        },
+        {
+          "id": "breaker-burn-in-1",
+          "label": "Breaker 1 Burn-In",
+          "step": 73,
+          "processor": "breaker_burn_in",
+          "csv_pattern": "*STEP73*SUB_FEED_01_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "breaker-burn-in-2",
+          "label": "Breaker 2 Burn-In",
+          "step": 74,
+          "processor": "breaker_burn_in",
+          "csv_pattern": "*STEP74*SUB_FEED_02_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "breaker-burn-in-3",
+          "label": "Breaker 3 Burn-In",
+          "step": 75,
+          "processor": "breaker_burn_in",
+          "csv_pattern": "*STEP75*SUB_FEED_03_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "breaker-burn-in-4",
+          "label": "Breaker 4 Burn-In",
+          "step": 76,
+          "processor": "breaker_burn_in",
+          "csv_pattern": "*STEP76*SUB_FEED_04_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "breaker-burn-in-5",
+          "label": "Breaker 5 Burn-In",
+          "step": 77,
+          "processor": "breaker_burn_in",
+          "csv_pattern": "*STEP77*SUB_FEED_05_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "breaker-burn-in-6",
+          "label": "Breaker 6 Burn-In",
+          "step": 78,
+          "processor": "breaker_burn_in",
+          "csv_pattern": "*STEP78*SUB_FEED_06_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "breaker-burn-in-7",
+          "label": "Breaker 7 Burn-In",
+          "step": 79,
+          "processor": "breaker_burn_in",
+          "csv_pattern": "*STEP79*SUB_FEED_07_ACCURACY_TEST_DATA_AVG*.csv"
+        },
+        {
+          "id": "breaker-burn-in-8",
+          "label": "Breaker 8 Burn-In",
+          "step": 80,
+          "processor": "breaker_burn_in",
+          "csv_pattern": "*STEP80*SUB_FEED_08_ACCURACY_TEST_DATA_AVG*.csv"
+        }
+      ]
+    }
+  ]
+}

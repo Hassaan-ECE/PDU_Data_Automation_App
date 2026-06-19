@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Test Panel",
+        "title": "PDU Data Automation",
         "width": 360,
         "height": 900,
         "minWidth": 360,
@@ -27,7 +27,7 @@
   },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": true,
     "targets": ["nsis"],
     "publisher": "Syed Hassaan Shah",
     "copyright": "Copyright (c) 2026 Syed Hassaan Shah",
@@ -36,6 +36,17 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEzQTFBRjE0MUIwQzdFMjcKUldRbmZnd2JGSytobytkRHlHU1lBYWFFQS9aRzRrOCs1eG1MT082eHF2Rlp0TUd2UysvajJwelgK",
+      "endpoints": [
+        "https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "quiet"
       }
     }
   }
