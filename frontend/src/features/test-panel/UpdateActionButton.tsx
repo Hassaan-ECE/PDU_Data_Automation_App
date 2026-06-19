@@ -8,7 +8,7 @@ interface UpdateActionButtonProps {
 }
 
 export function UpdateActionButton({ onClick, state }: UpdateActionButtonProps) {
-  if (!state.available && state.status !== "ready") {
+  if (!state.available && state.status !== "ready" && state.status !== "error") {
     return null;
   }
 

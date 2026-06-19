@@ -473,7 +473,7 @@ export function OperatorPanel() {
   const [isSettingUpReports, setIsSettingUpReports] = useState(false);
   const [backlogPrompt, setBacklogPrompt] = useState<BacklogPromptState>(null);
   const [resetClearsSelectionNext, setResetClearsSelectionNext] = useState(false);
-  const appVersion = backendStatus?.version ?? "0.2.0";
+  const appVersion = backendStatus?.version ?? "0.2.1";
   const panelItems = useMemo(() => applyTaskStates(legacyPanelItems, taskStates), [taskStates]);
   const detectedTaskCount = useMemo(
     () => Object.values(taskStates).filter((state) => state === "detected").length,
