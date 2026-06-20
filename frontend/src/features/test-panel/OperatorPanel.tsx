@@ -207,11 +207,40 @@ function backendTaskStatusMap(tasks: BackendTaskStatus[]) {
   return Object.fromEntries(tasks.map((task) => [task.task_id, task])) as BackendTaskStatusMap;
 }
 
-function remainingSecondsForStates(tasks: TaskItem[], states: Record<string, TaskState>) {
+function taskRemainingSeconds(
+  task: TaskItem,
+  state: TaskState,
+  backendTask: BackendTaskStatus | undefined,
+  isCurrentTask: boolean,
+) {
+  if (isTerminalState(state)) {
+    return 0;
+  }
+
+  const csvRemaining = csvWaitSecondsRemaining(task.id, backendTask);
+  const hasDetectedCsv = state === "detected" || backendTask?.state === "detected";
+
+  if (hasDetectedCsv) {
+    return csvRemaining;
+  }
+
+  if (isCurrentTask || state === "off" || state === "waiting" || state === "warning") {
+    return taskDurationSeconds(task.id);
+  }
+
+  return 0;
+}
+
+function remainingSecondsForTasks(
+  tasks: TaskItem[],
+  states: Record<string, TaskState>,
+  backendTasks: BackendTaskStatusMap,
+  currentTaskId: string | null,
+) {
   return tasks.reduce((total, task) => {
     const state = states[task.id] ?? task.state;
 
-    return state === "off" ? total + taskDurationSeconds(task.id) : total;
+    return total + taskRemainingSeconds(task, state, backendTasks[task.id], task.id === currentTaskId);
   }, 0);
 }
 
@@ -545,7 +574,7 @@ export function OperatorPanel() {
   const [isSettingUpReports, setIsSettingUpReports] = useState(false);
   const [backlogPrompt, setBacklogPrompt] = useState<BacklogPromptState>(null);
   const [resetClearsSelectionNext, setResetClearsSelectionNext] = useState(false);
-  const appVersion = backendStatus?.version ?? "0.2.4";
+  const appVersion = backendStatus?.version ?? "0.2.5";
   const panelItems = useMemo(() => applyTaskStates(legacyPanelItems, taskStates), [taskStates]);
   const detectedTaskCount = useMemo(
     () => Object.values(taskStates).filter((state) => state === "detected").length,
@@ -732,19 +761,34 @@ export function OperatorPanel() {
     (taskId: string | null) => {
       currentTaskIdRef.current = taskId;
       setCurrentTaskId(taskId);
+      setRemainingSeconds(
+        remainingSecondsForTasks(
+          allTaskOrder,
+          taskStatesRef.current,
+          latestTaskStatusesRef.current,
+          taskId,
+        ),
+      );
 
       if (taskId) {
         expandForTask(taskId);
       }
     },
-    [expandForTask],
+    [allTaskOrder, expandForTask],
   );
 
   const replaceTaskStates = useCallback(
     (states: Record<string, TaskState>) => {
       taskStatesRef.current = states;
       setTaskStates(states);
-      setRemainingSeconds(remainingSecondsForStates(allTaskOrder, states));
+      setRemainingSeconds(
+        remainingSecondsForTasks(
+          allTaskOrder,
+          states,
+          latestTaskStatusesRef.current,
+          currentTaskIdRef.current,
+        ),
+      );
     },
     [allTaskOrder],
   );
@@ -1080,7 +1124,6 @@ export function OperatorPanel() {
         }
 
         updateTaskState(nextTask.id, "waiting");
-        setRemainingSeconds((current) => (current > 0 ? current : taskDurationSeconds(nextTask.id)));
         setLastMessage(`Waiting for ${nextTask.label} CSV`);
 
         try {
@@ -1093,7 +1136,6 @@ export function OperatorPanel() {
           applyFolderSummary(summary);
           const latestTask = summary.tasks.find((task) => task.task_id === nextTask.id);
           const latestState = latestTask?.state;
-          const csvWaitSeconds = csvWaitSecondsRemaining(nextTask.id, latestTask);
 
           if (latestState === "detected" && shouldProcessDetectedCsv(nextTask.id, latestTask)) {
             const resultState = await runTask(nextTask.id, true);
@@ -1115,7 +1157,6 @@ export function OperatorPanel() {
             updateTaskState(nextTask.id, "waiting");
 
             if (latestState === "detected") {
-              setRemainingSeconds(csvWaitSeconds);
               setLastMessage(`Waiting for ${nextTask.label} CSV to finish`);
             }
           }
