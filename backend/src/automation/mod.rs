@@ -1,4 +1,5 @@
 mod csv_data;
+mod mapped;
 mod processors;
 mod reports;
 pub mod tasks;
@@ -13,6 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use regex::Regex;
 use serde::Serialize;
 use thiserror::Error;
+
+use crate::config::load_layout_profile;
 
 use self::csv_data::detected_steps;
 use self::processors::{FailureDetail, ProcessorResult};
@@ -85,7 +88,8 @@ pub fn process_task(
 ) -> Result<TaskProcessResult, AutomationError> {
     let unit_folder = PathBuf::from(unit_folder);
     let task = find_task(&task_id).ok_or_else(|| AutomationError::UnknownTask(task_id.clone()))?;
-    let result = processors::process_task(&task, &unit_folder);
+    let result = process_task_with_profile_mapping(&task_id, &unit_folder)
+        .unwrap_or_else(|| processors::process_task(&task, &unit_folder));
 
     Ok(to_task_process_result(task_id, result))
 }
@@ -252,6 +256,21 @@ fn to_task_process_result(task_id: String, result: ProcessorResult) -> TaskProce
         print_report_path: result.print_report_path,
         failure: result.failure,
     }
+}
+
+fn process_task_with_profile_mapping(task_id: &str, unit_folder: &Path) -> Option<ProcessorResult> {
+    let profile = load_layout_profile().ok()?;
+    let task = profile
+        .task_groups
+        .iter()
+        .flat_map(|group| group.tasks.iter())
+        .find(|task| task.id == task_id)?;
+
+    if task.mappings.is_empty() {
+        return None;
+    }
+
+    Some(mapped::process_task(&profile, task, unit_folder))
 }
 
 fn validate_report_path(unit_folder: &str, path: &str) -> Result<PathBuf, AutomationError> {

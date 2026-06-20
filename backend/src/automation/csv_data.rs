@@ -121,6 +121,35 @@ impl CsvTable {
             .ok_or_else(|| CsvDataError::Empty(self.path.display().to_string()))
     }
 
+    pub fn row_at(&self, one_based_index: u32) -> CsvResult<&[String]> {
+        let Some(zero_based_index) = one_based_index.checked_sub(1) else {
+            return Err(CsvDataError::Empty(self.path.display().to_string()));
+        };
+        let index = usize::try_from(zero_based_index)
+            .map_err(|_| CsvDataError::Empty(self.path.display().to_string()))?;
+
+        self.rows
+            .get(index)
+            .map(Vec::as_slice)
+            .ok_or_else(|| CsvDataError::Empty(self.path.display().to_string()))
+    }
+
+    pub fn last_numeric_row_after_header(&self, column: &str) -> CsvResult<&[String]> {
+        let index = excel_col_to_index(column)?;
+
+        self.rows
+            .iter()
+            .skip(1)
+            .rev()
+            .find(|row| {
+                row.get(index)
+                    .map(|value| value.trim().replace(',', "").parse::<f64>().is_ok())
+                    .unwrap_or(false)
+            })
+            .map(Vec::as_slice)
+            .ok_or_else(|| CsvDataError::Empty(self.path.display().to_string()))
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }

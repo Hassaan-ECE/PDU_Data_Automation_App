@@ -519,7 +519,7 @@ fn validate_mapping_source(
             task.id, mapping.label
         )),
         MappingRow::Index(_) => {}
-        MappingRow::Selector(selector) if selector == "last_numeric" => {}
+        MappingRow::Selector(selector) if is_supported_row_selector(selector) => {}
         MappingRow::Selector(selector) => result.errors.push(format!(
             "task '{}' mapping '{}' source row selector '{}' is not supported",
             task.id, mapping.label, selector
@@ -586,6 +586,13 @@ fn is_valid_cell_reference(cell: &str) -> bool {
         .is_ok_and(|row| row > 0)
 }
 
+fn is_supported_row_selector(selector: &str) -> bool {
+    matches!(
+        selector,
+        "first_data_after_header" | "last_data_after_header" | "last_data" | "last_numeric"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,6 +627,50 @@ mod tests {
             .collect::<HashSet<_>>();
 
         assert_eq!(profile_task_ids, automation_task_ids);
+    }
+
+    #[test]
+    fn default_transformer_tasks_define_production_mappings() {
+        let profile =
+            ReportLayoutProfile::from_json(DEFAULT_PROFILE_JSON).expect("profile should parse");
+
+        for (task_id, sheet) in [
+            ("208v-transformer", "XFMR Check_208VAC"),
+            ("415v-transformer", "XFMR Check_415VAC"),
+        ] {
+            let task = profile
+                .task_groups
+                .iter()
+                .flat_map(|group| group.tasks.iter())
+                .find(|task| task.id == task_id)
+                .expect("transformer task should exist");
+            let cells = task
+                .mappings
+                .iter()
+                .map(|mapping| {
+                    (
+                        mapping
+                            .source
+                            .as_ref()
+                            .expect("mapping source")
+                            .column
+                            .as_str(),
+                        mapping.target.sheet.as_str(),
+                        mapping.target.cell.as_str(),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                cells,
+                vec![
+                    ("Z", sheet, "B9"),
+                    ("AE", sheet, "B10"),
+                    ("BG", sheet, "B11"),
+                    ("BL", sheet, "B12"),
+                ]
+            );
+        }
     }
 
     #[test]

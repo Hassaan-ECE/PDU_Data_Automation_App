@@ -16,13 +16,13 @@ C:\Projects\Active\PDU_Data_Automation_App
 
 ## Status
 
-`v0.2.5` is the current released pilot build. `v0.1.0` remains the first released pilot.
+`v0.2.6` is the current released pilot build. `v0.1.0` remains the first released pilot.
 
 Current release:
 
-- tag: `v0.2.5`
-- GitHub release: `https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.5`
-- S-drive installer: `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.5_x64-setup.exe`
+- tag: `v0.2.6`
+- GitHub release: `https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.6`
+- S-drive installer: `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.6_x64-setup.exe`
 
 Implemented in the pilot:
 
@@ -39,6 +39,7 @@ Implemented in the pilot:
 - legacy-style CSV readiness waiting for active ATS-written files
 - mid-test countdown resume from detected CSV start time
 - total countdown uses current active-step time plus future unpassed step time
+- transformer report source columns and target cells now run from the production layout profile
 - signed NSIS installer, updater signature, `latest.json`, and release checksum publication
 
 A known-good unit folder has been run through the installed app successfully, and the generated Excel workbook opened without repair prompts. Keep the legacy app available until several production units have been processed cleanly.
@@ -111,7 +112,7 @@ scripts/                 Build, release, smoke-test, and helper scripts
 - Add scrubbed fixture coverage for representative CSV/report cases so regressions are caught without private production data.
 - Continue hardening CSV readiness diagnostics for unusual unreadable-file cases.
 - Keep the legacy Python app as fallback during the initial pilot.
-- Optionally move more hardcoded processor cell logic into the production layout profile over time.
+- Continue moving system, breaker, and burn-in processor cell logic into the production layout profile over time.
 
 ## Completed Implementation Milestones
 

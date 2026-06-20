@@ -6,6 +6,7 @@ pub use accuracy::{
     BreakerMetricThresholds, SystemMetricThresholds,
 };
 pub use profile::{
-    load_layout_profile, LayoutProfileError, ProfileLoadSummary, ReportLayoutProfile,
-    ValidationResult,
+    load_layout_profile, LayoutProfileError, MappingDefinition, MappingRow, MappingSource,
+    MappingTarget, ProfileLoadSummary, ReportLayoutProfile, StepNumber, TaskDefinition,
+    TransformDefinition, ValidationResult, WorkbookDefinition,
 };

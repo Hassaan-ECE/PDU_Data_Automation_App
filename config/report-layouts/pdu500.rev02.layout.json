@@ -34,7 +34,77 @@
           "label": "208V Transformer Check",
           "step": 14,
           "processor": "transformer",
-          "csv_pattern": "*STEP14*TRANSFORMER_TEST_DATA_AVG*.csv"
+          "csv_pattern": "*STEP14*TRANSFORMER_TEST_DATA_AVG*.csv",
+          "mappings": [
+            {
+              "label": "Usum B9",
+              "source": {
+                "column": "Z",
+                "row": "first_data_after_header",
+                "required": true
+              },
+              "transform": {
+                "round": 2
+              },
+              "target": {
+                "workbook": "main",
+                "sheet": "XFMR Check_208VAC",
+                "cell": "B9",
+                "number_format": "0.00"
+              }
+            },
+            {
+              "label": "fU1 B10",
+              "source": {
+                "column": "AE",
+                "row": "first_data_after_header",
+                "required": true
+              },
+              "transform": {
+                "round": 2
+              },
+              "target": {
+                "workbook": "main",
+                "sheet": "XFMR Check_208VAC",
+                "cell": "B10",
+                "number_format": "0.00"
+              }
+            },
+            {
+              "label": "Usum B11",
+              "source": {
+                "column": "BG",
+                "row": "first_data_after_header",
+                "required": true
+              },
+              "transform": {
+                "round": 2
+              },
+              "target": {
+                "workbook": "main",
+                "sheet": "XFMR Check_208VAC",
+                "cell": "B11",
+                "number_format": "0.00"
+              }
+            },
+            {
+              "label": "fU1 B12",
+              "source": {
+                "column": "BL",
+                "row": "first_data_after_header",
+                "required": true
+              },
+              "transform": {
+                "round": 2
+              },
+              "target": {
+                "workbook": "main",
+                "sheet": "XFMR Check_208VAC",
+                "cell": "B12",
+                "number_format": "0.00"
+              }
+            }
+          ]
         },
         {
           "id": "208v-system-100% Load",
@@ -236,7 +306,77 @@
           "label": "415V Transformer Check",
           "step": 43,
           "processor": "transformer",
-          "csv_pattern": "*STEP43*TRANSFORMER_TEST_DATA_AVG*.csv"
+          "csv_pattern": "*STEP43*TRANSFORMER_TEST_DATA_AVG*.csv",
+          "mappings": [
+            {
+              "label": "Usum B9",
+              "source": {
+                "column": "Z",
+                "row": "first_data_after_header",
+                "required": true
+              },
+              "transform": {
+                "round": 2
+              },
+              "target": {
+                "workbook": "main",
+                "sheet": "XFMR Check_415VAC",
+                "cell": "B9",
+                "number_format": "0.00"
+              }
+            },
+            {
+              "label": "fU1 B10",
+              "source": {
+                "column": "AE",
+                "row": "first_data_after_header",
+                "required": true
+              },
+              "transform": {
+                "round": 2
+              },
+              "target": {
+                "workbook": "main",
+                "sheet": "XFMR Check_415VAC",
+                "cell": "B10",
+                "number_format": "0.00"
+              }
+            },
+            {
+              "label": "Usum B11",
+              "source": {
+                "column": "BG",
+                "row": "first_data_after_header",
+                "required": true
+              },
+              "transform": {
+                "round": 2
+              },
+              "target": {
+                "workbook": "main",
+                "sheet": "XFMR Check_415VAC",
+                "cell": "B11",
+                "number_format": "0.00"
+              }
+            },
+            {
+              "label": "fU1 B12",
+              "source": {
+                "column": "BL",
+                "row": "first_data_after_header",
+                "required": true
+              },
+              "transform": {
+                "round": 2
+              },
+              "target": {
+                "workbook": "main",
+                "sheet": "XFMR Check_415VAC",
+                "cell": "B12",
+                "number_format": "0.00"
+              }
+            }
+          ]
         },
         {
           "id": "415v-system-100% Load",
