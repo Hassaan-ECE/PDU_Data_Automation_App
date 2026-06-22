@@ -49,7 +49,7 @@ A layout profile should define:
 - destination workbook, sheet, cell, and number format
 - required vs optional mappings
 
-The current production profile uses `processor` on tasks whose report writing is still handled by the built-in Rust processors. Those tasks can carry full `mappings` later as each processor is moved to data-driven layout execution.
+As of `v0.2.7`, the app has a generic data-driven mapping processor path. The current production profile uses that path for the 208V and 415V transformer report writes. System, breaker, and burn-in tasks still use built-in Rust processors as the fallback path and can carry full `mappings` later as each processor is moved to data-driven layout execution.
 
 ## Suggested Shape
 
@@ -165,6 +165,20 @@ The app should warn, not fail, when:
 - a sheet or cell only appears in optional mappings
 - a profile has unknown future fields
 
+## Future Config Candidates
+
+Some workflow values are report-layout targets and should become config-driven later. For now, the backend implements the Transformer SN setup write directly in the setup command:
+
+- Transformer SN setup target: main report workbook, `Test Summary!D1`.
+- Final operator-name target: print report workbook, `Test Report #2!E39`.
+- Error-navigation targets should be derived from the task's existing report mappings when possible, rather than duplicated in a separate map.
+
+Some values are app settings, not report-layout config:
+
+- Saved operator-name dropdown options.
+- Default behavior for opening the print dialog after a full pass.
+- New-unit detection preferences, once the reliable ATS signal is known.
+
 ## Editing Workflow
 
 For future Excel layout changes:
@@ -174,8 +188,9 @@ For future Excel layout changes:
 3. Update only changed sheet/cell/source mappings.
 4. Run config validation.
 5. Run fixture tests against safe workbook copies.
-6. Commit the new profile.
-7. Change the app default profile only after validation, or set `PDU_LAYOUT_PROFILE_PATH` to test a profile outside the repo.
+6. For mapped tasks, run a real or safe copied unit through the generic mapping path and manually inspect the written cells.
+7. Commit the new profile.
+8. Change the app default profile only after validation, or set `PDU_LAYOUT_PROFILE_PATH` to test a profile outside the repo.
 
 ## Why JSON For Now
 

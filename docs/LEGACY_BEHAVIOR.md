@@ -59,6 +59,18 @@ The current file conventions should remain supported:
 - Template directory default: `C:/PDU500/00_Template`.
 - Unit folders may contain metadata files such as `SN.txt`, `serial_number.txt`, `info.txt`, or `metadata.txt`.
 
+### Manual Excel Steps Targeted For Automation
+
+These are current manual operator steps that the replacement should automate carefully without changing the report layout:
+
+- During setup, prompt for the Transformer SN and write it to the main report workbook at `Test Summary!D1`. Backend and frontend support are implemented in the working tree; release and operator-machine validation are still pending.
+- The main report workbook is the `PDUD500442AM088_Test Report_0.2CT_Rev02` family.
+- After the full test passes, prompt for the final operator name and write it to the print report workbook at `Test Report #2!E39`.
+- The print report workbook is `PDUD500442AA088_0.2CT Test Report Print.xlsx`.
+- The final operator-name prompt may allow typed entry or a local dropdown of known operator names.
+- After writing the final operator name, open the print dialog for operator confirmation. Do not silently print without confirmation.
+- When a step fails, the app should try to open Excel at the relevant workbook context. Exact sheet/cell navigation is preferred when reliable; opening the correct workbook with a clear error message is the fallback.
+
 ### Logical Test Coverage
 
 The replacement must cover:
@@ -99,7 +111,7 @@ This is intentional:
 - STEP71 is the long system burn-in/soak period.
 - STEP72 is the quick burn-in data capture used for report values.
 
-The replacement should model both concepts clearly. The UI may show the system burn-in workflow as one operator step, but the report writer should use STEP72 data for the system burn-in report values.
+The replacement should model both concepts internally. The UI should not force operators to think in terms of STEP71 and STEP72, but it may show one burn-in workflow with the long burn-in countdown followed by the short STEP72 capture countdown. The report writer should use STEP72 data for the system burn-in report values.
 
 ### Silent Zeroes
 
@@ -132,4 +144,7 @@ The replacement should have one backend path resolution flow.
 - What should the app identifier be? Proposed: `com.te.pdu.data.automation`.
 - Should the template directory remain hardcoded by default or be user-configurable in settings?
 - Which Rust Excel writer safely preserves the current templates?
-- Should the app keep local session history, or only write per-unit logs?
+- Where should the final operator-name dropdown list be stored?
+- What ATS-created file, folder, or metadata signal is reliable enough to detect a newly started SN without switching away from an active test by mistake?
+- Can Excel sheet/cell selection and print-dialog opening be made reliable on the operator PC without making normal report writes depend on Excel automation?
+- Should the app keep local session history and manual override notes later, after the core workflow is stable?

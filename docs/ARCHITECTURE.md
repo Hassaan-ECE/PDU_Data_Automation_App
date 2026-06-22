@@ -43,8 +43,12 @@ The frontend should own operator interaction only:
 - show detected/running/pass/fail states
 - allow folder selection
 - allow start, pause, resume, reset, manual rerun, and open report actions
+- collect setup metadata such as Transformer SN
+- prompt for final operator name and print confirmation after a full pass
+- prompt before switching to a newly detected ATS-created unit/SN
 - display logs and actionable errors
 - expose settings for template path, shared release root, and active layout profile when needed
+- keep the burn-in UI as one operator workflow even if backend timing tracks the long burn-in and short data-capture periods separately
 
 The frontend should not contain Excel cell maps, CSV column maps, or report-writing logic.
 
@@ -55,15 +59,19 @@ The Rust backend should own:
 - reading app settings
 - resolving template and unit-folder paths
 - scanning unit folders for STEP CSV files
+- suggesting the latest likely ATS-created unit folder/SN for Start-time setup
 - checking if files are stable/readable
 - parsing CSV files
 - validating required columns and rows
 - computing accuracy and pass/fail checks from configured thresholds
 - loading report-layout config
+- applying data-driven report mappings when a task defines them
 - writing Excel report workbooks
+- writing setup and completion metadata, including Transformer SN and final operator name
 - writing processing logs
 - emitting task progress events to the frontend
-- opening reports or folders through native integration
+- opening reports, folders, and print dialogs through native integration
+- returning enough workbook context for the UI to open or explain failure locations
 - supporting updater and release metadata
 
 ## Core Domain Concepts
@@ -76,7 +84,23 @@ The Rust backend should own:
 | `TaskState` | UI/process state: off, detected, waiting, processing, pass, warning, fail |
 | `ProcessingResult` | Backend result with written cells, skipped cells, warnings, errors, and source files |
 | `UnitSession` | A selected unit folder plus inferred serial number, reports, discovered files, and current task state |
+| `UnitSetupMetadata` | Operator-supplied setup values such as Transformer SN |
+| `CompletionAction` | End-of-test action such as final operator-name write and print confirmation |
+| `NewUnitCandidate` | Newly detected ATS unit/SN/folder offered to the operator before switching sessions |
 | `VerificationRule` | Configured pass/fail rule for computed accuracy values |
+
+## Backend Command Contract
+
+Current setup-related commands:
+
+| Command | Purpose |
+| --- | --- |
+| `find_latest_unit_candidate` | Returns the newest likely ATS-created unit folder/SN candidate, or `candidate: null` when none is found. |
+| `setup_unit_folder_with_transformer_sn` | Runs existing setup behavior for a selected unit folder and writes Transformer SN to `Test Summary!D1`. |
+
+`find_latest_unit_candidate` should return candidate data useful to the frontend: serial number, display label, full folder path, detection source/reason, and timestamp.
+
+`setup_unit_folder_with_transformer_sn` accepts the selected unit folder, optional unit serial number, and required Transformer SN. The Transformer SN is written as text, not as a number. Known structured error codes include `blank_transformer_sn`, `workbook_locked`, `main_report_missing`, and `report_sheet_missing`.
 
 ## State Model
 
@@ -103,10 +127,27 @@ Do not reuse the legacy behavior where missing data can become pass.
 5. Backend parses required source columns and rows.
 6. Backend validates missing, nonnumeric, or out-of-range values.
 7. Backend computes configured accuracy/verification values.
-8. Backend writes mapped cells into one or more report workbooks.
+8. Backend writes mapped cells into one or more report workbooks, or falls back to the task's built-in Rust processor when that logic has not been moved into config yet.
 9. Backend saves the workbook or reports a locked-file error.
 10. Backend returns a structured `ProcessingResult`.
 11. Frontend updates the task state and displays summary/log details.
+
+Current `v0.2.7` status:
+
+- The Start-time setup prompt collects Transformer SN and writes it to `Test Summary!D1`.
+- The generic data-driven mapping processor path exists.
+- The 208V and 415V transformer report writes are driven by mappings in `config/report-layouts/pdu500.rev02.layout.json`.
+- System, breaker, and burn-in tasks still use built-in Rust processors as the fallback path.
+
+## Planned Operator Workflow Additions
+
+These additions should stay aligned with the existing operator workflow:
+
+- Setup prompt: the Start-time modal matches the previous-steps dialog style. It suggests the backend's latest unit candidate, allows `...` browse selection, collects Transformer SN, then calls `setup_unit_folder_with_transformer_sn` before continuing the normal start flow.
+- Error navigation: when a task fails, expose the best available workbook/sheet/cell context. If exact Excel navigation is unreliable, open the workbook and show a clear location summary in the app.
+- Completion prompt: after the full test passes, collect or select the final operator name, write it to `Test Report #2!E39` in the print report workbook, save, then open the print dialog for confirmation.
+- New unit detection: watch for a newly started ATS unit/SN only after the active session is idle, complete, or explicitly dismissed. The app should prompt before setup or switching sessions.
+- Burn-in timing: keep the UI as a single burn-in flow while allowing the timer to transition from the long burn-in wait to the short STEP72 capture wait.
 
 ## Workbook Patching
 
@@ -127,11 +168,12 @@ Current coverage:
 
 - unit tests cover patched-cell style preservation, inserted rows/cells, shared formula expansion, calc-chain removal, and workbook recalculation flags
 - the installed `v0.1.0` app processed one known-good unit and produced a workbook that opened in Excel without repair prompts
+- the `v0.2.6` release was smoke-tested with `C:\PDU500\262343000072`, and the generated data was manually reviewed as good
 
 Remaining coverage:
 
 - broaden validation across more real or copied units
-- compare generated reports against legacy output cell-by-cell
+- manually review generated reports against expected or legacy values when needed
 - test workbook-open-in-Excel and failure/error paths
 
 ## Configuration Boundary
@@ -163,6 +205,7 @@ Backend tests should cover:
 - report-layout config validation
 - cell-write planning without touching real files
 - workbook writes against fixture copies
+- setup metadata and completion metadata writes against fixture copies
 - locked workbook behavior where practical
 
 Frontend tests should cover:
@@ -170,6 +213,9 @@ Frontend tests should cover:
 - test-panel rendering
 - task state transitions
 - backlog/detected prompt behavior
+- setup metadata prompt behavior, including latest unit suggestion, folder browsing, Transformer SN validation, successful setup, and setup error display
+- new-unit detection prompt behavior
+- end-of-test operator-name and print-confirmation flow
 - manual rerun behavior
 - error and warning display
 - updater status display

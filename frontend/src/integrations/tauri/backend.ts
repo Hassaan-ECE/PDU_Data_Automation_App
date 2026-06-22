@@ -45,6 +45,21 @@ export interface UnitFolderSummary {
   warnings: string[];
 }
 
+export interface UnitFolderSuggestion {
+  detection_reason?: string | null;
+  detection_source?: string | null;
+  unit_folder: string;
+  serial_label?: string | null;
+  serial_number: string;
+  detected_count?: number | null;
+}
+
+interface LatestUnitCandidateResponse {
+  candidate: UnitFolderSuggestion | null;
+  searched_roots: string[];
+  warnings: string[];
+}
+
 export interface FailureLocation {
   workbook_path: string;
   sheet: string;
@@ -102,9 +117,33 @@ export async function chooseUnitFolder(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
-export async function setupUnitFolder(unitFolder: string): Promise<UnitFolderSummary | null> {
+export async function getSuggestedUnitFolder(): Promise<UnitFolderSuggestion | null> {
+  if (!isTauriRuntime()) {
+    return mockUnitFolderSuggestion();
+  }
+
+  const result = await invoke<LatestUnitCandidateResponse>("find_latest_unit_candidate");
+
+  return result.candidate;
+}
+
+export async function setupUnitFolder(
+  unitFolder: string,
+  transformerSn?: string,
+  unitSerialNumber?: string | null,
+): Promise<UnitFolderSummary | null> {
   if (!isTauriRuntime()) {
     return mockUnitFolderSummary(unitFolder);
+  }
+
+  const trimmedTransformerSn = transformerSn?.trim();
+
+  if (trimmedTransformerSn) {
+    return invoke<UnitFolderSummary>("setup_unit_folder_with_transformer_sn", {
+      transformerSn: trimmedTransformerSn,
+      unitFolder,
+      unitSerialNumber: unitSerialNumber?.trim() || null,
+    });
   }
 
   return invoke<UnitFolderSummary>("setup_unit_folder", { unitFolder });
@@ -173,5 +212,20 @@ function mockUnitFolderSummary(unitFolder: string): UnitFolderSummary {
     detected_count: 0,
     tasks: [],
     warnings: [],
+  };
+}
+
+function mockUnitFolderSuggestion(): UnitFolderSuggestion {
+  const unitFolder = "C:\\PDU500\\DEMO_20260617";
+  const folderName = unitFolder.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
+  const serialNumber = folderName.match(/\d{6,}/)?.[0] ?? "262343000072";
+
+  return {
+    detected_count: 0,
+    detection_reason: "browser mock",
+    detection_source: unitFolder,
+    serial_label: `SN ${serialNumber}`,
+    serial_number: serialNumber,
+    unit_folder: unitFolder,
   };
 }

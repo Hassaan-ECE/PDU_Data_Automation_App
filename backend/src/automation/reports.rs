@@ -98,6 +98,13 @@ impl CellUpdate {
 }
 
 pub fn setup_reports(unit_folder: &Path) -> ReportResult<ReportSetup> {
+    setup_reports_with_serial_number(unit_folder, None)
+}
+
+pub fn setup_reports_with_serial_number(
+    unit_folder: &Path,
+    serial_number_override: Option<&str>,
+) -> ReportResult<ReportSetup> {
     if !unit_folder.is_dir() {
         return Err(ReportError::UnitFolderMissing(
             unit_folder.display().to_string(),
@@ -105,7 +112,11 @@ pub fn setup_reports(unit_folder: &Path) -> ReportResult<ReportSetup> {
     }
 
     let mut warnings = Vec::new();
-    let serial_number = extract_serial_number(unit_folder);
+    let serial_number = serial_number_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| extract_serial_number(unit_folder));
     let template_root = Path::new(TEMPLATE_DIR);
     let mut reports = discover_reports(unit_folder);
     let mut touched_reports = Vec::<PathBuf>::new();
@@ -147,6 +158,24 @@ pub fn setup_reports(unit_folder: &Path) -> ReportResult<ReportSetup> {
         print_report_path: reports.print_report.map(|path| path.display().to_string()),
         warnings,
     })
+}
+
+pub fn write_transformer_serial_number(
+    unit_folder: &Path,
+    transformer_serial_number: &str,
+) -> ReportResult<PathBuf> {
+    let report_path = require_main_report(unit_folder)?;
+
+    patch_workbook(
+        &report_path,
+        &[CellUpdate::text(
+            "Test Summary",
+            "D1",
+            transformer_serial_number.to_string(),
+        )],
+    )?;
+
+    Ok(report_path)
 }
 
 pub fn inspect_reports(unit_folder: &Path) -> ReportResult<ReportSetup> {
@@ -1226,7 +1255,12 @@ fn escape_xml_text(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+    use std::io::{Read, Write};
+
     use super::*;
+    use tempfile::TempDir;
+    use zip::{ZipArchive, ZipWriter};
 
     #[test]
     fn split_cell_reference_parses_column_and_row() {
@@ -1265,6 +1299,32 @@ mod tests {
 
         assert!(a < b);
         assert!(b < d);
+    }
+
+    #[test]
+    fn transformer_serial_number_is_written_as_text() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let workbook = unit_folder.join(format!("{MAIN_REPORT_SN_PREFIX}262343000072.xlsx"));
+        write_minimal_test_summary_workbook(&workbook);
+
+        let report_path =
+            write_transformer_serial_number(&unit_folder, "TXF-000123").expect("write D1");
+
+        assert_eq!(report_path, workbook);
+
+        let mut archive = ZipArchive::new(File::open(&report_path).expect("open workbook"))
+            .expect("workbook zip");
+        let mut sheet_xml = String::new();
+        archive
+            .by_name("xl/worksheets/sheet1.xml")
+            .expect("sheet")
+            .read_to_string(&mut sheet_xml)
+            .expect("sheet xml");
+
+        assert!(sheet_xml.contains(r#"<c r="D1" t="inlineStr"><is><t>TXF-000123</t></is></c>"#));
+        assert!(!sheet_xml.contains("<v>TXF-000123</v>"));
     }
 
     #[test]
@@ -1318,5 +1378,41 @@ mod tests {
         let translated = translate_shared_formula(formula, "I11", "L13");
 
         assert_eq!(translated, "SUM($G13,K$11,$J$11,LOG10(D3))");
+    }
+
+    fn write_minimal_test_summary_workbook(path: &Path) {
+        let file = File::create(path).expect("create workbook");
+        let mut zip = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+
+        zip.start_file("[Content_Types].xml", options)
+            .expect("content types");
+        zip.write_all(
+            br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>"#,
+        )
+        .expect("write content types");
+
+        zip.start_file("xl/workbook.xml", options)
+            .expect("workbook xml");
+        zip.write_all(
+            br#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Test Summary" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+        )
+        .expect("write workbook");
+
+        zip.start_file("xl/_rels/workbook.xml.rels", options)
+            .expect("workbook rels");
+        zip.write_all(
+            br#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#,
+        )
+        .expect("write rels");
+
+        zip.start_file("xl/worksheets/sheet1.xml", options)
+            .expect("sheet xml");
+        zip.write_all(
+            br#"<worksheet><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>"#,
+        )
+        .expect("write sheet");
+
+        zip.finish().expect("finish workbook");
     }
 }

@@ -3,6 +3,7 @@ mod mapped;
 mod processors;
 mod reports;
 pub mod tasks;
+mod unit_candidates;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -19,8 +20,12 @@ use crate::config::load_layout_profile;
 
 use self::csv_data::detected_steps;
 use self::processors::{FailureDetail, ProcessorResult};
-use self::reports::{inspect_reports, setup_reports, ReportError, ReportSetup};
+use self::reports::{
+    inspect_reports, setup_reports, setup_reports_with_serial_number,
+    write_transformer_serial_number, ReportError, ReportSetup,
+};
 use self::tasks::{automation_tasks, find_task};
+pub use self::unit_candidates::{LatestUnitCandidateResult, UnitCandidate};
 
 #[derive(Debug, Error)]
 pub enum AutomationError {
@@ -30,6 +35,84 @@ pub enum AutomationError {
     UnknownTask(String),
     #[error("{0}")]
     OpenReport(String),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AutomationCommandError {
+    pub code: String,
+    pub message: String,
+    pub details: Option<String>,
+}
+
+impl AutomationCommandError {
+    fn validation(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    fn report(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        details: impl Into<String>,
+    ) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            details: Some(details.into()),
+        }
+    }
+
+    fn from_report_error(error: ReportError) -> Self {
+        match &error {
+            ReportError::Io(source) if is_locked_file_error(source) => Self::report(
+                "workbook_locked",
+                "The main report workbook is locked or open in another program. Close Excel or ATS access to the report and try again.",
+                error.to_string(),
+            ),
+            ReportError::Zip(zip::result::ZipError::Io(source))
+                if is_locked_file_error(source) =>
+            {
+                Self::report(
+                    "workbook_locked",
+                    "The main report workbook is locked or open in another program. Close Excel or ATS access to the report and try again.",
+                    error.to_string(),
+                )
+            }
+            ReportError::Io(_) => Self::report(
+                "report_io_failed",
+                "The report workbook could not be read or written.",
+                error.to_string(),
+            ),
+            ReportError::MainReportMissing(_) => Self::report(
+                "main_report_missing",
+                "The main report workbook was not found. Check the selected unit folder and report template setup.",
+                error.to_string(),
+            ),
+            ReportError::SheetMissing(sheet) => Self::report(
+                "report_sheet_missing",
+                format!("The main report workbook is missing the required sheet '{sheet}'."),
+                error.to_string(),
+            ),
+            ReportError::InvalidCell(cell) => Self::report(
+                "report_cell_invalid",
+                format!("The required report cell '{cell}' is invalid."),
+                error.to_string(),
+            ),
+            ReportError::UnitFolderMissing(_) => Self::report(
+                "unit_folder_missing",
+                "The selected unit folder does not exist.",
+                error.to_string(),
+            ),
+            _ => Self::report(
+                "report_write_failed",
+                "The Transformer SN could not be written to the report workbook.",
+                error.to_string(),
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -71,6 +154,38 @@ pub struct TaskProcessResult {
 pub fn setup_unit_folder(unit_folder: String) -> Result<UnitFolderSummary, AutomationError> {
     let unit_folder = PathBuf::from(unit_folder);
     let report_setup = setup_reports(&unit_folder)?;
+
+    Ok(build_summary(&unit_folder, report_setup))
+}
+
+pub fn find_latest_unit_candidate() -> LatestUnitCandidateResult {
+    unit_candidates::latest_unit_candidate()
+}
+
+pub fn setup_unit_folder_with_transformer_sn(
+    unit_folder: String,
+    unit_serial_number: Option<String>,
+    transformer_sn: String,
+) -> Result<UnitFolderSummary, AutomationCommandError> {
+    let transformer_sn = transformer_sn.trim();
+
+    if transformer_sn.is_empty() {
+        return Err(AutomationCommandError::validation(
+            "blank_transformer_sn",
+            "Transformer SN is required before setup can continue.",
+        ));
+    }
+
+    let unit_folder = PathBuf::from(unit_folder);
+    let unit_serial_number = unit_serial_number
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let report_setup = setup_reports_with_serial_number(&unit_folder, unit_serial_number)
+        .map_err(AutomationCommandError::from_report_error)?;
+
+    write_transformer_serial_number(&unit_folder, transformer_sn)
+        .map_err(AutomationCommandError::from_report_error)?;
 
     Ok(build_summary(&unit_folder, report_setup))
 }
@@ -229,6 +344,14 @@ fn csv_file_is_readable(path: &Path) -> bool {
     let mut buffer = [0_u8; 1];
 
     file.read(&mut buffer).is_ok()
+}
+
+fn is_locked_file_error(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(32 | 33 | 1224))
+        || matches!(
+            error.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
+        )
 }
 
 fn csv_start_time_millis(metadata: &fs::Metadata) -> Option<u64> {
@@ -474,7 +597,7 @@ fn open_excel_at_location(path: &Path, _sheet: &str, _cell: &str) -> Result<(), 
 mod smoke_tests {
     use std::fs;
     use std::fs::File;
-    use std::io::Read;
+    use std::io::{self, Read};
     use std::path::Path;
 
     use tempfile::TempDir;
@@ -545,6 +668,42 @@ mod smoke_tests {
             timer_start_millis_for_steps(&[71, 72], &steps_to_paths),
             Some(expected)
         );
+    }
+
+    #[test]
+    fn transformer_setup_rejects_blank_transformer_sn() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+
+        let error = setup_unit_folder_with_transformer_sn(
+            unit_folder.display().to_string(),
+            Some("262343000072".to_string()),
+            "   ".to_string(),
+        )
+        .expect_err("blank transformer SN should fail");
+
+        assert_eq!(error.code, "blank_transformer_sn");
+        assert!(error.message.contains("Transformer SN is required"));
+    }
+
+    #[test]
+    fn transformer_setup_maps_report_errors_to_stable_codes() {
+        let locked = AutomationCommandError::from_report_error(ReportError::Io(
+            io::Error::from_raw_os_error(32),
+        ));
+        assert_eq!(locked.code, "workbook_locked");
+
+        let missing = AutomationCommandError::from_report_error(ReportError::MainReportMissing(
+            "C:/PDU500/262343000072".to_string(),
+        ));
+        assert_eq!(missing.code, "main_report_missing");
+
+        let missing_sheet = AutomationCommandError::from_report_error(ReportError::SheetMissing(
+            "Test Summary".to_string(),
+        ));
+        assert_eq!(missing_sheet.code, "report_sheet_missing");
+        assert!(missing_sheet.message.contains("Test Summary"));
     }
 
     #[test]

@@ -4,6 +4,7 @@ import { ExternalLink, RotateCcw, SkipForward } from "lucide-react";
 
 import {
   chooseUnitFolder,
+  getSuggestedUnitFolder,
   getBackendStatus,
   loadLayoutProfile,
   openReportLocation,
@@ -18,6 +19,7 @@ import {
   type LayoutLoadResponse,
   type TaskProcessResult,
   type UnitFolderSummary,
+  type UnitFolderSuggestion,
 } from "@/integrations/tauri/backend";
 import { markStartup } from "@/shared/lib/startupTiming";
 import { cn } from "@/shared/lib/utils";
@@ -36,6 +38,22 @@ type BacklogPromptState = {
   count: number;
   resolve: (processBacklog: boolean) => void;
 } | null;
+
+type TransformerSetupPrompt = {
+  detectedCount: number | null;
+  error: string;
+  isChoosingFolder: boolean;
+  isLoadingSuggestion: boolean;
+  isSubmitting: boolean;
+  selectedFolder: string;
+  selectedSerialNumber: string;
+  startAfterConfirm: boolean;
+  suggestedFolder: string;
+  suggestedSerialNumber: string;
+  transformerSn: string;
+};
+
+type TransformerSetupPromptState = TransformerSetupPrompt | null;
 
 type TaskFailureNotice = {
   taskId: string;
@@ -267,10 +285,60 @@ function detectedReadyMessage(count: number) {
     : "Ready to start";
 }
 
-function detectedSetupMessage(count: number) {
-  return count > 0
-    ? `${count} detected test${count === 1 ? "" : "s"} ready. Setting up reports.`
-    : "No completed tests detected. Setting up reports.";
+function detectedTaskCountFromStates(states: Record<string, TaskState>) {
+  return Object.values(states).filter((state) => state === "detected").length;
+}
+
+function serialNumberFromFolder(unitFolder: string) {
+  const folderName = unitFolder.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
+
+  return folderName.match(/\d{6,}/)?.[0] ?? "";
+}
+
+function messageFromUnknownError(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (error && typeof error === "object" && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+
+    if (typeof message === "string" && message.trim()) {
+      return message;
+    }
+  }
+
+  return String(error);
+}
+
+function setupPromptFromSuggestion({
+  currentFolder,
+  currentSerialNumber,
+  startAfterConfirm,
+  suggestion,
+}: {
+  currentFolder: string;
+  currentSerialNumber: string;
+  startAfterConfirm: boolean;
+  suggestion: UnitFolderSuggestion | null;
+}): TransformerSetupPrompt {
+  const suggestedFolder = suggestion?.unit_folder ?? "";
+  const selectedFolder = currentFolder || suggestedFolder;
+  const suggestedSerialNumber = suggestion?.serial_number ?? serialNumberFromFolder(suggestedFolder);
+
+  return {
+    detectedCount: suggestion?.detected_count ?? null,
+    error: "",
+    isChoosingFolder: false,
+    isLoadingSuggestion: false,
+    isSubmitting: false,
+    selectedFolder,
+    selectedSerialNumber: currentSerialNumber || suggestion?.serial_number || serialNumberFromFolder(selectedFolder),
+    startAfterConfirm,
+    suggestedFolder,
+    suggestedSerialNumber,
+    transformerSn: "",
+  };
 }
 
 function resetButtonLabel({
@@ -425,6 +493,115 @@ function TaskFailureDialog({
   );
 }
 
+function TransformerSetupDialog({
+  prompt,
+  onBrowse,
+  onCancel,
+  onConfirm,
+  onTransformerSnChange,
+}: {
+  prompt: NonNullable<TransformerSetupPromptState>;
+  onBrowse: () => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+  onTransformerSnChange: (value: string) => void;
+}) {
+  const canConfirm = Boolean(prompt.selectedFolder.trim() && prompt.transformerSn.trim())
+    && !prompt.isChoosingFolder
+    && !prompt.isSubmitting;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
+      <section className="w-full max-w-[320px] rounded-md border border-[#454542] bg-[#292928] p-4 text-white shadow-2xl">
+        <div className="text-center text-[12pt] font-semibold leading-tight">
+          Unit Setup
+        </div>
+
+        <div className="mt-3 rounded border border-[#454542] bg-[#1f1f1e] p-2.5">
+          <div className="text-[7.5pt] font-semibold uppercase leading-tight text-[#b7b1a8]">
+            Suggested unit
+          </div>
+          <div className="mt-1 truncate text-[8.5pt] leading-tight text-white">
+            {prompt.isLoadingSuggestion
+              ? "Looking for latest unit..."
+              : prompt.suggestedSerialNumber || "No recent SN found"}
+          </div>
+          <div className="mt-1 truncate text-[7.5pt] leading-tight text-[#d8d2c8]">
+            {prompt.suggestedFolder || "Browse to select a unit folder"}
+          </div>
+        </div>
+
+        <div className="mt-3">
+          <label htmlFor="setup-unit-folder" className="text-[7.5pt] font-semibold leading-tight text-[#d8d2c8]">
+            Selected folder
+          </label>
+          <div className="mt-1 flex gap-1.5">
+            <input
+              id="setup-unit-folder"
+              readOnly
+              aria-label="Selected unit folder"
+              value={prompt.selectedFolder}
+              placeholder="No unit folder selected"
+              className="h-8 min-w-0 flex-1 rounded border border-[#454542] bg-[#1f1f1e] px-2 text-[7.5pt] text-white placeholder:text-[#b7b1a8] outline-none"
+            />
+            <button
+              type="button"
+              aria-label="Browse unit folder"
+              onClick={onBrowse}
+              disabled={prompt.isChoosingFolder || prompt.isSubmitting}
+              className="inline-flex h-8 min-w-9 shrink-0 items-center justify-center rounded bg-[#3a3a38] px-2 text-[8pt] font-semibold text-white shadow-sm transition hover:bg-[#454542] disabled:cursor-not-allowed disabled:opacity-65"
+            >
+              ...
+            </button>
+          </div>
+          <div className="mt-1 truncate text-[7.5pt] leading-tight text-[#d8d2c8]">
+            {prompt.selectedSerialNumber ? `Selected SN ${prompt.selectedSerialNumber}` : "Selected SN unavailable"}
+          </div>
+        </div>
+
+        <div className="mt-3">
+          <label htmlFor="transformer-sn" className="text-[7.5pt] font-semibold leading-tight text-[#d8d2c8]">
+            Transformer SN
+          </label>
+          <input
+            id="transformer-sn"
+            aria-label="Transformer SN"
+            autoFocus
+            value={prompt.transformerSn}
+            onChange={(event) => onTransformerSnChange(event.target.value)}
+            className="mt-1 h-8 w-full rounded border border-[#454542] bg-[#1f1f1e] px-2 text-[8.5pt] text-white placeholder:text-[#b7b1a8] outline-none focus:border-[#1f74ae] focus:ring-2 focus:ring-cyan-200/25"
+          />
+        </div>
+
+        {prompt.error ? (
+          <div className="mt-3 rounded border border-[#d42c1a] bg-[#301f22] p-2 text-[7.5pt] leading-snug text-[#d8d2c8]" role="alert">
+            {prompt.error}
+          </div>
+        ) : null}
+
+        <div className="mt-4 grid gap-2">
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={!canConfirm}
+            className="inline-flex min-h-9 items-center justify-center rounded-md bg-[#1d7f47] px-3 py-2 text-[9pt] font-semibold text-white shadow-sm transition hover:bg-[#1d7f46] disabled:cursor-not-allowed disabled:bg-[#3d4142] disabled:text-[#b7b1a8]"
+          >
+            {prompt.isSubmitting ? "Setting Up..." : "Continue"}
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={prompt.isSubmitting}
+            className="inline-flex min-h-9 items-center justify-center rounded-md bg-[#3a3a38] px-3 py-2 text-[9pt] font-semibold text-white shadow-sm transition hover:bg-[#454542] disabled:cursor-not-allowed disabled:opacity-65"
+          >
+            Cancel
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function TaskRow({
   task,
   currentTaskId,
@@ -553,6 +730,8 @@ export function OperatorPanel() {
   const folderScanPendingRef = useRef(false);
   const setupPromiseRef = useRef<Promise<boolean> | null>(null);
   const setupErrorRef = useRef<string | null>(null);
+  const setupConfirmedFolderRef = useRef("");
+  const detectedCountRef = useRef(0);
   const allTaskOrder = useMemo(() => flattenTasks(legacyPanelItems), []);
   const [unitFolder, setUnitFolder] = useState("");
   const [serialNumber, setSerialNumber] = useState("");
@@ -573,11 +752,12 @@ export function OperatorPanel() {
   const [isScanningFolder, setIsScanningFolder] = useState(false);
   const [isSettingUpReports, setIsSettingUpReports] = useState(false);
   const [backlogPrompt, setBacklogPrompt] = useState<BacklogPromptState>(null);
+  const [transformerSetupPrompt, setTransformerSetupPrompt] = useState<TransformerSetupPromptState>(null);
   const [resetClearsSelectionNext, setResetClearsSelectionNext] = useState(false);
-  const appVersion = backendStatus?.version ?? "0.2.6";
+  const appVersion = backendStatus?.version ?? "0.2.7";
   const panelItems = useMemo(() => applyTaskStates(legacyPanelItems, taskStates), [taskStates]);
   const detectedTaskCount = useMemo(
-    () => Object.values(taskStates).filter((state) => state === "detected").length,
+    () => detectedTaskCountFromStates(taskStates),
     [taskStates],
   );
   const announceUpdateStatus = useCallback((message: string) => setLastMessage(message), []);
@@ -807,6 +987,7 @@ export function OperatorPanel() {
   const applyFolderSummary = useCallback((summary: UnitFolderSummary, replace = false) => {
     setSerialNumber(summary.serial_number ?? "");
     setReportPath(summary.report_path ?? "");
+    detectedCountRef.current = summary.detected_count;
     setDetectedCount(summary.detected_count);
     setSetupWarnings(summary.warnings);
     latestTaskStatusesRef.current = backendTaskStatusMap(summary.tasks);
@@ -836,15 +1017,17 @@ export function OperatorPanel() {
   }, [replaceTaskStates]);
 
   const beginReportSetup = useCallback(
-    (selected: string) => {
+    (selected: string, transformerSn: string, unitSerialNumber: string, replace = false) => {
       setupErrorRef.current = null;
       setIsSettingUpReports(true);
 
-      const setupPromise = setupUnitFolder(selected)
+      const setupPromise = setupUnitFolder(selected, transformerSn, unitSerialNumber)
         .then((summary) => {
           if (selectedFolderRef.current !== selected) {
             return true;
           }
+
+          setupConfirmedFolderRef.current = selected;
 
           if (!summary) {
             const folderName = selected.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
@@ -854,14 +1037,15 @@ export function OperatorPanel() {
             return true;
           }
 
-          applyFolderSummary(summary);
+          applyFolderSummary(summary, replace);
           setLastMessage(detectedReadyMessage(summary.detected_count));
           return true;
         })
         .catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = messageFromUnknownError(error);
 
           if (selectedFolderRef.current === selected) {
+            setupConfirmedFolderRef.current = "";
             setupErrorRef.current = message;
             setLastMessage(message);
           }
@@ -900,6 +1084,11 @@ export function OperatorPanel() {
         return false;
       }
 
+      if (expectedFolder && setupConfirmedFolderRef.current !== expectedFolder) {
+        setLastMessage("Transformer SN setup required before starting");
+        return false;
+      }
+
       return true;
     }
 
@@ -914,7 +1103,7 @@ export function OperatorPanel() {
       setLastMessage(setupErrorRef.current);
     }
 
-    return setupOk && !setupErrorRef.current;
+    return setupOk && !setupErrorRef.current && (!expectedFolder || setupConfirmedFolderRef.current === expectedFolder);
   }, []);
 
   const runTask = useCallback(
@@ -976,7 +1165,7 @@ export function OperatorPanel() {
 
         return result.state;
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = messageFromUnknownError(error);
 
         updateTaskState(taskId, "fail");
         setFailureNotices((current) => ({
@@ -1067,7 +1256,7 @@ export function OperatorPanel() {
 
         setLastMessage("No report location is available for this error");
       } catch (error) {
-        setLastMessage(error instanceof Error ? error.message : String(error));
+        setLastMessage(messageFromUnknownError(error));
       }
     },
     [unitFolder],
@@ -1165,7 +1354,7 @@ export function OperatorPanel() {
         } catch (error) {
           setRunnerActive(false);
           updateTaskState(nextTask.id, "fail");
-          setLastMessage(error instanceof Error ? error.message : String(error));
+          setLastMessage(messageFromUnknownError(error));
           return;
         }
       }
@@ -1179,6 +1368,255 @@ export function OperatorPanel() {
       window.clearInterval(handle);
     };
   }, [activateTask, allTaskOrder, applyFolderSummary, isRunning, runTask, setRunnerActive, unitFolder, updateTaskState]);
+
+  const startSequence = useCallback(
+    async (folder: string) => {
+      stopAfterCurrentTaskRef.current = false;
+      let shouldProcessBacklog = processDetectedBacklogRef.current;
+      const promptDetectedCount =
+        detectedTaskCountFromStates(taskStatesRef.current) || detectedCountRef.current;
+
+      setResetClearsSelectionNext(false);
+
+      if (!(await ensureReportSetupReady(folder))) {
+        return;
+      }
+
+      if (shouldProcessBacklog === null && promptDetectedCount > 0) {
+        shouldProcessBacklog = await requestBacklogChoice(promptDetectedCount);
+        processDetectedBacklogRef.current = shouldProcessBacklog;
+        setProcessDetectedBacklog(shouldProcessBacklog);
+      }
+
+      const nextTask = findNextTaskForRunner(
+        allTaskOrder,
+        taskStatesRef.current,
+        shouldProcessBacklog === true,
+        latestTaskStatusesRef.current,
+      );
+
+      activateTask(nextTask?.id ?? null);
+      setLastMessage(nextTask ? "Sequence running" : "Sequence complete");
+      setRunnerActive(Boolean(nextTask));
+    },
+    [
+      activateTask,
+      allTaskOrder,
+      ensureReportSetupReady,
+      requestBacklogChoice,
+      setRunnerActive,
+    ],
+  );
+
+  const openTransformerSetupPrompt = useCallback(
+    (startAfterConfirm: boolean) => {
+      const currentFolder = selectedFolderRef.current;
+      const currentSerialNumber = serialNumber || serialNumberFromFolder(currentFolder);
+
+      setTransformerSetupPrompt({
+        ...setupPromptFromSuggestion({
+          currentFolder,
+          currentSerialNumber,
+          startAfterConfirm,
+          suggestion: null,
+        }),
+        isLoadingSuggestion: true,
+      });
+
+      void getSuggestedUnitFolder()
+        .then((suggestion) => {
+          setTransformerSetupPrompt((current) => {
+            if (!current) {
+              return current;
+            }
+
+            const suggestedFolder = suggestion?.unit_folder ?? "";
+            const suggestedSerialNumber = suggestion?.serial_number ?? serialNumberFromFolder(suggestedFolder);
+            const shouldUseSuggestion = !current.selectedFolder;
+
+            return {
+              ...current,
+              detectedCount: suggestion?.detected_count ?? current.detectedCount,
+              error: current.error,
+              isLoadingSuggestion: false,
+              selectedFolder: shouldUseSuggestion ? suggestedFolder : current.selectedFolder,
+              selectedSerialNumber: shouldUseSuggestion
+                ? suggestedSerialNumber
+                : current.selectedSerialNumber,
+              suggestedFolder,
+              suggestedSerialNumber,
+            };
+          });
+        })
+        .catch((error) => {
+          setTransformerSetupPrompt((current) =>
+            current
+              ? {
+                ...current,
+                  error: messageFromUnknownError(error),
+                  isLoadingSuggestion: false,
+                }
+              : current,
+          );
+        });
+    },
+    [serialNumber],
+  );
+
+  async function handleSetupBrowse() {
+    setTransformerSetupPrompt((current) =>
+      current
+        ? {
+            ...current,
+            error: "",
+            isChoosingFolder: true,
+          }
+        : current,
+    );
+
+    try {
+      const selected = await chooseUnitFolder();
+
+      if (!selected) {
+        return;
+      }
+
+      const fallbackSerialNumber = serialNumberFromFolder(selected);
+
+      setTransformerSetupPrompt((current) =>
+        current
+          ? {
+              ...current,
+              detectedCount: null,
+              selectedFolder: selected,
+              selectedSerialNumber: fallbackSerialNumber,
+            }
+          : current,
+      );
+
+      try {
+        const summary = await scanUnitFolder(selected);
+
+        setTransformerSetupPrompt((current) =>
+          current && current.selectedFolder === selected
+            ? {
+                ...current,
+                detectedCount: summary?.detected_count ?? current.detectedCount,
+                selectedSerialNumber: summary?.serial_number ?? fallbackSerialNumber,
+              }
+            : current,
+        );
+      } catch (error) {
+        setTransformerSetupPrompt((current) =>
+          current && current.selectedFolder === selected
+            ? {
+                ...current,
+                error: messageFromUnknownError(error),
+              }
+            : current,
+        );
+      }
+    } finally {
+      setTransformerSetupPrompt((current) =>
+        current
+          ? {
+              ...current,
+              isChoosingFolder: false,
+            }
+          : current,
+      );
+    }
+  }
+
+  async function handleTransformerSetupConfirm() {
+    const prompt = transformerSetupPrompt;
+
+    if (!prompt) {
+      return;
+    }
+
+    const selected = prompt.selectedFolder.trim();
+    const transformerSn = prompt.transformerSn.trim();
+
+    if (!selected || !transformerSn) {
+      setTransformerSetupPrompt((current) =>
+        current
+          ? {
+              ...current,
+              error: "Select a unit folder and enter the Transformer SN.",
+            }
+          : current,
+      );
+      return;
+    }
+
+    setTransformerSetupPrompt((current) =>
+      current
+        ? {
+            ...current,
+            error: "",
+            isSubmitting: true,
+          }
+        : current,
+    );
+
+    setUnitFolder(selected);
+    selectedFolderRef.current = selected;
+    setupConfirmedFolderRef.current = "";
+    setupErrorRef.current = null;
+    setupPromiseRef.current = null;
+    folderScanPendingRef.current = false;
+    latestTaskStatusesRef.current = {};
+    stopAfterCurrentTaskRef.current = false;
+    setRunnerActive(false);
+    setIsScanningFolder(false);
+    setRemainingSeconds(0);
+    detectedCountRef.current = 0;
+    setDetectedCount(0);
+    setProcessDetectedBacklog(null);
+    processDetectedBacklogRef.current = null;
+    setFailureNotices({});
+    activateTask(null);
+    setLastMessage("Setting up reports");
+
+    const setupOk = await beginReportSetup(selected, transformerSn, prompt.selectedSerialNumber, true);
+
+    if (!setupOk) {
+      setTransformerSetupPrompt((current) =>
+        current
+          ? {
+              ...current,
+              error: setupErrorRef.current || "Unit setup failed.",
+              isSubmitting: false,
+            }
+          : current,
+      );
+      return;
+    }
+
+    setTransformerSetupPrompt(null);
+
+    if (prompt.startAfterConfirm) {
+      await startSequence(selected);
+    }
+  }
+
+  function handleTransformerSetupCancel() {
+    setTransformerSetupPrompt(null);
+    setLastMessage(unitFolder ? "Ready to start" : "");
+  }
+
+  function handleTransformerSnChange(value: string) {
+    setTransformerSetupPrompt((current) =>
+      current
+        ? {
+            ...current,
+            error: "",
+            transformerSn: value,
+          }
+        : current,
+    );
+  }
 
   async function handleChooseFolder() {
     const selected = await chooseUnitFolder();
@@ -1200,6 +1638,7 @@ export function OperatorPanel() {
     selectedFolderRef.current = selected;
     setupPromiseRef.current = null;
     setupErrorRef.current = null;
+    setupConfirmedFolderRef.current = "";
     folderScanPendingRef.current = true;
     setIsScanningFolder(true);
     setIsSettingUpReports(false);
@@ -1218,14 +1657,12 @@ export function OperatorPanel() {
       if (!summary) {
         const folderName = selected.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
         setSerialNumber(folderName.match(/\d{6,}/)?.[0] ?? "");
-        setLastMessage("Setting up reports");
-        void beginReportSetup(selected);
+        setLastMessage("Ready to start");
         return;
       }
 
       applyFolderSummary(summary, true);
-      setLastMessage(detectedSetupMessage(summary.detected_count));
-      void beginReportSetup(selected);
+      setLastMessage(detectedReadyMessage(summary.detected_count));
     } catch (error) {
       if (selectedFolderRef.current !== selected) {
         return;
@@ -1235,45 +1672,25 @@ export function OperatorPanel() {
       setIsScanningFolder(false);
       setTaskStates({});
       setFailureNotices({});
-      setLastMessage(error instanceof Error ? error.message : String(error));
+      setLastMessage(messageFromUnknownError(error));
     }
   }
 
   async function handleRunClick() {
     if (!unitFolder) {
-      void handleChooseFolder();
+      openTransformerSetupPrompt(true);
       return;
     }
 
     const nextRunning = !isRunningRef.current;
 
     if (nextRunning) {
-      stopAfterCurrentTaskRef.current = false;
-      let shouldProcessBacklog = processDetectedBacklogRef.current;
-      const promptDetectedCount = detectedTaskCount || detectedCount;
-
-      setResetClearsSelectionNext(false);
-
-      if (!(await ensureReportSetupReady(unitFolder))) {
+      if (setupConfirmedFolderRef.current !== unitFolder) {
+        openTransformerSetupPrompt(true);
         return;
       }
 
-      if (shouldProcessBacklog === null && promptDetectedCount > 0) {
-        shouldProcessBacklog = await requestBacklogChoice(promptDetectedCount);
-        processDetectedBacklogRef.current = shouldProcessBacklog;
-        setProcessDetectedBacklog(shouldProcessBacklog);
-      }
-
-      const nextTask = findNextTaskForRunner(
-        allTaskOrder,
-        taskStatesRef.current,
-        shouldProcessBacklog === true,
-        latestTaskStatusesRef.current,
-      );
-
-      activateTask(nextTask?.id ?? null);
-      setLastMessage(nextTask ? "Sequence running" : "Sequence complete");
-      setRunnerActive(Boolean(nextTask));
+      await startSequence(unitFolder);
     } else {
       if (processingTaskRef.current) {
         stopAfterCurrentTaskRef.current = true;
@@ -1293,6 +1710,7 @@ export function OperatorPanel() {
       setExpandedIds(new Set());
       setRemainingSeconds(0);
       setResetClearsSelectionNext(false);
+      setupConfirmedFolderRef.current = "";
       setLastMessage("");
       return;
     }
@@ -1301,6 +1719,7 @@ export function OperatorPanel() {
       setUnitFolder("");
       setSerialNumber("");
       setReportPath("");
+      detectedCountRef.current = 0;
       setDetectedCount(0);
       setSetupWarnings([]);
       setFailureNotices({});
@@ -1310,6 +1729,7 @@ export function OperatorPanel() {
       folderScanPendingRef.current = false;
       setupPromiseRef.current = null;
       setupErrorRef.current = null;
+      setupConfirmedFolderRef.current = "";
       setIsScanningFolder(false);
       setIsSettingUpReports(false);
       setProcessDetectedBacklog(null);
@@ -1331,6 +1751,7 @@ export function OperatorPanel() {
     setRemainingSeconds(0);
     setProcessDetectedBacklog(null);
     processDetectedBacklogRef.current = null;
+    setupConfirmedFolderRef.current = "";
     latestTaskStatusesRef.current = {};
     setFailureNotices({});
     activateTask(null);
@@ -1350,7 +1771,7 @@ export function OperatorPanel() {
         );
       }
     } catch (error) {
-      setLastMessage(error instanceof Error ? error.message : String(error));
+      setLastMessage(messageFromUnknownError(error));
     }
   }
 
@@ -1369,7 +1790,7 @@ export function OperatorPanel() {
       await openReportPath(unitFolder, reportPath);
       setLastMessage("Opened report");
     } catch (error) {
-      setLastMessage(error instanceof Error ? error.message : String(error));
+      setLastMessage(messageFromUnknownError(error));
     }
   }
 
@@ -1525,6 +1946,16 @@ export function OperatorPanel() {
           <span className="font-medium">Built by Syed Hassaan Shah</span>
         </div>
       </footer>
+
+      {transformerSetupPrompt ? (
+        <TransformerSetupDialog
+          prompt={transformerSetupPrompt}
+          onBrowse={() => void handleSetupBrowse()}
+          onCancel={handleTransformerSetupCancel}
+          onConfirm={() => void handleTransformerSetupConfirm()}
+          onTransformerSnChange={handleTransformerSnChange}
+        />
+      ) : null}
 
       {backlogPrompt ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">

@@ -43,6 +43,24 @@ fn setup_unit_folder(unit_folder: String) -> Result<automation::UnitFolderSummar
 }
 
 #[tauri::command]
+fn find_latest_unit_candidate() -> automation::LatestUnitCandidateResult {
+    automation::find_latest_unit_candidate()
+}
+
+#[tauri::command]
+fn setup_unit_folder_with_transformer_sn(
+    unit_folder: String,
+    unit_serial_number: Option<String>,
+    transformer_sn: String,
+) -> Result<automation::UnitFolderSummary, automation::AutomationCommandError> {
+    automation::setup_unit_folder_with_transformer_sn(
+        unit_folder,
+        unit_serial_number,
+        transformer_sn,
+    )
+}
+
+#[tauri::command]
 fn scan_unit_folder(unit_folder: String) -> Result<automation::UnitFolderSummary, String> {
     automation::scan_unit_folder(unit_folder).map_err(|error| error.to_string())
 }
@@ -86,6 +104,8 @@ pub fn run() {
             get_app_status,
             load_layout_profile,
             setup_unit_folder,
+            find_latest_unit_candidate,
+            setup_unit_folder_with_transformer_sn,
             scan_unit_folder,
             process_automation_task,
             open_report_path,

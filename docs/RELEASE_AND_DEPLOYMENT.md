@@ -33,11 +33,11 @@ Current release root:
 
 ```text
 S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\
-  PDU Data Automation_0.2.6_x64-setup.exe
+  PDU Data Automation_0.2.7_x64-setup.exe
   release-support\
-    v0.2.6\
+    v0.2.7\
       latest.json
-      PDU Data Automation_0.2.6_x64-setup.exe.sig
+      PDU Data Automation_0.2.7_x64-setup.exe.sig
       SHA256SUMS.txt
   archive\
   shared\
@@ -61,7 +61,7 @@ Each release should publish:
 - `SHA256SUMS.txt`
 - release notes
 
-`v0.2.6` has been published with these assets. Keep this list as the checklist for future releases.
+`v0.2.7` has been published with these assets. Keep this list as the checklist for future releases.
 
 The Tauri updater endpoint should point at:
 
@@ -124,6 +124,13 @@ Remove-Item Env:\TAURI_SIGNING_PRIVATE_KEY
 Remove-Item Env:\TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 ```
 
+Known `v0.2.6` build caveat:
+
+- Tauri hit an NSIS file-lock error after generating the installer.
+- The generated installer was manually signed, then `latest.json` and `SHA256SUMS.txt` were regenerated.
+- The final GitHub Release and S-drive artifacts were verified.
+- If this happens again, do not treat the release as complete until the manually signed installer, updater signature, `latest.json`, checksums, GitHub assets, S-drive installer, and updater endpoint have all been checked.
+
 ## Manual Smoke
 
 For each release candidate:
@@ -143,7 +150,7 @@ For each release candidate:
 - run updater check against release metadata
 - uninstall cleanly
 
-The installed `v0.1.0` app has processed one known-good unit and produced an Excel workbook that opened without repair prompts. `v0.1.0` and `v0.2.0` did not grant updater plugin permissions, so use `v0.2.1` or newer as the baseline for future updater smoke tests.
+The installed `v0.1.0` app processed one known-good unit and produced an Excel workbook that opened without repair prompts. The `v0.2.6` release was smoke-tested with `C:\PDU500\262343000072`, and the generated data was manually reviewed as good. The `v0.2.7` release adds the Start-time Transformer SN setup flow; operator-machine validation is pending after install. `v0.1.0` and `v0.2.0` did not grant updater plugin permissions, so use `v0.2.1` or newer as the baseline for future updater smoke tests.
 
 ## Local Release Folder
 

@@ -16,13 +16,13 @@ C:\Projects\Active\PDU_Data_Automation_App
 
 ## Status
 
-`v0.2.6` is the current released pilot build. `v0.1.0` remains the first released pilot.
+`v0.2.7` is the current released pilot build. `v0.1.0` remains the first released pilot.
 
 Current release:
 
-- tag: `v0.2.6`
-- GitHub release: `https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.6`
-- S-drive installer: `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.6_x64-setup.exe`
+- tag: `v0.2.7`
+- GitHub release: `https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.7`
+- S-drive installer: `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.7_x64-setup.exe`
 
 Implemented in the pilot:
 
@@ -36,6 +36,7 @@ Implemented in the pilot:
 - delayed startup updater checks, unused font cleanup, and lightweight startup timing logs
 - updater plugin permissions for future in-app updates
 - three-step reset flow: collapse tests, reset current SN, then clear SN selection
+- Start-time Unit Setup dialog that suggests the latest ATS-created unit folder, allows `...` browsing, requires Transformer SN, and writes it to `Test Summary!D1`
 - legacy-style CSV readiness waiting for active ATS-written files
 - mid-test countdown resume from detected CSV start time
 - total countdown uses current active-step time plus future unpassed step time

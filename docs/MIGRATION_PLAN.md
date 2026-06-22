@@ -2,6 +2,26 @@
 
 This plan moves the current working Python/PyQt script bundle into a maintainable Tauri/React/Rust app without breaking the operator workflow.
 
+## Planning Update - Operator Workflow Improvements
+
+Near-term priorities after the core workflow is stable:
+
+1. Release and operator-test the Transformer SN setup flow.
+2. Verify and fix the error action that opens Excel near the failed step. Exact sheet/cell selection may require Excel automation; opening the correct workbook remains the fallback.
+3. Add an end-of-test prompt after the full test passes so the operator can type or pick their name, write it to the print report at `Test Report #2!E39`, then open the print dialog for confirmation.
+4. Improve the system burn-in timer so the UI can show the long burn-in countdown followed by the short STEP72 data-capture countdown, while still presenting burn-in as one operator workflow.
+5. Add ATS/new-SN detection after the main setup and completion flows are reliable. The app should prompt before switching to or setting up a newly detected unit.
+6. Harden failure recovery for locked workbooks, interrupted writes, app restarts, and unavailable network/S-drive paths.
+
+Deferred or not planned right now:
+
+- Do not add an in-app cutover checklist.
+- Do not add report-confidence tooling yet.
+- Do not add detailed CSV traceability views yet.
+- Keep layout config validation improvements as a later item.
+- Keep operator run history and manual override notes as a later item after the app works fully.
+- Do not add built-in legacy comparison mode unless manual validation gets blocked by a hard-to-diagnose mismatch.
+
 ## Phase 0 - Source Control And Baseline
 
 Acceptance criteria:
@@ -29,14 +49,14 @@ Remaining tasks:
 Current status:
 
 - Initial Tauri 2, React, TypeScript, Vite, Tailwind, Bun, and Rust skeleton is present.
-- Version is currently `0.2.5` in `package.json`, `backend/Cargo.toml`, and `backend/tauri.conf.json`.
-- Frontend build, frontend test, frontend lint, Rust formatting, and Rust unit tests have been run.
-- Signed NSIS current-user installers have been built for `0.1.0`, `0.2.0`, `0.2.1`, `0.2.2`, `0.2.3`, `0.2.4`, and the total-countdown `0.2.5` release.
+- Version is currently `0.2.7` in `package.json`, `backend/Cargo.toml`, and `backend/tauri.conf.json`.
+- For `v0.2.7`, frontend lint, frontend tests, frontend build, Rust formatting check, Rust check, and Rust unit tests have been run.
+- Signed NSIS current-user installers have been built for `0.1.0`, `0.2.0`, `0.2.1`, `0.2.2`, `0.2.3`, `0.2.4`, `0.2.5`, `0.2.6`, and `0.2.7`.
 - A PDU-specific updater key has been generated outside the repo and the public key is configured in Tauri.
 - The `0.1.0` installer has been staged at `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation`.
-- GitHub Releases `v0.1.0`, `v0.2.0`, `v0.2.1`, `v0.2.2`, `v0.2.3`, `v0.2.4`, and `v0.2.5` have been published with the installer, updater signature, `latest.json`, and `SHA256SUMS.txt`.
-- `latest.json` resolves and points to the uploaded GitHub release asset.
-- A real updater upgrade smoke test is pending from `v0.2.4` to `v0.2.5`. `v0.1.0` and `v0.2.0` cannot initiate the updater flow because their Tauri capability file did not grant updater permissions.
+- GitHub Releases `v0.1.0`, `v0.2.0`, `v0.2.1`, `v0.2.2`, `v0.2.3`, `v0.2.4`, `v0.2.5`, `v0.2.6`, and `v0.2.7` have been published with the installer, updater signature, `latest.json`, and `SHA256SUMS.txt`.
+- `latest.json` resolves and points to the uploaded `v0.2.7` GitHub release asset.
+- A real updater upgrade smoke test is pending from an installed older updater-capable build to `v0.2.7`. `v0.1.0` and `v0.2.0` cannot initiate the updater flow because their Tauri capability file did not grant updater permissions.
 
 Acceptance criteria:
 
@@ -68,10 +88,14 @@ Current status:
 - Operator panel renders the current PDU500 workflow with expandable 208V, 415V, and burn-in groups.
 - Folder selection, setup, start/pause, reset, rerun, open report, update status, and error-card controls are present.
 - Browser-only mock fallback exists for frontend development outside Tauri.
+- The Start-time Transformer SN setup modal is implemented and released in `v0.2.7`. It suggests the latest unit candidate, allows `...` browsing to another unit folder, requires Transformer SN, calls backend setup, and only continues into the existing start/previous-steps flow after setup succeeds.
+- Frontend tests cover modal rendering, required Transformer SN validation, browse/select behavior, successful setup flow, and structured setup error display.
 
 Remaining:
 
 - Continue operator-machine smoke testing for screen fit, long-session readability, and failure-state ergonomics.
+- Add planned operator prompts for final operator name capture and print confirmation.
+- Verify that error actions open the intended report context, or clearly fall back to opening the workbook.
 
 ## Phase 3 - Layout Config Model
 
@@ -87,11 +111,13 @@ Current status:
 - The active bundled profile is `config/report-layouts/pdu500.rev02.layout.json`.
 - The production profile validates with zero warnings and matches the 65 built-in task IDs.
 - `PDU_LAYOUT_PROFILE_PATH` can override the bundled profile for testing an edited profile.
-- Current production tasks use `processor` fields where report writing is still handled by built-in Rust processors.
+- A generic data-driven mapping processor path exists.
+- The 208V and 415V transformer report writes are now represented as mappings in the production layout profile.
+- System, breaker, and burn-in tasks still use built-in Rust processors as the fallback path.
 
 Remaining:
 
-- Move more hardcoded processor cell/source logic into data-driven mappings when the workflow is stable.
+- Move more hardcoded system, breaker, and burn-in processor cell/source logic into data-driven mappings when the workflow is stable.
 - Add fixture validation for any future profile revision before making it the default.
 
 ## Phase 4 - Excel Template Spike
@@ -115,10 +141,15 @@ Current status:
 - The backend patches workbook XML directly inside the `.xlsx` package instead of using Excel automation for report writes.
 - Unit tests cover cell insertion/replacement, style preservation for patched cells, shared formula expansion, calc chain removal, and recalculation flags.
 - A known-good unit was processed through the installed `v0.1.0` app, and the generated workbook opened in Excel without repair prompts.
+- Backend support now writes Transformer SN as inline text to the main report `Test Summary!D1` through `setup_unit_folder_with_transformer_sn`.
+- Backend validation for the Transformer SN setup slice passed: `cargo fmt --manifest-path backend\Cargo.toml --check`, `cargo check --manifest-path backend\Cargo.toml`, and `cargo test --manifest-path backend\Cargo.toml`.
+- The frontend setup modal is connected to the backend Transformer SN write.
 
 Remaining:
 
 - Repeat workbook validation across more real or copied units, including reports with existing formulas and workbooks already open in Excel.
+- Add workbook write for final operator name to the print report `Test Report #2!E39`.
+- Confirm whether the print dialog and exact sheet/cell navigation require Excel automation on the operator PC.
 
 ## Phase 5 - CSV Discovery And Processing
 
@@ -132,6 +163,7 @@ Acceptance criteria:
 Current status:
 
 - Unit-folder scanning detects existing STEP CSV files and maps them to task states.
+- Backend command `find_latest_unit_candidate` suggests the newest likely unit folder/SN from likely PDU roots, using layout/template-root context and ignoring support/template folders.
 - CSV parsing and required numeric extraction are implemented.
 - Processing distinguishes missing/unparsable required values from valid numeric zeroes.
 - Per-task processing returns structured state, code, message, log, report paths, and failure detail.
@@ -144,6 +176,8 @@ Remaining:
 - Add scrubbed fixture tests for representative production CSV files.
 - Add more structured diagnostics for unusual unreadable-file cases beyond active writer locks.
 - Add more structured logging around CSV selection and parse failures.
+- Operator-test the released frontend Start-time setup modal connected to `find_latest_unit_candidate`.
+- Later, add passive detection of newly started ATS unit/SN folders and prompt before setting up or switching the app to the new unit.
 
 ## Phase 6 - Report Writers By Section
 
@@ -155,9 +189,11 @@ Acceptance criteria:
 
 Current status:
 
-- Rust processors exist for transformer, 208V/415V system, 208V/415V breaker, system burn-in, and breaker burn-in.
+- The generic data-driven mapping path handles the 208V and 415V transformer report writes from `config/report-layouts/pdu500.rev02.layout.json`.
+- Rust processors remain for system, breaker, and burn-in tasks.
 - 208V and 415V breaker accuracy now preserve the upgraded Python scripts' voltage-specific rounding behavior: 208V verifies from rounded report values at 4 decimals, while 415V verifies from raw scaled values at 2 decimals.
-- The installed `v0.1.0` app has processed one known-good unit successfully, and the generated Excel report opened without repair prompts.
+- The installed `v0.1.0` app processed one known-good unit successfully, and the generated Excel report opened without repair prompts.
+- The `v0.2.6` release was smoke-tested with `C:\PDU500\262343000072`; the generated data was manually reviewed and looked good.
 
 Remaining validation order:
 
@@ -170,6 +206,10 @@ Remaining validation order:
 7. Breaker burn-in.
 
 Use `C:\Projects\Active\Data Automation Upgraded` as the primary source for 208V/415V system and breaker verification thresholds and failure behavior.
+
+Burn-in timing note:
+
+- Keep the operator UI as a single burn-in workflow, but support a long burn-in countdown followed by the short STEP72 capture countdown used for report values.
 
 ## Phase 7 - Release And Update Flow
 
@@ -185,13 +225,14 @@ Current status:
 
 - A PDU-specific updater key has been generated outside the repo.
 - The public updater key is configured in Tauri.
-- The signed `v0.1.0` installer, `.sig`, `latest.json`, and checksums have been published to GitHub Release `v0.1.0`.
-- The corrected installer has been staged on the S-drive at `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation`.
+- The signed `v0.2.7` installer, `.sig`, `latest.json`, and checksums have been published to GitHub Release `v0.2.7`.
+- The `v0.2.7` installer has been staged on the S-drive at `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.7_x64-setup.exe`.
 - The installed app launches without a console window.
+- The updater endpoint has been verified to return `0.2.7`.
 
 Remaining:
 
-- Test a real updater upgrade from `v0.2.4` to `v0.2.5` on the operator PC.
+- Test a real updater upgrade from an installed older updater-capable build to `v0.2.7` on the operator PC.
 - Validate uninstall and reinstall behavior on the production machine.
 - Keep the S-drive root clean as new releases are staged.
 
@@ -207,10 +248,11 @@ Acceptance criteria:
 Current status:
 
 - The installed `v0.1.0` app has been run against one known-good unit and produced a report that opened cleanly in Excel.
+- The `v0.2.6` release has been run against `C:\PDU500\262343000072`, and the generated data was manually reviewed as good.
 
 Remaining:
 
-- Run side-by-side report comparison against legacy output for representative known-good and known-fail units.
+- Manually review generated reports for representative known-good and known-fail units.
 - Run operator smoke on the production machine across normal, warning, failure, and rerun paths.
 - Keep the legacy app available as fallback during initial pilot use.
 - Archive the legacy app only after successful production use across multiple units.
