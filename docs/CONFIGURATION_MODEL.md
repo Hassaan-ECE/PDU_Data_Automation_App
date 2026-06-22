@@ -49,7 +49,7 @@ A layout profile should define:
 - destination workbook, sheet, cell, and number format
 - required vs optional mappings
 
-As of `v0.2.7`, the app has a generic data-driven mapping processor path. The current production profile uses that path for the 208V and 415V transformer report writes. System, breaker, and burn-in tasks still use built-in Rust processors as the fallback path and can carry full `mappings` later as each processor is moved to data-driven layout execution.
+As of `v0.2.8`, the app has a generic data-driven mapping processor path. The current production profile uses that path for the 208V and 415V transformer report writes. System, breaker, and burn-in tasks still use built-in Rust processors as the fallback path and can carry full `mappings` later as each processor is moved to data-driven layout execution.
 
 ## Suggested Shape
 
@@ -167,7 +167,7 @@ The app should warn, not fail, when:
 
 ## Future Config Candidates
 
-Some workflow values are report-layout targets and should become config-driven later. For now, the backend implements the Transformer SN setup write directly in the setup command:
+Some workflow values are report-layout targets and should become config-driven later. For now, the backend implements the Transformer SN setup/save writes directly in setup commands:
 
 - Transformer SN setup target: main report workbook, `Test Summary!D1`.
 - Final operator-name target: print report workbook, `Test Report #2!E39`.

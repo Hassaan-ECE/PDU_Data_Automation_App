@@ -6,19 +6,35 @@ import { markStartup } from "@/shared/lib/startupTiming";
 
 import { buildIdleUpdateState, chooseFreshUpdateState, type UpdateState } from "./updateTypes";
 
-const INITIAL_UPDATE_CHECK_DELAY_MS = 15_000;
+const POST_APP_READY_UPDATE_CHECK_DELAY_MS = 1_500;
 const UPDATE_CHECK_INTERVAL_MS = 5 * 60_000;
 
 interface UseDesktopUpdatesOptions {
   announceStatus: (message: string) => void;
   currentVersion: string;
+  enabled?: boolean;
 }
 
-export function useDesktopUpdates({ announceStatus, currentVersion }: UseDesktopUpdatesOptions) {
+export function useDesktopUpdates({ announceStatus, currentVersion, enabled = true }: UseDesktopUpdatesOptions) {
   const [updateState, setUpdateState] = useState<UpdateState>(() => buildIdleUpdateState(currentVersion));
+  const automaticChecksStartedRef = useRef(false);
+  const currentVersionRef = useRef(currentVersion);
   const firstUpdateCheckLoggedRef = useRef(false);
   const pendingUpdateRef = useRef<Update | null>(null);
   const updateStateRef = useRef(updateState);
+
+  useEffect(() => {
+    currentVersionRef.current = currentVersion;
+    setUpdateState((current) => {
+      if (current.currentVersion === currentVersion || current.status !== "idle") {
+        return current;
+      }
+
+      const next = { ...current, currentVersion };
+      updateStateRef.current = next;
+      return next;
+    });
+  }, [currentVersion]);
 
   useEffect(() => {
     updateStateRef.current = updateState;
@@ -47,13 +63,15 @@ export function useDesktopUpdates({ announceStatus, currentVersion }: UseDesktop
   );
 
   const checkForUpdate = useCallback(async (): Promise<UpdateState> => {
+    const version = currentVersionRef.current;
+
     if (!isTauriRuntime()) {
-      return publishUpdateCheckResult(buildIdleUpdateState(currentVersion));
+      return publishUpdateCheckResult(buildIdleUpdateState(version));
     }
 
     publishUpdateState({
       available: false,
-      currentVersion,
+      currentVersion: version,
       status: "checking",
     });
 
@@ -65,24 +83,25 @@ export function useDesktopUpdates({ announceStatus, currentVersion }: UseDesktop
       if (!update) {
         return publishUpdateCheckResult({
           available: false,
-          currentVersion,
+          currentVersion: version,
           notes: "PDU Data Automation is up to date.",
           status: "not-available",
         });
       }
 
-      return publishUpdateCheckResult(updateStateFromUpdate(update, "available", currentVersion));
+      return publishUpdateCheckResult(updateStateFromUpdate(update, "available", version));
     } catch (error) {
       pendingUpdateRef.current = null;
-      return publishUpdateCheckResult(errorUpdateState(error, currentVersion));
+      return publishUpdateCheckResult(errorUpdateState(error, version));
     }
-  }, [currentVersion, publishUpdateCheckResult, publishUpdateState]);
+  }, [publishUpdateCheckResult, publishUpdateState]);
 
   useEffect(() => {
-    if (!isTauriRuntime()) {
+    if (!enabled || !isTauriRuntime() || automaticChecksStartedRef.current) {
       return undefined;
     }
 
+    automaticChecksStartedRef.current = true;
     let active = true;
     const canCheckForUpdate = (): boolean =>
       !["downloading", "ready", "installing"].includes(updateStateRef.current.status);
@@ -99,7 +118,7 @@ export function useDesktopUpdates({ announceStatus, currentVersion }: UseDesktop
         })
         .catch(() => {
           if (active) {
-            setUpdateState(buildIdleUpdateState(currentVersion));
+            setUpdateState(buildIdleUpdateState(currentVersionRef.current));
           }
         });
     };
@@ -120,7 +139,7 @@ export function useDesktopUpdates({ announceStatus, currentVersion }: UseDesktop
       window.addEventListener("focus", runUpdateCheck);
       document.addEventListener("visibilitychange", handleVisibilityChange);
     };
-    const startupDelayId = window.setTimeout(startUpdateChecks, INITIAL_UPDATE_CHECK_DELAY_MS);
+    const startupDelayId = window.setTimeout(startUpdateChecks, POST_APP_READY_UPDATE_CHECK_DELAY_MS);
 
     return () => {
       active = false;
@@ -131,16 +150,18 @@ export function useDesktopUpdates({ announceStatus, currentVersion }: UseDesktop
       window.removeEventListener("focus", runUpdateCheck);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [checkForUpdate, currentVersion]);
+  }, [checkForUpdate, enabled]);
 
   const handleUpdateAction = useCallback(async (): Promise<void> => {
     if (!isTauriRuntime()) {
       return;
     }
 
+    const version = currentVersionRef.current;
+
     try {
       if (updateState.status === "ready") {
-        const nextState = await installUpdate(pendingUpdateRef.current, currentVersion);
+        const nextState = await installUpdate(pendingUpdateRef.current, version);
         publishUpdateState(nextState);
         if (nextState.status === "error" && nextState.error) {
           announceStatus(nextState.error);
@@ -165,17 +186,17 @@ export function useDesktopUpdates({ announceStatus, currentVersion }: UseDesktop
         update = pendingUpdateRef.current;
       }
 
-      const nextState = await downloadUpdate(update, currentVersion, publishUpdateState);
+      const nextState = await downloadUpdate(update, version, publishUpdateState);
       publishUpdateState(chooseFreshUpdateState(updateStateRef.current, nextState));
       if (nextState.status === "error" && nextState.error) {
         announceStatus(nextState.error);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Update failed.";
-      publishUpdateState({ ...updateState, currentVersion, error: message, status: "error" });
+      publishUpdateState({ ...updateState, currentVersion: version, error: message, status: "error" });
       announceStatus(message);
     }
-  }, [announceStatus, checkForUpdate, currentVersion, publishUpdateState, updateState]);
+  }, [announceStatus, checkForUpdate, publishUpdateState, updateState]);
 
   return { handleUpdateAction, updateState };
 }

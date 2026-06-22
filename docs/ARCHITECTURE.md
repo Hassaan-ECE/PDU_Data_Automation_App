@@ -43,7 +43,8 @@ The frontend should own operator interaction only:
 - show detected/running/pass/fail states
 - allow folder selection
 - allow start, pause, resume, reset, manual rerun, and open report actions
-- collect setup metadata such as Transformer SN
+- collect and save setup metadata such as Transformer SN
+- keep current-step follow behavior explicit and operator-controlled
 - prompt for final operator name and print confirmation after a full pass
 - prompt before switching to a newly detected ATS-created unit/SN
 - display logs and actionable errors
@@ -97,10 +98,15 @@ Current setup-related commands:
 | --- | --- |
 | `find_latest_unit_candidate` | Returns the newest likely ATS-created unit folder/SN candidate, or `candidate: null` when none is found. |
 | `setup_unit_folder_with_transformer_sn` | Runs existing setup behavior for a selected unit folder and writes Transformer SN to `Test Summary!D1`. |
+| `save_transformer_sn` | Writes a later Transformer SN edit to the selected unit's main report workbook at `Test Summary!D1`. |
 
-`find_latest_unit_candidate` should return candidate data useful to the frontend: serial number, display label, full folder path, detection source/reason, and timestamp.
+`find_latest_unit_candidate` should return candidate data useful for future detection flows: serial number, display label, full folder path, detection source/reason, and timestamp. The current inline UI does not auto-suggest or auto-select the latest candidate at startup.
 
-`setup_unit_folder_with_transformer_sn` accepts the selected unit folder, optional unit serial number, and required Transformer SN. The Transformer SN is written as text, not as a number. Known structured error codes include `blank_transformer_sn`, `workbook_locked`, `main_report_missing`, and `report_sheet_missing`.
+`setup_unit_folder_with_transformer_sn` accepts the selected unit folder, optional unit serial number, and required Transformer SN. The Transformer SN is written as text, not as a number.
+
+`save_transformer_sn` accepts the operator-confirmed unit folder and required Transformer SN. It does not auto-detect or switch folders. It writes the value as text so numeric-looking values such as `000123` are preserved.
+
+Known structured setup/save error codes include `unit_folder_missing`, `blank_transformer_sn`, `workbook_locked`, `main_report_missing`, `report_sheet_missing`, `report_cell_invalid`, and `report_write_failed`.
 
 ## State Model
 
@@ -132,9 +138,9 @@ Do not reuse the legacy behavior where missing data can become pass.
 10. Backend returns a structured `ProcessingResult`.
 11. Frontend updates the task state and displays summary/log details.
 
-Current `v0.2.7` status:
+Current `v0.2.8` status:
 
-- The Start-time setup prompt collects Transformer SN and writes it to `Test Summary!D1`.
+- The published `v0.2.8` release uses inline unit selection and Transformer SN entry/save instead of the setup modal.
 - The generic data-driven mapping processor path exists.
 - The 208V and 415V transformer report writes are driven by mappings in `config/report-layouts/pdu500.rev02.layout.json`.
 - System, breaker, and burn-in tasks still use built-in Rust processors as the fallback path.
@@ -143,7 +149,10 @@ Current `v0.2.7` status:
 
 These additions should stay aligned with the existing operator workflow:
 
-- Setup prompt: the Start-time modal matches the previous-steps dialog style. It suggests the backend's latest unit candidate, allows `...` browse selection, collects Transformer SN, then calls `setup_unit_folder_with_transformer_sn` before continuing the normal start flow.
+- Inline setup: unit selection is done through the `...` browse button, the visible unit field shows only the selected unit SN, and Transformer SN is entered inline. Start saves the Transformer SN through `setup_unit_folder_with_transformer_sn`; later edits save through `save_transformer_sn` on blur, Enter, or the icon-only save button.
+- Report opening should block while Transformer SN is missing or unsaved.
+- Current-step follow: `Start`, `Resume`, `Follow Step`, and `Current Step` enable follow mode and scroll to the active task. Manual wheel/touch scroll and expand/collapse disable follow mode.
+- Updater timing: the first updater check should wait for backend status and layout profile startup requests to settle, then run after a short post-ready delay. Interval, focus, and visibility checks remain.
 - Error navigation: when a task fails, expose the best available workbook/sheet/cell context. If exact Excel navigation is unreliable, open the workbook and show a clear location summary in the app.
 - Completion prompt: after the full test passes, collect or select the final operator name, write it to `Test Report #2!E39` in the print report workbook, save, then open the print dialog for confirmation.
 - New unit detection: watch for a newly started ATS unit/SN only after the active session is idle, complete, or explicitly dismissed. The app should prompt before setup or switching sessions.
@@ -213,7 +222,9 @@ Frontend tests should cover:
 - test-panel rendering
 - task state transitions
 - backlog/detected prompt behavior
-- setup metadata prompt behavior, including latest unit suggestion, folder browsing, Transformer SN validation, successful setup, and setup error display
+- inline setup metadata behavior, including folder browsing, no startup latest-unit auto-selection, Transformer SN validation, successful setup, later save, report-open blocking, and setup/save error display
+- current-step follow behavior, including auto-scroll while following and disabling follow mode on manual scroll or expand/collapse
+- readiness-based updater timing before the first updater check
 - new-unit detection prompt behavior
 - end-of-test operator-name and print-confirmation flow
 - manual rerun behavior

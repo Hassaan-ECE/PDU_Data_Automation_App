@@ -1310,7 +1310,7 @@ mod tests {
         write_minimal_test_summary_workbook(&workbook);
 
         let report_path =
-            write_transformer_serial_number(&unit_folder, "TXF-000123").expect("write D1");
+            write_transformer_serial_number(&unit_folder, "000123").expect("write D1");
 
         assert_eq!(report_path, workbook);
 
@@ -1323,8 +1323,8 @@ mod tests {
             .read_to_string(&mut sheet_xml)
             .expect("sheet xml");
 
-        assert!(sheet_xml.contains(r#"<c r="D1" t="inlineStr"><is><t>TXF-000123</t></is></c>"#));
-        assert!(!sheet_xml.contains("<v>TXF-000123</v>"));
+        assert!(sheet_xml.contains(r#"<c r="D1" t="inlineStr"><is><t>000123</t></is></c>"#));
+        assert!(!sheet_xml.contains("<v>000123</v>"));
     }
 
     #[test]

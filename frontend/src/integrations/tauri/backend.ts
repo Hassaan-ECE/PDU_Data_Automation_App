@@ -149,6 +149,14 @@ export async function setupUnitFolder(
   return invoke<UnitFolderSummary>("setup_unit_folder", { unitFolder });
 }
 
+export async function saveTransformerSn(unitFolder: string, transformerSn: string): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  return invoke<void>("save_transformer_sn", { unitFolder, transformerSn });
+}
+
 export async function scanUnitFolder(unitFolder: string): Promise<UnitFolderSummary | null> {
   if (!isTauriRuntime()) {
     return mockUnitFolderSummary(unitFolder);

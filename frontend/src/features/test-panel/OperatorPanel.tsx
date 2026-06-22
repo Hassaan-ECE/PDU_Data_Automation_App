@@ -1,15 +1,15 @@
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, RotateCcw, SkipForward } from "lucide-react";
+import { ExternalLink, RotateCcw, Save, SkipForward } from "lucide-react";
 
 import {
   chooseUnitFolder,
-  getSuggestedUnitFolder,
   getBackendStatus,
   loadLayoutProfile,
   openReportLocation,
   openReportPath,
   processAutomationTask,
+  saveTransformerSn,
   scanUnitFolder,
   setupUnitFolder,
   type BackendTaskStatus,
@@ -19,7 +19,6 @@ import {
   type LayoutLoadResponse,
   type TaskProcessResult,
   type UnitFolderSummary,
-  type UnitFolderSuggestion,
 } from "@/integrations/tauri/backend";
 import { markStartup } from "@/shared/lib/startupTiming";
 import { cn } from "@/shared/lib/utils";
@@ -39,21 +38,7 @@ type BacklogPromptState = {
   resolve: (processBacklog: boolean) => void;
 } | null;
 
-type TransformerSetupPrompt = {
-  detectedCount: number | null;
-  error: string;
-  isChoosingFolder: boolean;
-  isLoadingSuggestion: boolean;
-  isSubmitting: boolean;
-  selectedFolder: string;
-  selectedSerialNumber: string;
-  startAfterConfirm: boolean;
-  suggestedFolder: string;
-  suggestedSerialNumber: string;
-  transformerSn: string;
-};
-
-type TransformerSetupPromptState = TransformerSetupPrompt | null;
+type TransformerSnSaveStatus = "idle" | "dirty" | "saving" | "saved" | "error";
 
 type TaskFailureNotice = {
   taskId: string;
@@ -311,36 +296,6 @@ function messageFromUnknownError(error: unknown) {
   return String(error);
 }
 
-function setupPromptFromSuggestion({
-  currentFolder,
-  currentSerialNumber,
-  startAfterConfirm,
-  suggestion,
-}: {
-  currentFolder: string;
-  currentSerialNumber: string;
-  startAfterConfirm: boolean;
-  suggestion: UnitFolderSuggestion | null;
-}): TransformerSetupPrompt {
-  const suggestedFolder = suggestion?.unit_folder ?? "";
-  const selectedFolder = currentFolder || suggestedFolder;
-  const suggestedSerialNumber = suggestion?.serial_number ?? serialNumberFromFolder(suggestedFolder);
-
-  return {
-    detectedCount: suggestion?.detected_count ?? null,
-    error: "",
-    isChoosingFolder: false,
-    isLoadingSuggestion: false,
-    isSubmitting: false,
-    selectedFolder,
-    selectedSerialNumber: currentSerialNumber || suggestion?.serial_number || serialNumberFromFolder(selectedFolder),
-    startAfterConfirm,
-    suggestedFolder,
-    suggestedSerialNumber,
-    transformerSn: "",
-  };
-}
-
 function resetButtonLabel({
   expandedCount,
   hasUnitFolder,
@@ -367,16 +322,93 @@ function resetButtonLabel({
   return "Reset Current SN";
 }
 
+type PrimaryControlAction = "current-step" | "pause" | "resume" | "start";
+type SecondaryControlAction = "follow-step" | "reset";
+
+type PanelControlState = {
+  kind: "idle" | "paused-away" | "paused-current" | "running-following" | "running-unfollowed";
+  primaryAction: PrimaryControlAction;
+  primaryLabel: string;
+  secondaryAction: SecondaryControlAction;
+  secondaryDisabled: boolean;
+  secondaryLabel: string;
+};
+
+function panelControlState({
+  hasActiveSequence,
+  isFollowingCurrentStep,
+  isRunning,
+  resetLabel,
+}: {
+  hasActiveSequence: boolean;
+  isFollowingCurrentStep: boolean;
+  isRunning: boolean;
+  resetLabel: string;
+}): PanelControlState {
+  if (!hasActiveSequence) {
+    return {
+      kind: "idle",
+      primaryAction: "start",
+      primaryLabel: "Start",
+      secondaryAction: "reset",
+      secondaryDisabled: false,
+      secondaryLabel: resetLabel,
+    };
+  }
+
+  if (isRunning) {
+    if (!isFollowingCurrentStep) {
+      return {
+        kind: "running-unfollowed",
+        primaryAction: "pause",
+        primaryLabel: "Pause",
+        secondaryAction: "follow-step",
+        secondaryDisabled: false,
+        secondaryLabel: "Follow Step",
+      };
+    }
+
+    return {
+      kind: "running-following",
+      primaryAction: "pause",
+      primaryLabel: "Pause",
+      secondaryAction: "reset",
+      secondaryDisabled: true,
+      secondaryLabel: resetLabel,
+    };
+  }
+
+  if (!isFollowingCurrentStep) {
+    return {
+      kind: "paused-away",
+      primaryAction: "current-step",
+      primaryLabel: "Current Step",
+      secondaryAction: "reset",
+      secondaryDisabled: false,
+      secondaryLabel: resetLabel,
+    };
+  }
+
+  return {
+    kind: "paused-current",
+    primaryAction: "resume",
+    primaryLabel: "Resume",
+    secondaryAction: "reset",
+    secondaryDisabled: false,
+    secondaryLabel: resetLabel,
+  };
+}
+
 function panelDepthWidth(depth: number) {
   if (depth <= 0) {
-    return "mx-auto w-[calc(100%_-_0.5rem)]";
+    return "w-full";
   }
 
   if (depth === 1) {
-    return "mx-auto w-[88%]";
+    return "mx-auto w-[92%]";
   }
 
-  return "mx-auto w-[76%]";
+  return "mx-auto w-[84%]";
 }
 
 function PanelButton({
@@ -404,7 +436,7 @@ function PanelButton({
       aria-label={label}
       onClick={onClick}
       className={cn(
-        "group relative flex min-h-9 max-w-full items-center justify-center rounded-md px-8 py-2 text-center shadow-sm transition",
+        "group relative flex min-h-9 max-w-full items-center justify-center rounded-md px-4 py-2 text-center shadow-sm transition",
         "focus:outline-none focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-cyan-200/25 focus-visible:ring-offset-2 focus-visible:ring-offset-[#20201f]",
         panelDepthWidth(depth),
         current && "z-10 ring-2 ring-cyan-200/65 ring-offset-2 ring-offset-[#20201f]",
@@ -489,115 +521,6 @@ function TaskFailureDialog({
           Open
         </button>
       </div>
-    </div>
-  );
-}
-
-function TransformerSetupDialog({
-  prompt,
-  onBrowse,
-  onCancel,
-  onConfirm,
-  onTransformerSnChange,
-}: {
-  prompt: NonNullable<TransformerSetupPromptState>;
-  onBrowse: () => void;
-  onCancel: () => void;
-  onConfirm: () => void;
-  onTransformerSnChange: (value: string) => void;
-}) {
-  const canConfirm = Boolean(prompt.selectedFolder.trim() && prompt.transformerSn.trim())
-    && !prompt.isChoosingFolder
-    && !prompt.isSubmitting;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
-      <section className="w-full max-w-[320px] rounded-md border border-[#454542] bg-[#292928] p-4 text-white shadow-2xl">
-        <div className="text-center text-[12pt] font-semibold leading-tight">
-          Unit Setup
-        </div>
-
-        <div className="mt-3 rounded border border-[#454542] bg-[#1f1f1e] p-2.5">
-          <div className="text-[7.5pt] font-semibold uppercase leading-tight text-[#b7b1a8]">
-            Suggested unit
-          </div>
-          <div className="mt-1 truncate text-[8.5pt] leading-tight text-white">
-            {prompt.isLoadingSuggestion
-              ? "Looking for latest unit..."
-              : prompt.suggestedSerialNumber || "No recent SN found"}
-          </div>
-          <div className="mt-1 truncate text-[7.5pt] leading-tight text-[#d8d2c8]">
-            {prompt.suggestedFolder || "Browse to select a unit folder"}
-          </div>
-        </div>
-
-        <div className="mt-3">
-          <label htmlFor="setup-unit-folder" className="text-[7.5pt] font-semibold leading-tight text-[#d8d2c8]">
-            Selected folder
-          </label>
-          <div className="mt-1 flex gap-1.5">
-            <input
-              id="setup-unit-folder"
-              readOnly
-              aria-label="Selected unit folder"
-              value={prompt.selectedFolder}
-              placeholder="No unit folder selected"
-              className="h-8 min-w-0 flex-1 rounded border border-[#454542] bg-[#1f1f1e] px-2 text-[7.5pt] text-white placeholder:text-[#b7b1a8] outline-none"
-            />
-            <button
-              type="button"
-              aria-label="Browse unit folder"
-              onClick={onBrowse}
-              disabled={prompt.isChoosingFolder || prompt.isSubmitting}
-              className="inline-flex h-8 min-w-9 shrink-0 items-center justify-center rounded bg-[#3a3a38] px-2 text-[8pt] font-semibold text-white shadow-sm transition hover:bg-[#454542] disabled:cursor-not-allowed disabled:opacity-65"
-            >
-              ...
-            </button>
-          </div>
-          <div className="mt-1 truncate text-[7.5pt] leading-tight text-[#d8d2c8]">
-            {prompt.selectedSerialNumber ? `Selected SN ${prompt.selectedSerialNumber}` : "Selected SN unavailable"}
-          </div>
-        </div>
-
-        <div className="mt-3">
-          <label htmlFor="transformer-sn" className="text-[7.5pt] font-semibold leading-tight text-[#d8d2c8]">
-            Transformer SN
-          </label>
-          <input
-            id="transformer-sn"
-            aria-label="Transformer SN"
-            autoFocus
-            value={prompt.transformerSn}
-            onChange={(event) => onTransformerSnChange(event.target.value)}
-            className="mt-1 h-8 w-full rounded border border-[#454542] bg-[#1f1f1e] px-2 text-[8.5pt] text-white placeholder:text-[#b7b1a8] outline-none focus:border-[#1f74ae] focus:ring-2 focus:ring-cyan-200/25"
-          />
-        </div>
-
-        {prompt.error ? (
-          <div className="mt-3 rounded border border-[#d42c1a] bg-[#301f22] p-2 text-[7.5pt] leading-snug text-[#d8d2c8]" role="alert">
-            {prompt.error}
-          </div>
-        ) : null}
-
-        <div className="mt-4 grid gap-2">
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={!canConfirm}
-            className="inline-flex min-h-9 items-center justify-center rounded-md bg-[#1d7f47] px-3 py-2 text-[9pt] font-semibold text-white shadow-sm transition hover:bg-[#1d7f46] disabled:cursor-not-allowed disabled:bg-[#3d4142] disabled:text-[#b7b1a8]"
-          >
-            {prompt.isSubmitting ? "Setting Up..." : "Continue"}
-          </button>
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={prompt.isSubmitting}
-            className="inline-flex min-h-9 items-center justify-center rounded-md bg-[#3a3a38] px-3 py-2 text-[9pt] font-semibold text-white shadow-sm transition hover:bg-[#454542] disabled:cursor-not-allowed disabled:opacity-65"
-          >
-            Cancel
-          </button>
-        </div>
-      </section>
     </div>
   );
 }
@@ -720,6 +643,9 @@ function SectionBlock({
 export function OperatorPanel() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const currentTaskIdRef = useRef<string | null>(null);
+  const programmaticScrollRef = useRef(false);
+  const programmaticScrollTimeoutRef = useRef<number | null>(null);
+  const lastFollowScrolledTaskRef = useRef<string | null>(null);
   const processingTaskRef = useRef(false);
   const isRunningRef = useRef(false);
   const stopAfterCurrentTaskRef = useRef(false);
@@ -731,6 +657,8 @@ export function OperatorPanel() {
   const setupPromiseRef = useRef<Promise<boolean> | null>(null);
   const setupErrorRef = useRef<string | null>(null);
   const setupConfirmedFolderRef = useRef("");
+  const savedTransformerSnRef = useRef("");
+  const transformerSnDraftRef = useRef("");
   const detectedCountRef = useRef(0);
   const allTaskOrder = useMemo(() => flattenTasks(legacyPanelItems), []);
   const [unitFolder, setUnitFolder] = useState("");
@@ -740,8 +668,11 @@ export function OperatorPanel() {
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
+  const [backendStatusLoaded, setBackendStatusLoaded] = useState(false);
   const [layoutProfile, setLayoutProfile] = useState<LayoutLoadResponse | null>(null);
+  const [layoutProfileLoaded, setLayoutProfileLoaded] = useState(false);
   const [scrollCue, setScrollCue] = useState({ top: false, bottom: false });
+  const [currentStepFollowMode, setCurrentStepFollowMode] = useState(false);
   const [taskStates, setTaskStates] = useState<Record<string, TaskState>>({});
   const [failureNotices, setFailureNotices] = useState<Record<string, TaskFailureNotice>>({});
   const [processDetectedBacklog, setProcessDetectedBacklog] = useState<boolean | null>(null);
@@ -751,10 +682,16 @@ export function OperatorPanel() {
   const [setupWarnings, setSetupWarnings] = useState<string[]>([]);
   const [isScanningFolder, setIsScanningFolder] = useState(false);
   const [isSettingUpReports, setIsSettingUpReports] = useState(false);
+  const [isChoosingFolder, setIsChoosingFolder] = useState(false);
   const [backlogPrompt, setBacklogPrompt] = useState<BacklogPromptState>(null);
-  const [transformerSetupPrompt, setTransformerSetupPrompt] = useState<TransformerSetupPromptState>(null);
+  const [transformerSnDraft, setTransformerSnDraft] = useState("");
+  const [savedTransformerSn, setSavedTransformerSn] = useState("");
+  const [transformerSnSaveStatus, setTransformerSnSaveStatus] = useState<TransformerSnSaveStatus>("idle");
+  const [transformerSnError, setTransformerSnError] = useState("");
+  const [transformerSnInputFocused, setTransformerSnInputFocused] = useState(false);
+  const [setupConfirmedFolder, setSetupConfirmedFolder] = useState("");
   const [resetClearsSelectionNext, setResetClearsSelectionNext] = useState(false);
-  const appVersion = backendStatus?.version ?? "0.2.7";
+  const appVersion = backendStatus?.version ?? "0.2.8";
   const panelItems = useMemo(() => applyTaskStates(legacyPanelItems, taskStates), [taskStates]);
   const detectedTaskCount = useMemo(
     () => detectedTaskCountFromStates(taskStates),
@@ -764,7 +701,12 @@ export function OperatorPanel() {
   const { handleUpdateAction, updateState } = useDesktopUpdates({
     announceStatus: announceUpdateStatus,
     currentVersion: appVersion,
+    enabled: backendStatusLoaded && layoutProfileLoaded,
   });
+  const setConfirmedSetupFolder = useCallback((folder: string) => {
+    setupConfirmedFolderRef.current = folder;
+    setSetupConfirmedFolder(folder);
+  }, []);
 
   const statusText = useMemo(() => {
     if (!unitFolder) {
@@ -780,33 +722,47 @@ export function OperatorPanel() {
 
   useEffect(() => {
     markStartup("react_mounted");
-    void getBackendStatus().then((status) => {
-      setBackendStatus(status);
-      markStartup(
-        "backend_status_loaded",
-        status
-          ? {
-              process_uptime_ms: status.process_uptime_ms ?? null,
-              version: status.version,
-              window_setup_uptime_ms: status.window_setup_uptime_ms ?? null,
-            }
-          : null,
-      );
-    });
-    void loadLayoutProfile().then((profile) => {
-      setLayoutProfile(profile);
-      markStartup(
-        "layout_profile_loaded",
-        profile
-          ? {
-              errors: profile.validation.errors.length,
-              profile_id: profile.profile_id,
-              task_count: profile.task_count,
-              warnings: profile.validation.warnings.length,
-            }
-          : null,
-      );
-    });
+    void getBackendStatus()
+      .then((status) => {
+        setBackendStatus(status);
+        markStartup(
+          "backend_status_loaded",
+          status
+            ? {
+                process_uptime_ms: status.process_uptime_ms ?? null,
+                version: status.version,
+                window_setup_uptime_ms: status.window_setup_uptime_ms ?? null,
+              }
+            : null,
+        );
+      })
+      .catch((error) => {
+        markStartup("backend_status_loaded", {
+          error: messageFromUnknownError(error),
+        });
+      })
+      .finally(() => setBackendStatusLoaded(true));
+    void loadLayoutProfile()
+      .then((profile) => {
+        setLayoutProfile(profile);
+        markStartup(
+          "layout_profile_loaded",
+          profile
+            ? {
+                errors: profile.validation.errors.length,
+                profile_id: profile.profile_id,
+                task_count: profile.task_count,
+                warnings: profile.validation.warnings.length,
+              }
+            : null,
+        );
+      })
+      .catch((error) => {
+        markStartup("layout_profile_loaded", {
+          error: messageFromUnknownError(error),
+        });
+      })
+      .finally(() => setLayoutProfileLoaded(true));
   }, []);
 
   useEffect(() => {
@@ -824,6 +780,14 @@ export function OperatorPanel() {
   useEffect(() => {
     selectedFolderRef.current = unitFolder;
   }, [unitFolder]);
+
+  useEffect(() => {
+    savedTransformerSnRef.current = savedTransformerSn;
+  }, [savedTransformerSn]);
+
+  useEffect(() => {
+    transformerSnDraftRef.current = transformerSnDraft;
+  }, [transformerSnDraft]);
 
   const setRunnerActive = useCallback((active: boolean) => {
     isRunningRef.current = active;
@@ -856,21 +820,6 @@ export function OperatorPanel() {
     return () => window.clearInterval(handle);
   }, [isRunning]);
 
-  useEffect(() => {
-    if (!currentTaskId) {
-      return;
-    }
-
-    window.requestAnimationFrame(() => {
-      const currentElement = scrollRef.current?.querySelector('[data-current-task="true"]');
-
-      currentElement?.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
-    });
-  }, [currentTaskId, expandedIds]);
-
   const updateScrollCue = useCallback(() => {
     const element = scrollRef.current;
 
@@ -891,6 +840,93 @@ export function OperatorPanel() {
       current.top === nextCue.top && current.bottom === nextCue.bottom ? current : nextCue,
     );
   }, []);
+
+  const scrollCurrentTaskIntoView = useCallback((behavior: ScrollBehavior = "smooth") => {
+    const currentElement = scrollRef.current?.querySelector('[data-current-task="true"]');
+
+    if (
+      !currentElement ||
+      !("scrollIntoView" in currentElement) ||
+      typeof currentElement.scrollIntoView !== "function"
+    ) {
+      return false;
+    }
+
+    programmaticScrollRef.current = true;
+    if (programmaticScrollTimeoutRef.current !== null) {
+      window.clearTimeout(programmaticScrollTimeoutRef.current);
+    }
+
+    currentElement.scrollIntoView({
+      behavior,
+      block: "center",
+    });
+
+    programmaticScrollTimeoutRef.current = window.setTimeout(() => {
+      programmaticScrollRef.current = false;
+      programmaticScrollTimeoutRef.current = null;
+    }, 700);
+
+    window.requestAnimationFrame(updateScrollCue);
+    return true;
+  }, [updateScrollCue]);
+
+  const enableCurrentStepFollow = useCallback((behavior: ScrollBehavior = "smooth") => {
+    lastFollowScrolledTaskRef.current = currentTaskIdRef.current;
+    setCurrentStepFollowMode(true);
+    window.requestAnimationFrame(() => {
+      scrollCurrentTaskIntoView(behavior);
+    });
+  }, [scrollCurrentTaskIntoView]);
+
+  const disableCurrentStepFollowForUserAction = useCallback((force = false) => {
+    if (!currentTaskIdRef.current || (!force && programmaticScrollRef.current)) {
+      return;
+    }
+
+    if (force && programmaticScrollTimeoutRef.current !== null) {
+      window.clearTimeout(programmaticScrollTimeoutRef.current);
+      programmaticScrollTimeoutRef.current = null;
+    }
+
+    if (force) {
+      programmaticScrollRef.current = false;
+    }
+
+    setCurrentStepFollowMode(false);
+  }, []);
+
+  const handleWorkflowUserScrollIntent = useCallback(() => {
+    disableCurrentStepFollowForUserAction(true);
+  }, [disableCurrentStepFollowForUserAction]);
+
+  const handleWorkflowScroll = useCallback(() => {
+    updateScrollCue();
+    disableCurrentStepFollowForUserAction();
+  }, [disableCurrentStepFollowForUserAction, updateScrollCue]);
+
+  useEffect(() => {
+    return () => {
+      if (programmaticScrollTimeoutRef.current !== null) {
+        window.clearTimeout(programmaticScrollTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!currentStepFollowMode || !currentTaskId) {
+      return;
+    }
+
+    if (lastFollowScrolledTaskRef.current === currentTaskId) {
+      return;
+    }
+
+    lastFollowScrolledTaskRef.current = currentTaskId;
+    window.requestAnimationFrame(() => {
+      scrollCurrentTaskIntoView();
+    });
+  }, [currentStepFollowMode, currentTaskId, scrollCurrentTaskIntoView]);
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -941,6 +977,12 @@ export function OperatorPanel() {
     (taskId: string | null) => {
       currentTaskIdRef.current = taskId;
       setCurrentTaskId(taskId);
+
+      if (!taskId) {
+        lastFollowScrolledTaskRef.current = null;
+        setCurrentStepFollowMode(false);
+      }
+
       setRemainingSeconds(
         remainingSecondsForTasks(
           allTaskOrder,
@@ -1017,17 +1059,29 @@ export function OperatorPanel() {
   }, [replaceTaskStates]);
 
   const beginReportSetup = useCallback(
-    (selected: string, transformerSn: string, unitSerialNumber: string, replace = false) => {
+    (selected: string, transformerSn = "", unitSerialNumber = "", replace = false) => {
       setupErrorRef.current = null;
       setIsSettingUpReports(true);
+      const trimmedTransformerSn = transformerSn.trim();
 
-      const setupPromise = setupUnitFolder(selected, transformerSn, unitSerialNumber)
+      const setupPromise = setupUnitFolder(selected, trimmedTransformerSn, unitSerialNumber)
         .then((summary) => {
           if (selectedFolderRef.current !== selected) {
             return true;
           }
 
-          setupConfirmedFolderRef.current = selected;
+          setConfirmedSetupFolder(selected);
+          if (trimmedTransformerSn) {
+            savedTransformerSnRef.current = trimmedTransformerSn;
+            setSavedTransformerSn(trimmedTransformerSn);
+            setTransformerSnSaveStatus("saved");
+            setTransformerSnError("");
+          } else {
+            savedTransformerSnRef.current = "";
+            setSavedTransformerSn("");
+            setTransformerSnSaveStatus(transformerSnDraftRef.current.trim() ? "dirty" : "idle");
+            setTransformerSnError("");
+          }
 
           if (!summary) {
             const folderName = selected.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
@@ -1045,8 +1099,12 @@ export function OperatorPanel() {
           const message = messageFromUnknownError(error);
 
           if (selectedFolderRef.current === selected) {
-            setupConfirmedFolderRef.current = "";
+            setConfirmedSetupFolder("");
             setupErrorRef.current = message;
+            if (trimmedTransformerSn) {
+              setTransformerSnSaveStatus("error");
+              setTransformerSnError(message);
+            }
             setLastMessage(message);
           }
 
@@ -1063,8 +1121,85 @@ export function OperatorPanel() {
 
       return setupPromise;
     },
-    [applyFolderSummary],
+    [applyFolderSummary, setConfirmedSetupFolder],
   );
+
+  const updateTransformerSnDraft = useCallback((value: string) => {
+    transformerSnDraftRef.current = value;
+    setTransformerSnDraft(value);
+    setTransformerSnError("");
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      setTransformerSnSaveStatus("idle");
+    } else if (
+      trimmed === savedTransformerSnRef.current &&
+      setupConfirmedFolderRef.current === selectedFolderRef.current
+    ) {
+      setTransformerSnSaveStatus("saved");
+    } else {
+      setTransformerSnSaveStatus("dirty");
+    }
+  }, []);
+
+  const resetTransformerSnState = useCallback(() => {
+    savedTransformerSnRef.current = "";
+    transformerSnDraftRef.current = "";
+    setTransformerSnDraft("");
+    setSavedTransformerSn("");
+    setTransformerSnSaveStatus("idle");
+    setTransformerSnError("");
+  }, []);
+
+  const saveTransformerSnDraft = useCallback(async () => {
+    const selected = selectedFolderRef.current;
+    const transformerSn = transformerSnDraft.trim();
+
+    if (!transformerSn) {
+      setTransformerSnSaveStatus("idle");
+      setTransformerSnError("");
+      return true;
+    }
+
+    if (!selected) {
+      const message = "Select Test Unit before saving Transformer SN.";
+      setTransformerSnSaveStatus("error");
+      setTransformerSnError(message);
+      setLastMessage(message);
+      return false;
+    }
+
+    if (setupConfirmedFolderRef.current !== selected) {
+      setTransformerSnSaveStatus("dirty");
+      setTransformerSnError("");
+      setLastMessage("Transformer SN will be saved during setup.");
+      return true;
+    }
+
+    if (transformerSn === savedTransformerSnRef.current) {
+      setTransformerSnSaveStatus("saved");
+      setTransformerSnError("");
+      return true;
+    }
+
+    setTransformerSnSaveStatus("saving");
+    setTransformerSnError("");
+
+    try {
+      await saveTransformerSn(selected, transformerSn);
+      savedTransformerSnRef.current = transformerSn;
+      setSavedTransformerSn(transformerSn);
+      setTransformerSnSaveStatus("saved");
+      setLastMessage("Transformer SN saved");
+      return true;
+    } catch (error) {
+      const message = messageFromUnknownError(error);
+      setTransformerSnSaveStatus("error");
+      setTransformerSnError(message);
+      setLastMessage(message);
+      return false;
+    }
+  }, [transformerSnDraft]);
 
   const ensureReportSetupReady = useCallback(async (expectedFolder?: string) => {
     if (expectedFolder && selectedFolderRef.current !== expectedFolder) {
@@ -1085,7 +1220,7 @@ export function OperatorPanel() {
       }
 
       if (expectedFolder && setupConfirmedFolderRef.current !== expectedFolder) {
-        setLastMessage("Transformer SN setup required before starting");
+        setLastMessage("Press Start to set up reports before running steps.");
         return false;
       }
 
@@ -1104,6 +1239,20 @@ export function OperatorPanel() {
     }
 
     return setupOk && !setupErrorRef.current && (!expectedFolder || setupConfirmedFolderRef.current === expectedFolder);
+  }, []);
+
+  const sequenceCompleteMessage = useCallback(() => {
+    const transformerSn = transformerSnDraftRef.current.trim();
+
+    if (!transformerSn) {
+      return "Sequence complete. Transformer SN is missing before report opening.";
+    }
+
+    if (transformerSn !== savedTransformerSnRef.current) {
+      return "Sequence complete. Transformer SN is unsaved before report opening.";
+    }
+
+    return "Sequence complete";
   }, []);
 
   const runTask = useCallback(
@@ -1218,10 +1367,10 @@ export function OperatorPanel() {
       );
 
       activateTask(nextTask?.id ?? null);
-      setLastMessage(nextTask ? "Sequence running" : "Sequence complete");
+      setLastMessage(nextTask ? "Sequence running" : sequenceCompleteMessage());
       setRunnerActive(Boolean(nextTask));
     },
-    [activateTask, allTaskOrder, failureNotices, setRunnerActive, updateTaskState],
+    [activateTask, allTaskOrder, failureNotices, sequenceCompleteMessage, setRunnerActive, updateTaskState],
   );
 
   const handleOpenFailureLocation = useCallback(
@@ -1234,6 +1383,28 @@ export function OperatorPanel() {
       if (!unitFolder) {
         setLastMessage("No unit folder is selected");
         return;
+      }
+
+      if (setupConfirmedFolderRef.current !== unitFolder) {
+        setLastMessage("Press Start to set up reports before opening the report.");
+        return;
+      }
+
+      const transformerSn = transformerSnDraftRef.current.trim();
+
+      if (!transformerSn) {
+        setLastMessage("Transformer SN is missing. Enter and save it before opening the report.");
+        setTransformerSnSaveStatus("error");
+        setTransformerSnError("Transformer SN is missing.");
+        return;
+      }
+
+      if (transformerSn !== savedTransformerSnRef.current) {
+        const saved = await saveTransformerSnDraft();
+
+        if (!saved) {
+          return;
+        }
       }
 
       try {
@@ -1259,7 +1430,7 @@ export function OperatorPanel() {
         setLastMessage(messageFromUnknownError(error));
       }
     },
-    [unitFolder],
+    [saveTransformerSnDraft, unitFolder],
   );
 
   useEffect(() => {
@@ -1285,7 +1456,7 @@ export function OperatorPanel() {
         if (!nextTask) {
           setIsRunning(false);
           activateTask(null);
-          setLastMessage("Sequence complete");
+          setLastMessage(sequenceCompleteMessage());
           return;
         }
 
@@ -1367,7 +1538,17 @@ export function OperatorPanel() {
       cancelled = true;
       window.clearInterval(handle);
     };
-  }, [activateTask, allTaskOrder, applyFolderSummary, isRunning, runTask, setRunnerActive, unitFolder, updateTaskState]);
+  }, [
+    activateTask,
+    allTaskOrder,
+    applyFolderSummary,
+    isRunning,
+    runTask,
+    sequenceCompleteMessage,
+    setRunnerActive,
+    unitFolder,
+    updateTaskState,
+  ]);
 
   const startSequence = useCallback(
     async (folder: string) => {
@@ -1396,236 +1577,33 @@ export function OperatorPanel() {
       );
 
       activateTask(nextTask?.id ?? null);
-      setLastMessage(nextTask ? "Sequence running" : "Sequence complete");
+      if (nextTask) {
+        enableCurrentStepFollow();
+      }
+      setLastMessage(nextTask ? "Sequence running" : sequenceCompleteMessage());
       setRunnerActive(Boolean(nextTask));
     },
     [
       activateTask,
       allTaskOrder,
+      enableCurrentStepFollow,
       ensureReportSetupReady,
       requestBacklogChoice,
+      sequenceCompleteMessage,
       setRunnerActive,
     ],
   );
 
-  const openTransformerSetupPrompt = useCallback(
-    (startAfterConfirm: boolean) => {
-      const currentFolder = selectedFolderRef.current;
-      const currentSerialNumber = serialNumber || serialNumberFromFolder(currentFolder);
-
-      setTransformerSetupPrompt({
-        ...setupPromptFromSuggestion({
-          currentFolder,
-          currentSerialNumber,
-          startAfterConfirm,
-          suggestion: null,
-        }),
-        isLoadingSuggestion: true,
-      });
-
-      void getSuggestedUnitFolder()
-        .then((suggestion) => {
-          setTransformerSetupPrompt((current) => {
-            if (!current) {
-              return current;
-            }
-
-            const suggestedFolder = suggestion?.unit_folder ?? "";
-            const suggestedSerialNumber = suggestion?.serial_number ?? serialNumberFromFolder(suggestedFolder);
-            const shouldUseSuggestion = !current.selectedFolder;
-
-            return {
-              ...current,
-              detectedCount: suggestion?.detected_count ?? current.detectedCount,
-              error: current.error,
-              isLoadingSuggestion: false,
-              selectedFolder: shouldUseSuggestion ? suggestedFolder : current.selectedFolder,
-              selectedSerialNumber: shouldUseSuggestion
-                ? suggestedSerialNumber
-                : current.selectedSerialNumber,
-              suggestedFolder,
-              suggestedSerialNumber,
-            };
-          });
-        })
-        .catch((error) => {
-          setTransformerSetupPrompt((current) =>
-            current
-              ? {
-                ...current,
-                  error: messageFromUnknownError(error),
-                  isLoadingSuggestion: false,
-                }
-              : current,
-          );
-        });
-    },
-    [serialNumber],
-  );
-
-  async function handleSetupBrowse() {
-    setTransformerSetupPrompt((current) =>
-      current
-        ? {
-            ...current,
-            error: "",
-            isChoosingFolder: true,
-          }
-        : current,
-    );
-
-    try {
-      const selected = await chooseUnitFolder();
-
-      if (!selected) {
-        return;
-      }
-
-      const fallbackSerialNumber = serialNumberFromFolder(selected);
-
-      setTransformerSetupPrompt((current) =>
-        current
-          ? {
-              ...current,
-              detectedCount: null,
-              selectedFolder: selected,
-              selectedSerialNumber: fallbackSerialNumber,
-            }
-          : current,
-      );
-
-      try {
-        const summary = await scanUnitFolder(selected);
-
-        setTransformerSetupPrompt((current) =>
-          current && current.selectedFolder === selected
-            ? {
-                ...current,
-                detectedCount: summary?.detected_count ?? current.detectedCount,
-                selectedSerialNumber: summary?.serial_number ?? fallbackSerialNumber,
-              }
-            : current,
-        );
-      } catch (error) {
-        setTransformerSetupPrompt((current) =>
-          current && current.selectedFolder === selected
-            ? {
-                ...current,
-                error: messageFromUnknownError(error),
-              }
-            : current,
-        );
-      }
-    } finally {
-      setTransformerSetupPrompt((current) =>
-        current
-          ? {
-              ...current,
-              isChoosingFolder: false,
-            }
-          : current,
-      );
-    }
-  }
-
-  async function handleTransformerSetupConfirm() {
-    const prompt = transformerSetupPrompt;
-
-    if (!prompt) {
-      return;
-    }
-
-    const selected = prompt.selectedFolder.trim();
-    const transformerSn = prompt.transformerSn.trim();
-
-    if (!selected || !transformerSn) {
-      setTransformerSetupPrompt((current) =>
-        current
-          ? {
-              ...current,
-              error: "Select a unit folder and enter the Transformer SN.",
-            }
-          : current,
-      );
-      return;
-    }
-
-    setTransformerSetupPrompt((current) =>
-      current
-        ? {
-            ...current,
-            error: "",
-            isSubmitting: true,
-          }
-        : current,
-    );
-
-    setUnitFolder(selected);
-    selectedFolderRef.current = selected;
-    setupConfirmedFolderRef.current = "";
-    setupErrorRef.current = null;
-    setupPromiseRef.current = null;
-    folderScanPendingRef.current = false;
-    latestTaskStatusesRef.current = {};
-    stopAfterCurrentTaskRef.current = false;
-    setRunnerActive(false);
-    setIsScanningFolder(false);
-    setRemainingSeconds(0);
-    detectedCountRef.current = 0;
-    setDetectedCount(0);
-    setProcessDetectedBacklog(null);
-    processDetectedBacklogRef.current = null;
-    setFailureNotices({});
-    activateTask(null);
-    setLastMessage("Setting up reports");
-
-    const setupOk = await beginReportSetup(selected, transformerSn, prompt.selectedSerialNumber, true);
-
-    if (!setupOk) {
-      setTransformerSetupPrompt((current) =>
-        current
-          ? {
-              ...current,
-              error: setupErrorRef.current || "Unit setup failed.",
-              isSubmitting: false,
-            }
-          : current,
-      );
-      return;
-    }
-
-    setTransformerSetupPrompt(null);
-
-    if (prompt.startAfterConfirm) {
-      await startSequence(selected);
-    }
-  }
-
-  function handleTransformerSetupCancel() {
-    setTransformerSetupPrompt(null);
-    setLastMessage(unitFolder ? "Ready to start" : "");
-  }
-
-  function handleTransformerSnChange(value: string) {
-    setTransformerSetupPrompt((current) =>
-      current
-        ? {
-            ...current,
-            error: "",
-            transformerSn: value,
-          }
-        : current,
-    );
-  }
-
   async function handleChooseFolder() {
-    const selected = await chooseUnitFolder();
+    setIsChoosingFolder(true);
+    const selected = await chooseUnitFolder().finally(() => setIsChoosingFolder(false));
 
     if (!selected) {
       return;
     }
 
     setUnitFolder(selected);
+    setSerialNumber(serialNumberFromFolder(selected));
     setRunnerActive(false);
     stopAfterCurrentTaskRef.current = false;
     setResetClearsSelectionNext(false);
@@ -1634,11 +1612,12 @@ export function OperatorPanel() {
     processDetectedBacklogRef.current = null;
     latestTaskStatusesRef.current = {};
     setFailureNotices({});
+    resetTransformerSnState();
     activateTask(null);
     selectedFolderRef.current = selected;
     setupPromiseRef.current = null;
     setupErrorRef.current = null;
-    setupConfirmedFolderRef.current = "";
+    setConfirmedSetupFolder("");
     folderScanPendingRef.current = true;
     setIsScanningFolder(true);
     setIsSettingUpReports(false);
@@ -1677,21 +1656,12 @@ export function OperatorPanel() {
   }
 
   async function handleRunClick() {
-    if (!unitFolder) {
-      openTransformerSetupPrompt(true);
+    if (controlState.primaryAction === "current-step") {
+      handleJumpToCurrentStep();
       return;
     }
 
-    const nextRunning = !isRunningRef.current;
-
-    if (nextRunning) {
-      if (setupConfirmedFolderRef.current !== unitFolder) {
-        openTransformerSetupPrompt(true);
-        return;
-      }
-
-      await startSequence(unitFolder);
-    } else {
+    if (controlState.primaryAction === "pause") {
       if (processingTaskRef.current) {
         stopAfterCurrentTaskRef.current = true;
         setLastMessage("Pausing after current step");
@@ -1700,7 +1670,80 @@ export function OperatorPanel() {
         setRunnerActive(false);
         setLastMessage("Paused");
       }
+
+      return;
     }
+
+    if (!unitFolder) {
+      setLastMessage("Select Test Unit before starting.");
+      return;
+    }
+
+    if (setupConfirmedFolderRef.current !== unitFolder) {
+      const setupOk = await beginReportSetup(
+        unitFolder,
+        transformerSnDraft.trim(),
+        serialNumber || serialNumberFromFolder(unitFolder),
+        true,
+      );
+
+      if (!setupOk) {
+        return;
+      }
+    } else if (transformerSnDraft.trim() && transformerSnDraft.trim() !== savedTransformerSnRef.current) {
+      const saved = await saveTransformerSnDraft();
+
+      if (!saved) {
+        return;
+      }
+    }
+
+    await startSequence(unitFolder);
+  }
+
+  function handleSecondaryControlClick() {
+    if (controlState.secondaryDisabled) {
+      return;
+    }
+
+    if (controlState.secondaryAction === "follow-step") {
+      handleJumpToCurrentStep();
+      return;
+    }
+
+    void handleResetPanel();
+  }
+
+  function handleJumpToCurrentStep() {
+    const taskId = currentTaskIdRef.current;
+
+    if (!taskId) {
+      setCurrentStepFollowMode(false);
+      return;
+    }
+
+    expandForTask(taskId);
+    enableCurrentStepFollow();
+  }
+
+  async function ensureTransformerSnReadyForReport() {
+    if (!unitFolder || setupConfirmedFolderRef.current !== unitFolder) {
+      setLastMessage("Press Start to set up reports before opening the report.");
+      return false;
+    }
+
+    if (!transformerSnDraft.trim()) {
+      setLastMessage("Transformer SN is missing. Enter and save it before opening the report.");
+      setTransformerSnSaveStatus("error");
+      setTransformerSnError("Transformer SN is missing.");
+      return false;
+    }
+
+    if (transformerSnDraft.trim() !== savedTransformerSnRef.current) {
+      return saveTransformerSnDraft();
+    }
+
+    return true;
   }
 
   async function handleResetPanel() {
@@ -1710,7 +1753,9 @@ export function OperatorPanel() {
       setExpandedIds(new Set());
       setRemainingSeconds(0);
       setResetClearsSelectionNext(false);
-      setupConfirmedFolderRef.current = "";
+      setCurrentStepFollowMode(false);
+      setConfirmedSetupFolder("");
+      resetTransformerSnState();
       setLastMessage("");
       return;
     }
@@ -1729,19 +1774,22 @@ export function OperatorPanel() {
       folderScanPendingRef.current = false;
       setupPromiseRef.current = null;
       setupErrorRef.current = null;
-      setupConfirmedFolderRef.current = "";
+      setConfirmedSetupFolder("");
+      setCurrentStepFollowMode(false);
       setIsScanningFolder(false);
       setIsSettingUpReports(false);
       setProcessDetectedBacklog(null);
       processDetectedBacklogRef.current = null;
       latestTaskStatusesRef.current = {};
       setResetClearsSelectionNext(false);
+      resetTransformerSnState();
       setLastMessage("");
       return;
     }
 
     if (!resetClearsSelectionNext && !isRunningRef.current && !processingTaskRef.current && expandedIds.size > 0) {
       setExpandedIds(new Set());
+      disableCurrentStepFollowForUserAction();
       setLastMessage("Collapsed all test groups. Press Reset again to reset the current SN.");
       return;
     }
@@ -1751,7 +1799,11 @@ export function OperatorPanel() {
     setRemainingSeconds(0);
     setProcessDetectedBacklog(null);
     processDetectedBacklogRef.current = null;
-    setupConfirmedFolderRef.current = "";
+    setConfirmedSetupFolder("");
+    if (transformerSnDraftRef.current.trim()) {
+      setTransformerSnSaveStatus("dirty");
+    }
+    setCurrentStepFollowMode(false);
     latestTaskStatusesRef.current = {};
     setFailureNotices({});
     activateTask(null);
@@ -1786,6 +1838,10 @@ export function OperatorPanel() {
       return;
     }
 
+    if (!(await ensureTransformerSnReadyForReport())) {
+      return;
+    }
+
     try {
       await openReportPath(unitFolder, reportPath);
       setLastMessage("Opened report");
@@ -1806,6 +1862,7 @@ export function OperatorPanel() {
 
       return next;
     });
+    disableCurrentStepFollowForUserAction();
   }
 
   const footerText = setupWarnings.length
@@ -1822,11 +1879,41 @@ export function OperatorPanel() {
           ? "Ready."
           : "Ready.";
   const appVersionText = `v${appVersion}`;
+  const hasActiveSequence = Boolean(currentTaskId && unitFolder && setupConfirmedFolder === unitFolder);
+  const unitDisplaySerialNumber = serialNumber || serialNumberFromFolder(unitFolder);
+  const transformerSnTrimmed = transformerSnDraft.trim();
+  const transformerSnCanSave =
+    Boolean(transformerSnTrimmed) &&
+    transformerSnSaveStatus !== "saving" &&
+    transformerSnSaveStatus !== "saved";
+  const showTransformerSnSavedInline =
+    transformerSnSaveStatus === "saved" && Boolean(transformerSnTrimmed) && !transformerSnInputFocused;
+  const transformerSnStatusText =
+    transformerSnError ||
+    (transformerSnSaveStatus === "saving"
+      ? "Saving..."
+      : transformerSnSaveStatus === "dirty"
+          ? setupConfirmedFolder === unitFolder
+            ? "Unsaved"
+            : "Saves on Start"
+          : "");
+  const transformerSnStatusTone =
+    transformerSnSaveStatus === "error"
+      ? "text-[#f4b1a9]"
+      : transformerSnSaveStatus === "saved"
+        ? "text-[#86efac]"
+        : "text-[#d8d2c8]";
   const nextResetButtonLabel = resetButtonLabel({
     clearsSelectionNext: resetClearsSelectionNext,
     expandedCount: expandedIds.size,
     hasUnitFolder: Boolean(unitFolder),
     isRunning,
+  });
+  const controlState = panelControlState({
+    hasActiveSequence,
+    isFollowingCurrentStep: currentStepFollowMode,
+    isRunning,
+    resetLabel: nextResetButtonLabel,
   });
 
   return (
@@ -1838,22 +1925,84 @@ export function OperatorPanel() {
         <div className="mt-1 truncate text-center text-[8.5pt] leading-tight text-[#d8d2c8]">{statusText}</div>
       </section>
 
-      <section className="mt-1 rounded-md border border-[#454542] bg-[#292928] p-1.5">
+      <section className="mt-1 space-y-1.5 px-1">
         <div className="flex gap-1.5">
           <input
             readOnly
-            value={unitFolder}
-            placeholder="Select a unit test folder..."
-            className="h-7 min-w-0 flex-1 basis-0 rounded border border-[#454542] bg-[#1f1f1e] px-2 text-[7.5pt] text-white placeholder:text-[#b7b1a8] outline-none"
+            aria-label="Selected test unit"
+            title={unitFolder}
+            value={unitDisplaySerialNumber}
+            placeholder="Select Test Unit..."
+            className="h-8 min-w-0 flex-1 basis-0 rounded border border-[#454542] bg-[#1f1f1e] px-2 text-[8.5pt] font-medium text-white placeholder:text-[#b7b1a8] outline-none"
           />
           <button
             type="button"
+            aria-label="Browse unit folder"
             onClick={handleChooseFolder}
-            className="inline-flex h-7 shrink-0 items-center justify-center rounded bg-[#3a3a38] px-2 text-[7.5pt] font-medium text-white shadow-sm hover:bg-[#454542]"
+            disabled={isChoosingFolder || isRunning || isSettingUpReports}
+            className="inline-flex h-8 w-9 shrink-0 items-center justify-center rounded bg-[#3a3a38] px-2 text-[8pt] font-semibold text-white shadow-sm hover:bg-[#454542] disabled:cursor-not-allowed disabled:opacity-65"
           >
-            Browse...
+            ...
           </button>
         </div>
+        <div className="flex gap-1.5">
+          <div className="relative min-w-0 flex-1 basis-0">
+            <input
+              aria-label="Transformer SN"
+              value={transformerSnDraft}
+              placeholder="Transformer SN..."
+              onBlur={() => {
+                setTransformerSnInputFocused(false);
+                void saveTransformerSnDraft();
+              }}
+              onChange={(event) => updateTransformerSnDraft(event.target.value)}
+              onFocus={() => setTransformerSnInputFocused(true)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void saveTransformerSnDraft();
+                }
+              }}
+              className={cn(
+                "h-8 w-full min-w-0 rounded border bg-[#1f1f1e] px-2 text-[8.5pt] text-white placeholder:text-[#b7b1a8] outline-none focus:ring-2 focus:ring-cyan-200/25",
+                showTransformerSnSavedInline && "pr-16",
+                transformerSnSaveStatus === "error"
+                  ? "border-[#d42c1a]"
+                  : transformerSnSaveStatus === "saved"
+                    ? "border-[#1d7f47]"
+                    : "border-[#454542] focus:border-[#1f74ae]",
+              )}
+            />
+            {showTransformerSnSavedInline ? (
+              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[7.3pt] font-semibold leading-none text-[#86efac]">
+                Saved
+              </span>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            aria-label="Save Transformer SN"
+            title="Save Transformer SN"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => void saveTransformerSnDraft()}
+            disabled={!transformerSnCanSave}
+            className="inline-flex h-8 w-9 shrink-0 items-center justify-center rounded bg-[#3a3a38] px-2 text-[7.5pt] font-semibold text-white shadow-sm hover:bg-[#454542] disabled:cursor-not-allowed disabled:bg-[#353535] disabled:text-[#b7b1a8]"
+          >
+            {transformerSnSaveStatus === "saving" ? "..." : <Save className="h-3.5 w-3.5" aria-hidden="true" />}
+          </button>
+        </div>
+        {transformerSnStatusText ? (
+          <div
+            role={transformerSnSaveStatus === "error" ? "alert" : undefined}
+            className={cn(
+              "truncate px-0.5 text-[7.3pt] leading-tight",
+              transformerSnStatusTone,
+            )}
+            title={transformerSnError || undefined}
+          >
+            {transformerSnStatusText}
+          </div>
+        ) : null}
       </section>
 
       <section className="mt-2 min-h-0 flex-1 overflow-hidden">
@@ -1865,10 +2014,13 @@ export function OperatorPanel() {
           ) : null}
           <div
             ref={scrollRef}
-            onScroll={updateScrollCue}
+            aria-label="Workflow steps"
+            onScroll={handleWorkflowScroll}
+            onTouchStart={handleWorkflowUserScrollIntent}
+            onWheel={handleWorkflowUserScrollIntent}
             className="h-full overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           >
-            <div className="space-y-1.5 px-2 py-2">
+            <div className="space-y-1.5 px-1 py-2">
               {panelItems.map((item) =>
                 isSectionItem(item) ? (
                   <SectionBlock
@@ -1915,7 +2067,7 @@ export function OperatorPanel() {
       </div>
 
       <div className="px-1 pb-1.5 text-[8.5pt] leading-tight text-[#d8d2c8]">
-        {serialNumber ? `SN ${serialNumber} | ${footerText}` : footerText}
+        {footerText}
       </div>
 
       <div className="grid grid-cols-2 gap-2">
@@ -1924,19 +2076,28 @@ export function OperatorPanel() {
           onClick={() => void handleRunClick()}
           className={cn(
             "inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-[9pt] font-semibold shadow-sm transition",
-            isRunning
+            controlState.primaryAction === "pause"
               ? "bg-[#9b630c] text-white hover:bg-[#9b630c]"
-              : "bg-[#1d7f47] text-white hover:bg-[#1d7f46]",
+              : controlState.primaryAction === "current-step"
+                ? "bg-[#1f74ae] text-white hover:bg-[#2874a8]"
+                : "bg-[#1d7f47] text-white hover:bg-[#1d7f46]",
           )}
         >
-          {isRunning ? "Pause" : "Start"}
+          {controlState.primaryLabel}
         </button>
         <button
           type="button"
-          onClick={() => void handleResetPanel()}
-          className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#3a3a38] px-3 py-2 text-[9pt] font-semibold text-white shadow-sm transition hover:bg-[#454542]"
+          onClick={handleSecondaryControlClick}
+          disabled={controlState.secondaryDisabled}
+          className={cn(
+            "inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-[9pt] font-semibold text-white shadow-sm transition",
+            controlState.secondaryAction === "follow-step"
+              ? "bg-[#1f74ae] hover:bg-[#2874a8]"
+              : "bg-[#3a3a38] hover:bg-[#454542]",
+            controlState.secondaryDisabled && "cursor-not-allowed opacity-60 hover:bg-[#3a3a38]",
+          )}
         >
-          {nextResetButtonLabel}
+          {controlState.secondaryLabel}
         </button>
       </div>
 
@@ -1946,16 +2107,6 @@ export function OperatorPanel() {
           <span className="font-medium">Built by Syed Hassaan Shah</span>
         </div>
       </footer>
-
-      {transformerSetupPrompt ? (
-        <TransformerSetupDialog
-          prompt={transformerSetupPrompt}
-          onBrowse={() => void handleSetupBrowse()}
-          onCancel={handleTransformerSetupCancel}
-          onConfirm={() => void handleTransformerSetupConfirm()}
-          onTransformerSnChange={handleTransformerSnChange}
-        />
-      ) : null}
 
       {backlogPrompt ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">

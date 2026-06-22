@@ -190,6 +190,42 @@ pub fn setup_unit_folder_with_transformer_sn(
     Ok(build_summary(&unit_folder, report_setup))
 }
 
+pub fn save_transformer_sn(
+    unit_folder: String,
+    transformer_sn: String,
+) -> Result<(), AutomationCommandError> {
+    if unit_folder.trim().is_empty() {
+        return Err(AutomationCommandError::validation(
+            "unit_folder_missing",
+            "Select Test Unit before saving Transformer SN.",
+        ));
+    }
+
+    let transformer_sn = transformer_sn.trim();
+
+    if transformer_sn.is_empty() {
+        return Err(AutomationCommandError::validation(
+            "blank_transformer_sn",
+            "Transformer SN is required before it can be saved.",
+        ));
+    }
+
+    let unit_folder = PathBuf::from(unit_folder);
+
+    if !unit_folder.is_dir() {
+        return Err(AutomationCommandError::report(
+            "unit_folder_missing",
+            "The selected unit folder does not exist.",
+            format!("unit folder does not exist: {}", unit_folder.display()),
+        ));
+    }
+
+    write_transformer_serial_number(&unit_folder, transformer_sn)
+        .map_err(AutomationCommandError::from_report_error)?;
+
+    Ok(())
+}
+
 pub fn scan_unit_folder(unit_folder: String) -> Result<UnitFolderSummary, AutomationError> {
     let unit_folder = PathBuf::from(unit_folder);
     let report_setup = inspect_reports(&unit_folder)?;
@@ -685,6 +721,37 @@ mod smoke_tests {
 
         assert_eq!(error.code, "blank_transformer_sn");
         assert!(error.message.contains("Transformer SN is required"));
+    }
+
+    #[test]
+    fn transformer_sn_save_rejects_missing_selected_unit_folder() {
+        let temp = TempDir::new().expect("temp dir");
+        let missing_unit_folder = temp.path().join("262343000072");
+        let unit_folder = temp.path().join("262343000073");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+
+        let blank_error = save_transformer_sn("   ".to_string(), "TX-12345".to_string())
+            .expect_err("blank selected folder should fail");
+        assert_eq!(blank_error.code, "unit_folder_missing");
+
+        let blank_sn_error =
+            save_transformer_sn(unit_folder.display().to_string(), "   ".to_string())
+                .expect_err("blank transformer SN should fail");
+        assert_eq!(blank_sn_error.code, "blank_transformer_sn");
+
+        let error = save_transformer_sn(
+            missing_unit_folder.display().to_string(),
+            "TX-12345".to_string(),
+        )
+        .expect_err("missing selected folder should fail");
+
+        assert_eq!(error.code, "unit_folder_missing");
+        assert!(error.message.contains("selected unit folder"));
+
+        let missing_report_error =
+            save_transformer_sn(unit_folder.display().to_string(), "TX-12345".to_string())
+                .expect_err("missing report should fail");
+        assert_eq!(missing_report_error.code, "main_report_missing");
     }
 
     #[test]

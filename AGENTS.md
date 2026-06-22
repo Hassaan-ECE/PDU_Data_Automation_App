@@ -12,7 +12,7 @@ The goal is to preserve the current operator layout and workflow while rebuildin
 
 ## Current Status
 
-This repository has a `v0.2.7` pilot release of the replacement app. The released build includes the Tauri 2 / React / TypeScript / Vite / Tailwind / Bun / Rust stack, the production PDU500 Rev02 layout profile, CSV detection/parsing, Excel workbook patching, a Start-time Transformer SN setup dialog, a generic data-driven mapping path for transformer report writes, built-in Rust processor fallback for the remaining current workflow, a signed current-user NSIS installer, GitHub Release updater artifacts, and S-drive staging.
+This repository has a `v0.2.8` pilot release of the replacement app. The released build includes the Tauri 2 / React / TypeScript / Vite / Tailwind / Bun / Rust stack, the production PDU500 Rev02 layout profile, CSV detection/parsing, Excel workbook patching, inline unit selection, inline Transformer SN setup/save support, explicit current-step follow controls, readiness-based updater scheduling, a generic data-driven mapping path for transformer report writes, built-in Rust processor fallback for the remaining current workflow, a signed current-user NSIS installer, GitHub Release updater artifacts, and S-drive staging.
 
 Treat it as pilot-ready, not fully cut over. Keep the legacy Python app available until several production units have been processed cleanly, generated reports have been compared against legacy output, and the updater upgrade path has been tested with a newer release.
 

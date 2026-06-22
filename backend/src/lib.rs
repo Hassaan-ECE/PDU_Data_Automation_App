@@ -61,6 +61,14 @@ fn setup_unit_folder_with_transformer_sn(
 }
 
 #[tauri::command]
+fn save_transformer_sn(
+    unit_folder: String,
+    transformer_sn: String,
+) -> Result<(), automation::AutomationCommandError> {
+    automation::save_transformer_sn(unit_folder, transformer_sn)
+}
+
+#[tauri::command]
 fn scan_unit_folder(unit_folder: String) -> Result<automation::UnitFolderSummary, String> {
     automation::scan_unit_folder(unit_folder).map_err(|error| error.to_string())
 }
@@ -106,6 +114,7 @@ pub fn run() {
             setup_unit_folder,
             find_latest_unit_candidate,
             setup_unit_folder_with_transformer_sn,
+            save_transformer_sn,
             scan_unit_folder,
             process_automation_task,
             open_report_path,

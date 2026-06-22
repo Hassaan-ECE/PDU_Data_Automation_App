@@ -63,7 +63,8 @@ The current file conventions should remain supported:
 
 These are current manual operator steps that the replacement should automate carefully without changing the report layout:
 
-- During setup, prompt for the Transformer SN and write it to the main report workbook at `Test Summary!D1`. Backend and frontend support are implemented in the working tree; release and operator-machine validation are still pending.
+- During setup, collect the Transformer SN inline and write it to the main report workbook at `Test Summary!D1`. Backend and frontend support are implemented in the working tree; the latest inline UX revision is pending release and operator-machine validation.
+- Late Transformer SN edits should save back to `Test Summary!D1` as text and preserve numeric-looking values such as `000123`.
 - The main report workbook is the `PDUD500442AM088_Test Report_0.2CT_Rev02` family.
 - After the full test passes, prompt for the final operator name and write it to the print report workbook at `Test Report #2!E39`.
 - The print report workbook is `PDUD500442AA088_0.2CT Test Report Print.xlsx`.

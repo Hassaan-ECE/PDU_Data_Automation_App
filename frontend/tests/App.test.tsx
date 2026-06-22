@@ -11,7 +11,9 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "208V System" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "415V System" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Breaker Burn-In" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Browse..." })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Select Test Unit...")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Transformer SN...")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Browse unit folder" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reset Panel" })).toBeInTheDocument();
     expect(screen.getByText("208V Transformer Check")).toBeInTheDocument();
     expect(screen.getByText("System Burn-In")).toBeInTheDocument();

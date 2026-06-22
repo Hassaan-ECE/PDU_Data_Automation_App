@@ -6,7 +6,7 @@ This plan moves the current working Python/PyQt script bundle into a maintainabl
 
 Near-term priorities after the core workflow is stable:
 
-1. Release and operator-test the Transformer SN setup flow.
+1. Release and operator-test the inline unit selection and Transformer SN setup/save flow.
 2. Verify and fix the error action that opens Excel near the failed step. Exact sheet/cell selection may require Excel automation; opening the correct workbook remains the fallback.
 3. Add an end-of-test prompt after the full test passes so the operator can type or pick their name, write it to the print report at `Test Report #2!E39`, then open the print dialog for confirmation.
 4. Improve the system burn-in timer so the UI can show the long burn-in countdown followed by the short STEP72 data-capture countdown, while still presenting burn-in as one operator workflow.
@@ -49,14 +49,14 @@ Remaining tasks:
 Current status:
 
 - Initial Tauri 2, React, TypeScript, Vite, Tailwind, Bun, and Rust skeleton is present.
-- Version is currently `0.2.7` in `package.json`, `backend/Cargo.toml`, and `backend/tauri.conf.json`.
-- For `v0.2.7`, frontend lint, frontend tests, frontend build, Rust formatting check, Rust check, and Rust unit tests have been run.
-- Signed NSIS current-user installers have been built for `0.1.0`, `0.2.0`, `0.2.1`, `0.2.2`, `0.2.3`, `0.2.4`, `0.2.5`, `0.2.6`, and `0.2.7`.
+- Version is currently `0.2.8` in `package.json`, `backend/Cargo.toml`, and `backend/tauri.conf.json`.
+- For `v0.2.8`, frontend lint, frontend tests, frontend build, Rust formatting check, Rust check, and Rust unit tests have been run.
+- Signed NSIS current-user installers have been built for `0.1.0`, `0.2.0`, `0.2.1`, `0.2.2`, `0.2.3`, `0.2.4`, `0.2.5`, `0.2.6`, `0.2.7`, and `0.2.8`.
 - A PDU-specific updater key has been generated outside the repo and the public key is configured in Tauri.
 - The `0.1.0` installer has been staged at `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation`.
-- GitHub Releases `v0.1.0`, `v0.2.0`, `v0.2.1`, `v0.2.2`, `v0.2.3`, `v0.2.4`, `v0.2.5`, `v0.2.6`, and `v0.2.7` have been published with the installer, updater signature, `latest.json`, and `SHA256SUMS.txt`.
-- `latest.json` resolves and points to the uploaded `v0.2.7` GitHub release asset.
-- A real updater upgrade smoke test is pending from an installed older updater-capable build to `v0.2.7`. `v0.1.0` and `v0.2.0` cannot initiate the updater flow because their Tauri capability file did not grant updater permissions.
+- GitHub Releases `v0.1.0`, `v0.2.0`, `v0.2.1`, `v0.2.2`, `v0.2.3`, `v0.2.4`, `v0.2.5`, `v0.2.6`, `v0.2.7`, and `v0.2.8` have been published with the installer, updater signature, `latest.json`, and `SHA256SUMS.txt`.
+- `latest.json` resolves and points to the uploaded `v0.2.8` GitHub release asset.
+- A real updater upgrade smoke test is pending from an installed older updater-capable build to `v0.2.8`. `v0.1.0` and `v0.2.0` cannot initiate the updater flow because their Tauri capability file did not grant updater permissions.
 
 Acceptance criteria:
 
@@ -88,8 +88,14 @@ Current status:
 - Operator panel renders the current PDU500 workflow with expandable 208V, 415V, and burn-in groups.
 - Folder selection, setup, start/pause, reset, rerun, open report, update status, and error-card controls are present.
 - Browser-only mock fallback exists for frontend development outside Tauri.
-- The Start-time Transformer SN setup modal is implemented and released in `v0.2.7`. It suggests the latest unit candidate, allows `...` browsing to another unit folder, requires Transformer SN, calls backend setup, and only continues into the existing start/previous-steps flow after setup succeeds.
-- Frontend tests cover modal rendering, required Transformer SN validation, browse/select behavior, successful setup flow, and structured setup error display.
+- `v0.2.8` frontend changes replace the Start-time setup modal with inline unit selection and inline Transformer SN entry.
+- Unit selection is inline: the first row shows only the selected unit SN, uses `Select Test Unit...` as placeholder text, and selects a unit only through the `...` browse button. The UI no longer auto-selects the latest detected unit at startup.
+- Transformer SN is inline: the field uses `Transformer SN...` as placeholder text and saves on Start, blur, Enter, or the icon-only `Save Transformer SN` button. A successful save displays `Saved` inside the input.
+- Report opening is blocked while Transformer SN is missing or unsaved.
+- Current-step follow behavior is explicit: `Start`, `Resume`, `Follow Step`, and `Current Step` enable follow mode and scroll to the active step; manual wheel/touch scroll and expand/collapse disable follow mode.
+- The first updater check is now readiness-based: it waits for backend status and layout profile startup requests to settle, then runs after a short post-ready delay.
+- Frontend tests cover inline unit/SN controls, no latest-unit auto-suggestion call, browse selection, Start setup with Transformer SN, setup error handling, previous-tests prompt, late Transformer SN save, current-step follow behavior, and readiness-based updater timing.
+- Local validation for the `v0.2.8` inline/follow/updater release passed on 2026-06-22: frontend tests, frontend lint, frontend build, Rust formatting check, Rust check, and Rust tests.
 
 Remaining:
 
@@ -142,8 +148,9 @@ Current status:
 - Unit tests cover cell insertion/replacement, style preservation for patched cells, shared formula expansion, calc chain removal, and recalculation flags.
 - A known-good unit was processed through the installed `v0.1.0` app, and the generated workbook opened in Excel without repair prompts.
 - Backend support now writes Transformer SN as inline text to the main report `Test Summary!D1` through `setup_unit_folder_with_transformer_sn`.
+- Backend support now also saves later Transformer SN edits through `save_transformer_sn`, preserving numeric-looking values such as `000123` as text.
 - Backend validation for the Transformer SN setup slice passed: `cargo fmt --manifest-path backend\Cargo.toml --check`, `cargo check --manifest-path backend\Cargo.toml`, and `cargo test --manifest-path backend\Cargo.toml`.
-- The frontend setup modal is connected to the backend Transformer SN write.
+- The frontend inline setup/save flow is connected to `setup_unit_folder_with_transformer_sn` for Start-time setup and `save_transformer_sn` for later edits.
 
 Remaining:
 
@@ -176,7 +183,7 @@ Remaining:
 - Add scrubbed fixture tests for representative production CSV files.
 - Add more structured diagnostics for unusual unreadable-file cases beyond active writer locks.
 - Add more structured logging around CSV selection and parse failures.
-- Operator-test the released frontend Start-time setup modal connected to `find_latest_unit_candidate`.
+- Operator-test the inline unit browse/start setup path. The backend still has `find_latest_unit_candidate`, but the current frontend no longer auto-suggests or auto-selects the latest unit.
 - Later, add passive detection of newly started ATS unit/SN folders and prompt before setting up or switching the app to the new unit.
 
 ## Phase 6 - Report Writers By Section
@@ -225,14 +232,14 @@ Current status:
 
 - A PDU-specific updater key has been generated outside the repo.
 - The public updater key is configured in Tauri.
-- The signed `v0.2.7` installer, `.sig`, `latest.json`, and checksums have been published to GitHub Release `v0.2.7`.
-- The `v0.2.7` installer has been staged on the S-drive at `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.7_x64-setup.exe`.
+- The signed `v0.2.8` installer, `.sig`, `latest.json`, and checksums have been published to GitHub Release `v0.2.8`.
+- The `v0.2.8` installer has been staged on the S-drive at `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.8_x64-setup.exe`.
 - The installed app launches without a console window.
-- The updater endpoint has been verified to return `0.2.7`.
+- The updater endpoint has been verified to return `0.2.8`.
 
 Remaining:
 
-- Test a real updater upgrade from an installed older updater-capable build to `v0.2.7` on the operator PC.
+- Test a real updater upgrade from an installed older updater-capable build to `v0.2.8` on the operator PC.
 - Validate uninstall and reinstall behavior on the production machine.
 - Keep the S-drive root clean as new releases are staged.
 
