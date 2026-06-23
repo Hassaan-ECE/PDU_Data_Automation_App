@@ -157,6 +157,25 @@ export async function saveTransformerSn(unitFolder: string, transformerSn: strin
   return invoke<void>("save_transformer_sn", { unitFolder, transformerSn });
 }
 
+export async function saveFinalOperatorName(
+  unitFolder: string,
+  operatorName: string,
+): Promise<string> {
+  if (!isTauriRuntime()) {
+    return `${unitFolder}\\PDUD500442AA088_0.2CT Test Report Print.xlsx`;
+  }
+
+  return invoke<string>("save_final_operator_name", { unitFolder, operatorName });
+}
+
+export async function openPrintReportDialog(unitFolder: string): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  return invoke<void>("open_print_report_dialog", { unitFolder });
+}
+
 export async function scanUnitFolder(unitFolder: string): Promise<UnitFolderSummary | null> {
   if (!isTauriRuntime()) {
     return mockUnitFolderSummary(unitFolder);

@@ -69,6 +69,19 @@ fn save_transformer_sn(
 }
 
 #[tauri::command]
+fn save_final_operator_name(
+    unit_folder: String,
+    operator_name: String,
+) -> Result<String, automation::AutomationCommandError> {
+    automation::save_final_operator_name(unit_folder, operator_name)
+}
+
+#[tauri::command]
+fn open_print_report_dialog(unit_folder: String) -> Result<(), automation::AutomationCommandError> {
+    automation::open_print_report_dialog(unit_folder)
+}
+
+#[tauri::command]
 fn scan_unit_folder(unit_folder: String) -> Result<automation::UnitFolderSummary, String> {
     automation::scan_unit_folder(unit_folder).map_err(|error| error.to_string())
 }
@@ -115,6 +128,8 @@ pub fn run() {
             find_latest_unit_candidate,
             setup_unit_folder_with_transformer_sn,
             save_transformer_sn,
+            save_final_operator_name,
+            open_print_report_dialog,
             scan_unit_folder,
             process_automation_task,
             open_report_path,

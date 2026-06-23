@@ -1,14 +1,16 @@
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, RotateCcw, Save, SkipForward } from "lucide-react";
+import { ChevronDown, ExternalLink, RotateCcw, Save, SkipForward, Trash2 } from "lucide-react";
 
 import {
   chooseUnitFolder,
   getBackendStatus,
   loadLayoutProfile,
+  openPrintReportDialog,
   openReportLocation,
   openReportPath,
   processAutomationTask,
+  saveFinalOperatorName,
   saveTransformerSn,
   scanUnitFolder,
   setupUnitFolder,
@@ -32,6 +34,8 @@ import { useDesktopUpdates } from "./useDesktopUpdates";
 const DEFAULT_LOAD_DURATION_SECONDS = 3 * 60;
 const TRANSFORMER_DURATION_SECONDS = 60;
 const SYSTEM_BURN_IN_DURATION_SECONDS = 2 * 60 * 60;
+const DEFAULT_OPERATOR_NAMES = ["Sean", "Long", "Jose"];
+const OPERATOR_NAMES_STORAGE_KEY = "pdu.operatorNames";
 
 type BacklogPromptState = {
   count: number;
@@ -50,6 +54,99 @@ type TaskFailureNotice = {
 };
 
 type BackendTaskStatusMap = Record<string, BackendTaskStatus | undefined>;
+
+function operatorNameKey(name: string) {
+  return name.trim().toLowerCase();
+}
+
+function normalizeOperatorNames(values: unknown): string[] {
+  if (!Array.isArray(values)) {
+    return [...DEFAULT_OPERATOR_NAMES];
+  }
+
+  const seen = new Set<string>();
+  const names: string[] = [];
+
+  for (const value of values) {
+    if (typeof value !== "string") {
+      continue;
+    }
+
+    const trimmed = value.trim();
+    const key = operatorNameKey(trimmed);
+
+    if (!trimmed || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    names.push(trimmed);
+  }
+
+  return names;
+}
+
+function storeOperatorNames(names: string[]) {
+  const normalized = normalizeOperatorNames(names);
+
+  try {
+    window.localStorage.setItem(OPERATOR_NAMES_STORAGE_KEY, JSON.stringify(normalized));
+  } catch {
+    // localStorage can be unavailable in restricted browser contexts.
+  }
+
+  return normalized;
+}
+
+function loadOperatorNames() {
+  try {
+    const stored = window.localStorage.getItem(OPERATOR_NAMES_STORAGE_KEY);
+
+    if (stored === null) {
+      return storeOperatorNames([...DEFAULT_OPERATOR_NAMES]);
+    }
+
+    const parsed = JSON.parse(stored) as unknown;
+    const normalized = normalizeOperatorNames(parsed);
+
+    if (JSON.stringify(parsed) !== JSON.stringify(normalized)) {
+      storeOperatorNames(normalized);
+    }
+
+    return normalized;
+  } catch {
+    return storeOperatorNames([...DEFAULT_OPERATOR_NAMES]);
+  }
+}
+
+function addOperatorName(names: string[], name: string) {
+  const normalized = normalizeOperatorNames(names);
+  const trimmed = name.trim();
+  const key = operatorNameKey(trimmed);
+
+  if (!trimmed || normalized.some((operatorName) => operatorNameKey(operatorName) === key)) {
+    return normalized;
+  }
+
+  return [...normalized, trimmed];
+}
+
+function matchingOperatorNames(names: string[], query: string) {
+  const key = operatorNameKey(query);
+
+  if (!key) {
+    return names;
+  }
+
+  const startsWith = names.filter((name) => operatorNameKey(name).startsWith(key));
+  const contains = names.filter((name) => {
+    const nameKey = operatorNameKey(name);
+
+    return !nameKey.startsWith(key) && nameKey.includes(key);
+  });
+
+  return [...startsWith, ...contains];
+}
 
 function formatTime(seconds: number) {
   const hours = Math.floor(seconds / 3600);
@@ -294,6 +391,20 @@ function messageFromUnknownError(error: unknown) {
   }
 
   return String(error);
+}
+
+function detailedMessageFromUnknownError(error: unknown) {
+  const message = messageFromUnknownError(error);
+
+  if (error && typeof error === "object" && "details" in error) {
+    const details = (error as { details?: unknown }).details;
+
+    if (typeof details === "string" && details.trim() && !message.includes(details.trim())) {
+      return `${message} ${details.trim()}`;
+    }
+  }
+
+  return message;
 }
 
 function resetButtonLabel({
@@ -677,6 +788,7 @@ export function OperatorPanel() {
   const [failureNotices, setFailureNotices] = useState<Record<string, TaskFailureNotice>>({});
   const [processDetectedBacklog, setProcessDetectedBacklog] = useState<boolean | null>(null);
   const [reportPath, setReportPath] = useState("");
+  const [printReportPath, setPrintReportPath] = useState("");
   const [detectedCount, setDetectedCount] = useState(0);
   const [lastMessage, setLastMessage] = useState("");
   const [setupWarnings, setSetupWarnings] = useState<string[]>([]);
@@ -691,7 +803,14 @@ export function OperatorPanel() {
   const [transformerSnInputFocused, setTransformerSnInputFocused] = useState(false);
   const [setupConfirmedFolder, setSetupConfirmedFolder] = useState("");
   const [resetClearsSelectionNext, setResetClearsSelectionNext] = useState(false);
-  const appVersion = backendStatus?.version ?? "0.2.8";
+  const [operatorNames, setOperatorNames] = useState<string[]>(loadOperatorNames);
+  const [printOperatorPromptOpen, setPrintOperatorPromptOpen] = useState(false);
+  const [operatorNameDraft, setOperatorNameDraft] = useState("");
+  const [operatorNameError, setOperatorNameError] = useState("");
+  const [operatorDropdownOpen, setOperatorDropdownOpen] = useState(false);
+  const [operatorFilterText, setOperatorFilterText] = useState("");
+  const [isOpeningPrintDialog, setIsOpeningPrintDialog] = useState(false);
+  const appVersion = backendStatus?.version ?? "0.2.9";
   const panelItems = useMemo(() => applyTaskStates(legacyPanelItems, taskStates), [taskStates]);
   const detectedTaskCount = useMemo(
     () => detectedTaskCountFromStates(taskStates),
@@ -1029,6 +1148,7 @@ export function OperatorPanel() {
   const applyFolderSummary = useCallback((summary: UnitFolderSummary, replace = false) => {
     setSerialNumber(summary.serial_number ?? "");
     setReportPath(summary.report_path ?? "");
+    setPrintReportPath(summary.print_report_path ?? "");
     detectedCountRef.current = summary.detected_count;
     setDetectedCount(summary.detected_count);
     setSetupWarnings(summary.warnings);
@@ -1087,6 +1207,8 @@ export function OperatorPanel() {
             const folderName = selected.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
 
             setSerialNumber(folderName.match(/\d{6,}/)?.[0] ?? "");
+            setReportPath("");
+            setPrintReportPath("");
             setLastMessage("Ready to start");
             return true;
           }
@@ -1298,6 +1420,10 @@ export function OperatorPanel() {
 
         if (result.report_path) {
           setReportPath(result.report_path);
+        }
+
+        if (result.print_report_path) {
+          setPrintReportPath(result.print_report_path);
         }
 
         if (result.state === "waiting") {
@@ -1608,6 +1734,8 @@ export function OperatorPanel() {
     stopAfterCurrentTaskRef.current = false;
     setResetClearsSelectionNext(false);
     setRemainingSeconds(0);
+    setReportPath("");
+    setPrintReportPath("");
     setProcessDetectedBacklog(null);
     processDetectedBacklogRef.current = null;
     latestTaskStatusesRef.current = {};
@@ -1726,14 +1854,16 @@ export function OperatorPanel() {
     enableCurrentStepFollow();
   }
 
-  async function ensureTransformerSnReadyForReport() {
+  async function ensureTransformerSnReadyForReport(action: "opening" | "printing" = "opening") {
+    const actionText = action === "printing" ? "printing the report" : "opening the report";
+
     if (!unitFolder || setupConfirmedFolderRef.current !== unitFolder) {
-      setLastMessage("Press Start to set up reports before opening the report.");
+      setLastMessage(`Press Start to set up reports before ${actionText}.`);
       return false;
     }
 
     if (!transformerSnDraft.trim()) {
-      setLastMessage("Transformer SN is missing. Enter and save it before opening the report.");
+      setLastMessage(`Transformer SN is missing. Enter and save it before ${actionText}.`);
       setTransformerSnSaveStatus("error");
       setTransformerSnError("Transformer SN is missing.");
       return false;
@@ -1752,6 +1882,8 @@ export function OperatorPanel() {
       setFailureNotices({});
       setExpandedIds(new Set());
       setRemainingSeconds(0);
+      setReportPath("");
+      setPrintReportPath("");
       setResetClearsSelectionNext(false);
       setCurrentStepFollowMode(false);
       setConfirmedSetupFolder("");
@@ -1764,6 +1896,7 @@ export function OperatorPanel() {
       setUnitFolder("");
       setSerialNumber("");
       setReportPath("");
+      setPrintReportPath("");
       detectedCountRef.current = 0;
       setDetectedCount(0);
       setSetupWarnings([]);
@@ -1850,6 +1983,95 @@ export function OperatorPanel() {
     }
   }
 
+  async function handlePrintReportClick() {
+    if (processingTaskRef.current || isRunningRef.current) {
+      setLastMessage("Pause and wait for the current step to finish before printing the report");
+      return;
+    }
+
+    if (!unitFolder) {
+      setLastMessage("Select Test Unit before printing the report.");
+      return;
+    }
+
+    if (setupConfirmedFolderRef.current !== unitFolder) {
+      setLastMessage("Press Start to set up reports before printing the report.");
+      return;
+    }
+
+    if (!printReportPath) {
+      setLastMessage("No print report is available yet.");
+      return;
+    }
+
+    if (!(await ensureTransformerSnReadyForReport("printing"))) {
+      return;
+    }
+
+    setOperatorNameDraft((current) => current.trim() || operatorNames[0] || "");
+    setOperatorNameError("");
+    setOperatorDropdownOpen(false);
+    setOperatorFilterText("");
+    setPrintOperatorPromptOpen(true);
+  }
+
+  function handleRemoveOperatorName(name: string) {
+    setOperatorNames((current) => {
+      const key = operatorNameKey(name);
+      const next = current.filter((operatorName) => operatorNameKey(operatorName) !== key);
+
+      return storeOperatorNames(next);
+    });
+
+    if (operatorNameKey(operatorNameDraft) === operatorNameKey(name)) {
+      setOperatorNameDraft("");
+    }
+  }
+
+  function handleSelectOperatorName(name: string) {
+    setOperatorNameDraft(name);
+    setOperatorNameError("");
+    setOperatorDropdownOpen(false);
+    setOperatorFilterText("");
+  }
+
+  async function handleConfirmPrintReport() {
+    const operatorName = operatorNameDraft.trim();
+
+    if (!operatorName) {
+      setOperatorNameError("Operator name is required.");
+      return;
+    }
+
+    if (!unitFolder || setupConfirmedFolderRef.current !== unitFolder) {
+      const message = "Press Start to set up reports before printing the report.";
+      setOperatorNameError(message);
+      setLastMessage(message);
+      return;
+    }
+
+    setIsOpeningPrintDialog(true);
+    setOperatorNameError("");
+    setLastMessage("Saving final operator name");
+
+    try {
+      await saveFinalOperatorName(unitFolder, operatorName);
+      setOperatorNames((current) => storeOperatorNames(addOperatorName(current, operatorName)));
+      setLastMessage("Opening print dialog");
+      await openPrintReportDialog(unitFolder);
+      setPrintOperatorPromptOpen(false);
+      setOperatorDropdownOpen(false);
+      setOperatorFilterText("");
+      setLastMessage("Print dialog opened");
+    } catch (error) {
+      const message = detailedMessageFromUnknownError(error);
+      setOperatorNameError(message);
+      setLastMessage(message);
+    } finally {
+      setIsOpeningPrintDialog(false);
+    }
+  }
+
   function toggleSection(id: string) {
     setExpandedIds((current) => {
       const next = new Set(current);
@@ -1915,6 +2137,7 @@ export function OperatorPanel() {
     isRunning,
     resetLabel: nextResetButtonLabel,
   });
+  const visibleOperatorNames = matchingOperatorNames(operatorNames, operatorFilterText);
 
   return (
     <main className="flex h-screen min-h-[400px] w-full min-w-[360px] max-w-full flex-col overflow-hidden bg-[#20201f] p-3.5 text-white">
@@ -2047,11 +2270,18 @@ export function OperatorPanel() {
                   />
                 ),
               )}
-              <PanelButton
-                label="Open Report"
-                state="off"
-                onClick={() => void handleOpenReport()}
-              />
+              <div aria-label="Report actions" className="grid grid-cols-2 gap-1.5">
+                <PanelButton
+                  label="Open Report"
+                  state="off"
+                  onClick={() => void handleOpenReport()}
+                />
+                <PanelButton
+                  label="Print Report"
+                  state="off"
+                  onClick={() => void handlePrintReportClick()}
+                />
+              </div>
             </div>
           </div>
           {scrollCue.bottom ? (
@@ -2107,6 +2337,132 @@ export function OperatorPanel() {
           <span className="font-medium">Built by Syed Hassaan Shah</span>
         </div>
       </footer>
+
+      {printOperatorPromptOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
+          <section className="w-full max-w-[320px] rounded-md border border-[#454542] bg-[#292928] p-4 text-white shadow-2xl">
+            <div className="text-center text-[12pt] font-semibold leading-tight">
+              Print Report
+            </div>
+            <div className="relative mt-4">
+              <div
+                className={cn(
+                  "flex h-9 rounded border bg-[#1f1f1e] focus-within:ring-2 focus-within:ring-cyan-200/25",
+                  operatorNameError ? "border-[#d42c1a]" : "border-[#454542] focus-within:border-[#1f74ae]",
+                )}
+              >
+                <input
+                  aria-controls="print-report-operator-menu"
+                  aria-expanded={operatorDropdownOpen}
+                  aria-haspopup="listbox"
+                  aria-label="Operator name"
+                  autoFocus
+                  value={operatorNameDraft}
+                  placeholder="Operator name..."
+                  onChange={(event) => {
+                    const value = event.target.value;
+
+                    setOperatorNameDraft(value);
+                    setOperatorFilterText(value);
+                    setOperatorNameError("");
+                    setOperatorDropdownOpen(true);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void handleConfirmPrintReport();
+                    } else if (event.key === "ArrowDown") {
+                      event.preventDefault();
+                      setOperatorFilterText(operatorNameDraft);
+                      setOperatorDropdownOpen(true);
+                    } else if (event.key === "Escape") {
+                      setOperatorDropdownOpen(false);
+                    }
+                  }}
+                  className="min-w-0 flex-1 rounded-l bg-transparent px-2 text-[9pt] text-white placeholder:text-[#b7b1a8] outline-none"
+                />
+                <button
+                  type="button"
+                  aria-label="Show operator names"
+                  aria-expanded={operatorDropdownOpen}
+                  aria-controls="print-report-operator-menu"
+                  onClick={() => {
+                    setOperatorFilterText("");
+                    setOperatorDropdownOpen((open) => !open);
+                  }}
+                  className="inline-flex w-9 shrink-0 items-center justify-center rounded-r border-l border-[#454542] text-[#d8d2c8] transition hover:bg-[#353534] hover:text-white"
+                >
+                  <ChevronDown className="h-4 w-4" aria-hidden="true" />
+                </button>
+              </div>
+              {operatorDropdownOpen ? (
+                <div
+                  id="print-report-operator-menu"
+                  role="listbox"
+                  aria-label="Saved operators"
+                  className="absolute left-0 right-0 top-full z-10 mt-1 max-h-36 overflow-y-auto rounded border border-[#454542] bg-[#242423] p-1 shadow-xl [scrollbar-width:thin]"
+                >
+                  {visibleOperatorNames.length ? (
+                    visibleOperatorNames.map((name) => (
+                      <div key={name} className="flex min-h-8 items-center gap-1 rounded hover:bg-[#30302f]">
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={operatorNameKey(operatorNameDraft) === operatorNameKey(name)}
+                          onClick={() => handleSelectOperatorName(name)}
+                          className="min-w-0 flex-1 truncate px-2 text-left text-[8.5pt] font-medium text-white"
+                        >
+                          {name}
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Remove ${name}`}
+                          title={`Remove ${name}`}
+                          onClick={() => handleRemoveOperatorName(name)}
+                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-[#d8d2c8] transition hover:bg-[#454542] hover:text-white"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                        </button>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="px-2 py-1.5 text-[8pt] text-[#b7b1a8]">
+                      {operatorNames.length ? "No matching operators" : "No saved operators"}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+              {operatorNameError ? (
+                <div role="alert" className="mt-1.5 text-[7.5pt] leading-tight text-[#f4b1a9]">
+                  {operatorNameError}
+                </div>
+              ) : null}
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setPrintOperatorPromptOpen(false);
+                  setOperatorDropdownOpen(false);
+                  setOperatorFilterText("");
+                }}
+                disabled={isOpeningPrintDialog}
+                className="inline-flex min-h-9 items-center justify-center rounded-md bg-[#3a3a38] px-3 py-2 text-[9pt] font-semibold text-white shadow-sm transition hover:bg-[#454542] disabled:cursor-not-allowed disabled:opacity-65"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmPrintReport()}
+                disabled={isOpeningPrintDialog}
+                className="inline-flex min-h-9 items-center justify-center rounded-md bg-[#1d7f47] px-3 py-2 text-[9pt] font-semibold text-white shadow-sm transition hover:bg-[#1d7f46] disabled:cursor-not-allowed disabled:opacity-65"
+              >
+                {isOpeningPrintDialog ? "Opening..." : "Confirm & Print"}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {backlogPrompt ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">

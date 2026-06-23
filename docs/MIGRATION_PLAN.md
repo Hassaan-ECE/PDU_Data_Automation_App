@@ -8,7 +8,7 @@ Near-term priorities after the core workflow is stable:
 
 1. Release and operator-test the inline unit selection and Transformer SN setup/save flow.
 2. Verify and fix the error action that opens Excel near the failed step. Exact sheet/cell selection may require Excel automation; opening the correct workbook remains the fallback.
-3. Add an end-of-test prompt after the full test passes so the operator can type or pick their name, write it to the print report at `Test Report #2!E39`, then open the print dialog for confirmation.
+3. Operator-test the manual Print Report flow that captures the final operator name, writes it to `Test Report #2!E39`, and opens Excel's print UI for confirmation.
 4. Improve the system burn-in timer so the UI can show the long burn-in countdown followed by the short STEP72 data-capture countdown, while still presenting burn-in as one operator workflow.
 5. Add ATS/new-SN detection after the main setup and completion flows are reliable. The app should prompt before switching to or setting up a newly detected unit.
 6. Harden failure recovery for locked workbooks, interrupted writes, app restarts, and unavailable network/S-drive paths.
@@ -49,14 +49,14 @@ Remaining tasks:
 Current status:
 
 - Initial Tauri 2, React, TypeScript, Vite, Tailwind, Bun, and Rust skeleton is present.
-- Version is currently `0.2.8` in `package.json`, `backend/Cargo.toml`, and `backend/tauri.conf.json`.
-- For `v0.2.8`, frontend lint, frontend tests, frontend build, Rust formatting check, Rust check, and Rust unit tests have been run.
-- Signed NSIS current-user installers have been built for `0.1.0`, `0.2.0`, `0.2.1`, `0.2.2`, `0.2.3`, `0.2.4`, `0.2.5`, `0.2.6`, `0.2.7`, and `0.2.8`.
+- Version is currently `0.2.9` in `package.json`, `backend/Cargo.toml`, and `backend/tauri.conf.json`.
+- For `v0.2.9`, Rust formatting check, Rust check, Rust unit tests, frontend tests, frontend build, and frontend lint have been run.
+- Signed NSIS current-user installers have been built for `0.1.0`, `0.2.0`, `0.2.1`, `0.2.2`, `0.2.3`, `0.2.4`, `0.2.5`, `0.2.6`, `0.2.7`, `0.2.8`, and `0.2.9`.
 - A PDU-specific updater key has been generated outside the repo and the public key is configured in Tauri.
 - The `0.1.0` installer has been staged at `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation`.
-- GitHub Releases `v0.1.0`, `v0.2.0`, `v0.2.1`, `v0.2.2`, `v0.2.3`, `v0.2.4`, `v0.2.5`, `v0.2.6`, `v0.2.7`, and `v0.2.8` have been published with the installer, updater signature, `latest.json`, and `SHA256SUMS.txt`.
-- `latest.json` resolves and points to the uploaded `v0.2.8` GitHub release asset.
-- A real updater upgrade smoke test is pending from an installed older updater-capable build to `v0.2.8`. `v0.1.0` and `v0.2.0` cannot initiate the updater flow because their Tauri capability file did not grant updater permissions.
+- GitHub Releases `v0.1.0`, `v0.2.0`, `v0.2.1`, `v0.2.2`, `v0.2.3`, `v0.2.4`, `v0.2.5`, `v0.2.6`, `v0.2.7`, `v0.2.8`, and `v0.2.9` have been published with the installer, updater signature, `latest.json`, and `SHA256SUMS.txt`.
+- `latest.json` resolves and points to the uploaded `v0.2.9` GitHub release asset.
+- A real updater upgrade smoke test is pending from an installed older updater-capable build to `v0.2.9`. `v0.1.0` and `v0.2.0` cannot initiate the updater flow because their Tauri capability file did not grant updater permissions.
 
 Acceptance criteria:
 
@@ -95,12 +95,14 @@ Current status:
 - Current-step follow behavior is explicit: `Start`, `Resume`, `Follow Step`, and `Current Step` enable follow mode and scroll to the active step; manual wheel/touch scroll and expand/collapse disable follow mode.
 - The first updater check is now readiness-based: it waits for backend status and layout profile startup requests to settle, then runs after a short post-ready delay.
 - Frontend tests cover inline unit/SN controls, no latest-unit auto-suggestion call, browse selection, Start setup with Transformer SN, setup error handling, previous-tests prompt, late Transformer SN save, current-step follow behavior, and readiness-based updater timing.
-- Local validation for the `v0.2.8` inline/follow/updater release passed on 2026-06-22: frontend tests, frontend lint, frontend build, Rust formatting check, Rust check, and Rust tests.
+- `v0.2.9` adds a manual Print Report flow with side-by-side Open Report and Print Report actions, final operator-name capture, local saved-operator names, Transformer SN/report setup guards, and Excel print UI confirmation.
+- Frontend tests also cover the Print Report action layout, operator modal, local saved-name behavior, backend save/dialog calls, print-dialog errors, and Transformer SN print guards.
+- Local validation for the `v0.2.9` print release passed on 2026-06-23: Rust formatting check, Rust check, Rust tests, frontend tests, frontend build, and frontend lint.
 
 Remaining:
 
 - Continue operator-machine smoke testing for screen fit, long-session readability, and failure-state ergonomics.
-- Add planned operator prompts for final operator name capture and print confirmation.
+- Continue operator-machine smoke testing for the manual Print Report flow.
 - Verify that error actions open the intended report context, or clearly fall back to opening the workbook.
 
 ## Phase 3 - Layout Config Model
@@ -155,8 +157,7 @@ Current status:
 Remaining:
 
 - Repeat workbook validation across more real or copied units, including reports with existing formulas and workbooks already open in Excel.
-- Add workbook write for final operator name to the print report `Test Report #2!E39`.
-- Confirm whether the print dialog and exact sheet/cell navigation require Excel automation on the operator PC.
+- Repeat manual Print Report validation on the operator PC after installing `v0.2.9`.
 
 ## Phase 5 - CSV Discovery And Processing
 
@@ -232,14 +233,14 @@ Current status:
 
 - A PDU-specific updater key has been generated outside the repo.
 - The public updater key is configured in Tauri.
-- The signed `v0.2.8` installer, `.sig`, `latest.json`, and checksums have been published to GitHub Release `v0.2.8`.
-- The `v0.2.8` installer has been staged on the S-drive at `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.8_x64-setup.exe`.
+- The signed `v0.2.9` installer, `.sig`, `latest.json`, and checksums have been published to GitHub Release `v0.2.9`.
+- The `v0.2.9` installer has been staged on the S-drive at `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.9_x64-setup.exe`.
 - The installed app launches without a console window.
-- The updater endpoint has been verified to return `0.2.8`.
+- The updater endpoint has been verified to return `0.2.9`.
 
 Remaining:
 
-- Test a real updater upgrade from an installed older updater-capable build to `v0.2.8` on the operator PC.
+- Test a real updater upgrade from an installed older updater-capable build to `v0.2.9` on the operator PC.
 - Validate uninstall and reinstall behavior on the production machine.
 - Keep the S-drive root clean as new releases are staged.
 

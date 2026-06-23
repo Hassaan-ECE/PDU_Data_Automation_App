@@ -1,7 +1,7 @@
 {
   "name": "pdu-data-automation-app",
   "private": true,
-  "version": "0.2.8",
+  "version": "0.2.9",
   "packageManager": "bun@1.3.13",
   "description": "PDU data automation desktop app built with Tauri, React, TypeScript, and Rust.",
   "author": "Syed Hassaan Shah",

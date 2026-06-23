@@ -138,9 +138,10 @@ Do not reuse the legacy behavior where missing data can become pass.
 10. Backend returns a structured `ProcessingResult`.
 11. Frontend updates the task state and displays summary/log details.
 
-Current `v0.2.8` status:
+Current `v0.2.9` status:
 
-- The published `v0.2.8` release uses inline unit selection and Transformer SN entry/save instead of the setup modal.
+- The published `v0.2.9` release uses inline unit selection and Transformer SN entry/save instead of the setup modal.
+- The frontend includes a manual Print Report flow that captures the final operator name before opening Excel's print UI.
 - The generic data-driven mapping processor path exists.
 - The 208V and 415V transformer report writes are driven by mappings in `config/report-layouts/pdu500.rev02.layout.json`.
 - System, breaker, and burn-in tasks still use built-in Rust processors as the fallback path.

@@ -33,11 +33,11 @@ Current release root:
 
 ```text
 S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\
-  PDU Data Automation_0.2.8_x64-setup.exe
+  PDU Data Automation_0.2.9_x64-setup.exe
   release-support\
-    v0.2.8\
+    v0.2.9\
       latest.json
-      PDU Data Automation_0.2.8_x64-setup.exe.sig
+      PDU Data Automation_0.2.9_x64-setup.exe.sig
       SHA256SUMS.txt
   archive\
   shared\
@@ -61,7 +61,7 @@ Each release should publish:
 - `SHA256SUMS.txt`
 - release notes
 
-`v0.2.8` has been published with these assets. Keep this list as the checklist for future releases.
+`v0.2.9` has been published with these assets. Keep this list as the checklist for future releases.
 
 The Tauri updater endpoint should point at:
 
@@ -144,6 +144,9 @@ For each release candidate:
 - edit Transformer SN after setup and confirm the late save updates `Test Summary!D1`
 - confirm numeric-looking Transformer SN values such as `000123` remain text
 - confirm report opening is blocked while Transformer SN is missing or unsaved
+- confirm Print Report blocks while the runner is active, while report setup is missing, and while Transformer SN is missing or unsaved
+- confirm Print Report writes the selected operator name to `Test Report #2!E39`
+- confirm Print Report opens Excel's non-silent print UI with all visible print-report worksheets selected
 - confirm a locked workbook shows a visible Transformer SN save/setup error and can be retried
 - confirm CSV detection
 - confirm current-step follow controls behave correctly while running, paused, manually scrolled, and after expand/collapse
@@ -157,7 +160,7 @@ For each release candidate:
 - run updater check against release metadata
 - uninstall cleanly
 
-The installed `v0.1.0` app processed one known-good unit and produced an Excel workbook that opened without repair prompts. The `v0.2.6` release was smoke-tested with `C:\PDU500\262343000072`, and the generated data was manually reviewed as good. The `v0.2.8` release adds the revised inline unit/Transformer SN UX, current-step follow controls, and readiness-based updater timing. `v0.1.0` and `v0.2.0` did not grant updater plugin permissions, so use `v0.2.1` or newer as the baseline for future updater smoke tests.
+The installed `v0.1.0` app processed one known-good unit and produced an Excel workbook that opened without repair prompts. The `v0.2.6` release was smoke-tested with `C:\PDU500\262343000072`, and the generated data was manually reviewed as good. The `v0.2.8` release added the revised inline unit/Transformer SN UX, current-step follow controls, and readiness-based updater timing. The `v0.2.9` release adds the manual Print Report flow and final operator-name capture. `v0.1.0` and `v0.2.0` did not grant updater plugin permissions, so use `v0.2.1` or newer as the baseline for future updater smoke tests.
 
 ## Local Release Folder
 

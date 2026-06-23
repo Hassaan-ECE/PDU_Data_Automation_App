@@ -16,13 +16,13 @@ C:\Projects\Active\PDU_Data_Automation_App
 
 ## Status
 
-`v0.2.8` is the current released pilot build. `v0.1.0` remains the first released pilot.
+`v0.2.9` is the current released pilot build. `v0.1.0` remains the first released pilot.
 
 Current release:
 
-- tag: `v0.2.8`
-- GitHub release: `https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.8`
-- S-drive installer: `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.8_x64-setup.exe`
+- tag: `v0.2.9`
+- GitHub release: `https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.9`
+- S-drive installer: `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.9_x64-setup.exe`
 
 Implemented in the pilot:
 
@@ -37,6 +37,7 @@ Implemented in the pilot:
 - updater plugin permissions for future in-app updates
 - three-step reset flow: collapse tests, reset current SN, then clear SN selection
 - inline unit selection and Transformer SN setup/save flow that writes Transformer SN to `Test Summary!D1`
+- manual Print Report flow that saves the final operator name to `Test Report #2!E39` and opens Excel's print UI for operator confirmation
 - explicit current-step follow controls and readiness-based updater scheduling
 - legacy-style CSV readiness waiting for active ATS-written files
 - mid-test countdown resume from detected CSV start time

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -6,9 +6,11 @@ const mocks = vi.hoisted(() => ({
   getBackendStatus: vi.fn(),
   getSuggestedUnitFolder: vi.fn(),
   loadLayoutProfile: vi.fn(),
+  openPrintReportDialog: vi.fn(),
   openReportLocation: vi.fn(),
   openReportPath: vi.fn(),
   processAutomationTask: vi.fn(),
+  saveFinalOperatorName: vi.fn(),
   saveTransformerSn: vi.fn(),
   scanUnitFolder: vi.fn(),
   setupUnitFolder: vi.fn(),
@@ -20,9 +22,11 @@ vi.mock("@/integrations/tauri/backend", () => ({
   getSuggestedUnitFolder: mocks.getSuggestedUnitFolder,
   isTauriRuntime: () => false,
   loadLayoutProfile: mocks.loadLayoutProfile,
+  openPrintReportDialog: mocks.openPrintReportDialog,
   openReportLocation: mocks.openReportLocation,
   openReportPath: mocks.openReportPath,
   processAutomationTask: mocks.processAutomationTask,
+  saveFinalOperatorName: mocks.saveFinalOperatorName,
   saveTransformerSn: mocks.saveTransformerSn,
   scanUnitFolder: mocks.scanUnitFolder,
   setupUnitFolder: mocks.setupUnitFolder,
@@ -73,6 +77,7 @@ describe("OperatorPanel inline Transformer SN setup", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
     scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
       configurable: true,
@@ -98,11 +103,14 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     });
     mocks.scanUnitFolder.mockResolvedValue(unitSummary("C:\\PDU500\\262343000072", "262343000072"));
     mocks.setupUnitFolder.mockResolvedValue(unitSummary("C:\\PDU500\\262343000072", "262343000072"));
+    mocks.saveFinalOperatorName.mockResolvedValue("C:\\PDU500\\262343000072\\print.xlsx");
     mocks.saveTransformerSn.mockResolvedValue(undefined);
+    mocks.openPrintReportDialog.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
     delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    window.localStorage.clear();
   });
 
   async function selectUnit(unitFolder = "C:\\PDU500\\262343000072", serialNumber = "262343000072") {
@@ -115,6 +123,27 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     });
   }
 
+  async function setupUnitReadyForPrint() {
+    await selectUnit();
+
+    fireEvent.change(screen.getByLabelText("Transformer SN"), {
+      target: { value: "TX-PRINT" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    await waitFor(() => {
+      expect(mocks.setupUnitFolder).toHaveBeenCalledWith(
+        "C:\\PDU500\\262343000072",
+        "TX-PRINT",
+        "262343000072",
+      );
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
+    });
+  }
+
   it("shows the inline unit selector and Transformer SN input without opening setup", async () => {
     render(<App />);
 
@@ -124,6 +153,16 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     expect(unitSelector).toHaveValue("");
     expect(mocks.getSuggestedUnitFolder).not.toHaveBeenCalled();
     expect(screen.queryByText("Unit Setup")).not.toBeInTheDocument();
+  });
+
+  it("renders Open Report and Print Report side-by-side", async () => {
+    render(<App />);
+
+    const reportActions = screen.getByLabelText("Report actions");
+
+    expect(reportActions).toHaveClass("grid", "grid-cols-2");
+    expect(within(reportActions).getByRole("button", { name: "Open Report" })).toBeInTheDocument();
+    expect(within(reportActions).getByRole("button", { name: "Print Report" })).toBeInTheDocument();
   });
 
   it("uses a browsed folder and Transformer SN for setup before starting", async () => {
@@ -179,6 +218,162 @@ describe("OperatorPanel inline Transformer SN setup", () => {
 
     expect(await screen.findByText("Previous Tests Detected")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run Previous Tests" })).toBeInTheDocument();
+  });
+
+  it("opens the Print Report operator modal with default names", async () => {
+    render(<App />);
+
+    await setupUnitReadyForPrint();
+
+    fireEvent.click(screen.getByRole("button", { name: "Print Report" }));
+
+    expect(await screen.findByLabelText("Operator name")).toHaveValue("Sean");
+    expect(screen.queryByRole("option", { name: "Sean" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show operator names" }));
+    const savedOperators = await screen.findByRole("listbox", { name: "Saved operators" });
+
+    expect(within(savedOperators).getByRole("option", { name: "Sean" })).toBeInTheDocument();
+    expect(within(savedOperators).getByRole("option", { name: "Long" })).toBeInTheDocument();
+    expect(within(savedOperators).getByRole("option", { name: "Jose" })).toBeInTheDocument();
+  });
+
+  it("accepts and persists a new typed operator name", async () => {
+    render(<App />);
+
+    await setupUnitReadyForPrint();
+
+    fireEvent.click(screen.getByRole("button", { name: "Print Report" }));
+    fireEvent.change(await screen.findByLabelText("Operator name"), {
+      target: { value: "Priya" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm & Print" }));
+
+    await waitFor(() => {
+      expect(mocks.saveFinalOperatorName).toHaveBeenCalledWith("C:\\PDU500\\262343000072", "Priya");
+    });
+    await waitFor(() => {
+      expect(mocks.openPrintReportDialog).toHaveBeenCalledWith("C:\\PDU500\\262343000072");
+    });
+    expect(JSON.parse(window.localStorage.getItem("pdu.operatorNames") ?? "[]")).toEqual([
+      "Sean",
+      "Long",
+      "Jose",
+      "Priya",
+    ]);
+  });
+
+  it("filters operator dropdown suggestions while typing", async () => {
+    render(<App />);
+
+    await setupUnitReadyForPrint();
+
+    fireEvent.click(screen.getByRole("button", { name: "Print Report" }));
+    fireEvent.change(await screen.findByLabelText("Operator name"), {
+      target: { value: "L" },
+    });
+
+    const savedOperators = await screen.findByRole("listbox", { name: "Saved operators" });
+
+    expect(within(savedOperators).getByRole("option", { name: "Long" })).toBeInTheDocument();
+    expect(within(savedOperators).queryByRole("option", { name: "Sean" })).not.toBeInTheDocument();
+    expect(within(savedOperators).queryByRole("option", { name: "Jose" })).not.toBeInTheDocument();
+  });
+
+  it("removes an existing operator name from the local list", async () => {
+    render(<App />);
+
+    await setupUnitReadyForPrint();
+
+    fireEvent.click(screen.getByRole("button", { name: "Print Report" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Show operator names" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Long" }));
+
+    expect(screen.queryByRole("option", { name: "Long" })).not.toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem("pdu.operatorNames") ?? "[]")).toEqual([
+      "Sean",
+      "Jose",
+    ]);
+  });
+
+  it("blocks blank operator name confirmation", async () => {
+    render(<App />);
+
+    await setupUnitReadyForPrint();
+
+    fireEvent.click(screen.getByRole("button", { name: "Print Report" }));
+    fireEvent.change(await screen.findByLabelText("Operator name"), {
+      target: { value: "   " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm & Print" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Operator name is required.");
+    expect(mocks.saveFinalOperatorName).not.toHaveBeenCalled();
+    expect(mocks.openPrintReportDialog).not.toHaveBeenCalled();
+  });
+
+  it("calls backend save and print-dialog commands on confirm", async () => {
+    render(<App />);
+
+    await setupUnitReadyForPrint();
+
+    fireEvent.click(screen.getByRole("button", { name: "Print Report" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm & Print" }));
+
+    await waitFor(() => {
+      expect(mocks.saveFinalOperatorName).toHaveBeenCalledWith("C:\\PDU500\\262343000072", "Sean");
+    });
+    await waitFor(() => {
+      expect(mocks.openPrintReportDialog).toHaveBeenCalledWith("C:\\PDU500\\262343000072");
+    });
+  });
+
+  it("shows print-dialog error details when Excel automation fails", async () => {
+    mocks.openPrintReportDialog.mockRejectedValueOnce({
+      code: "print_dialog_failed",
+      details: "PrintPreviewAndPrint failed: command is unavailable",
+      message: "The Excel print dialog could not be opened for the print report.",
+    });
+
+    render(<App />);
+
+    await setupUnitReadyForPrint();
+
+    fireEvent.click(screen.getByRole("button", { name: "Print Report" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm & Print" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "PrintPreviewAndPrint failed: command is unavailable",
+    );
+    expect(screen.getByLabelText("Operator name")).toBeInTheDocument();
+  });
+
+  it("blocks Print Report when Transformer SN is missing or cannot be saved", async () => {
+    render(<App />);
+
+    await selectUnit();
+
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => {
+      expect(mocks.setupUnitFolder).toHaveBeenCalled();
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Print Report" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Transformer SN is missing.");
+    expect(screen.queryByLabelText("Operator name")).not.toBeInTheDocument();
+
+    mocks.saveTransformerSn.mockRejectedValueOnce({ code: "workbook_locked", message: "SN save failed" });
+    fireEvent.change(screen.getByLabelText("Transformer SN"), {
+      target: { value: "TX-UNSAVED" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Print Report" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("SN save failed");
+    expect(screen.queryByLabelText("Operator name")).not.toBeInTheDocument();
   });
 
   it("saves a Transformer SN after setup and blocks report opening while missing", async () => {

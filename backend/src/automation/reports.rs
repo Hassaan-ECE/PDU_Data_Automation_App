@@ -17,6 +17,8 @@ pub const PRINT_TEMPLATE_NAME: &str = "PDUD500442AA088_0.2CT Test Report Print.x
 pub const MAIN_REPORT_PREFIX: &str = "PDUD500442AM088_Test Report_0.2CT_Rev02_";
 pub const MAIN_REPORT_SN_PREFIX: &str = "PDUD500442AM088_Test Report_0.2CT_Rev02_SN";
 pub const PRINT_REPORT_PREFIX: &str = "PDUD500442AA088";
+pub const FINAL_OPERATOR_SHEET: &str = "Test Report #2";
+pub const FINAL_OPERATOR_CELL: &str = "E39";
 
 #[derive(Debug, Error)]
 pub enum ReportError {
@@ -172,6 +174,27 @@ pub fn write_transformer_serial_number(
             "Test Summary",
             "D1",
             transformer_serial_number.to_string(),
+        )],
+    )?;
+
+    Ok(report_path)
+}
+
+pub fn write_final_operator_name(unit_folder: &Path, operator_name: &str) -> ReportResult<PathBuf> {
+    if !unit_folder.is_dir() {
+        return Err(ReportError::UnitFolderMissing(
+            unit_folder.display().to_string(),
+        ));
+    }
+
+    let report_path = require_print_report(unit_folder)?;
+
+    patch_workbook(
+        &report_path,
+        &[CellUpdate::text(
+            FINAL_OPERATOR_SHEET,
+            FINAL_OPERATOR_CELL,
+            operator_name.to_string(),
         )],
     )?;
 
@@ -1328,6 +1351,31 @@ mod tests {
     }
 
     #[test]
+    fn final_operator_name_is_written_as_text_to_print_report() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let workbook = unit_folder.join(PRINT_TEMPLATE_NAME);
+        write_minimal_sheet_workbook(&workbook, FINAL_OPERATOR_SHEET);
+
+        let report_path = write_final_operator_name(&unit_folder, "Sean").expect("write E39");
+
+        assert_eq!(report_path, workbook);
+
+        let mut archive = ZipArchive::new(File::open(&report_path).expect("open workbook"))
+            .expect("workbook zip");
+        let mut sheet_xml = String::new();
+        archive
+            .by_name("xl/worksheets/sheet1.xml")
+            .expect("sheet")
+            .read_to_string(&mut sheet_xml)
+            .expect("sheet xml");
+
+        assert!(sheet_xml.contains(r#"<c r="E39" t="inlineStr"><is><t>Sean</t></is></c>"#));
+        assert!(!sheet_xml.contains("<v>Sean</v>"));
+    }
+
+    #[test]
     fn workbook_recalculation_flags_are_forced() {
         let xml = r#"<workbook><calcPr calcId="191028"/></workbook>"#;
         let patched = force_full_recalculation(xml);
@@ -1381,6 +1429,10 @@ mod tests {
     }
 
     fn write_minimal_test_summary_workbook(path: &Path) {
+        write_minimal_sheet_workbook(path, "Test Summary");
+    }
+
+    fn write_minimal_sheet_workbook(path: &Path, sheet_name: &str) {
         let file = File::create(path).expect("create workbook");
         let mut zip = ZipWriter::new(file);
         let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
@@ -1395,7 +1447,10 @@ mod tests {
         zip.start_file("xl/workbook.xml", options)
             .expect("workbook xml");
         zip.write_all(
-            br#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Test Summary" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            format!(
+                r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="{sheet_name}" sheetId="1" r:id="rId1"/></sheets></workbook>"#
+            )
+            .as_bytes(),
         )
         .expect("write workbook");
 

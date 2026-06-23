@@ -21,8 +21,8 @@ use crate::config::load_layout_profile;
 use self::csv_data::detected_steps;
 use self::processors::{FailureDetail, ProcessorResult};
 use self::reports::{
-    inspect_reports, setup_reports, setup_reports_with_serial_number,
-    write_transformer_serial_number, ReportError, ReportSetup,
+    inspect_reports, require_print_report, setup_reports, setup_reports_with_serial_number,
+    write_final_operator_name, write_transformer_serial_number, ReportError, ReportSetup,
 };
 use self::tasks::{automation_tasks, find_task};
 pub use self::unit_candidates::{LatestUnitCandidateResult, UnitCandidate};
@@ -111,6 +111,63 @@ impl AutomationCommandError {
                 "The Transformer SN could not be written to the report workbook.",
                 error.to_string(),
             ),
+        }
+    }
+
+    fn from_print_report_error(error: ReportError) -> Self {
+        match &error {
+            ReportError::Io(source) if is_locked_file_error(source) => Self::report(
+                "workbook_locked",
+                "The print report workbook is locked or open in another program. Close Excel or ATS access to the report and try again.",
+                error.to_string(),
+            ),
+            ReportError::Zip(zip::result::ZipError::Io(source))
+                if is_locked_file_error(source) =>
+            {
+                Self::report(
+                    "workbook_locked",
+                    "The print report workbook is locked or open in another program. Close Excel or ATS access to the report and try again.",
+                    error.to_string(),
+                )
+            }
+            ReportError::Io(_) => Self::report(
+                "report_io_failed",
+                "The print report workbook could not be read or written.",
+                error.to_string(),
+            ),
+            ReportError::PrintReportMissing(_) => Self::report(
+                "print_report_missing",
+                "The print report workbook was not found. Check the selected unit folder and report template setup.",
+                error.to_string(),
+            ),
+            ReportError::SheetMissing(sheet) => Self::report(
+                "report_sheet_missing",
+                format!("The print report workbook is missing the required sheet '{sheet}'."),
+                error.to_string(),
+            ),
+            ReportError::InvalidCell(cell) => Self::report(
+                "report_cell_invalid",
+                format!("The required print report cell '{cell}' is invalid."),
+                error.to_string(),
+            ),
+            ReportError::UnitFolderMissing(_) => Self::report(
+                "unit_folder_missing",
+                "The selected unit folder does not exist.",
+                error.to_string(),
+            ),
+            _ => Self::report(
+                "print_report_write_failed",
+                "The final operator name could not be written to the print report workbook.",
+                error.to_string(),
+            ),
+        }
+    }
+
+    fn print_dialog(message: impl Into<String>, details: impl Into<String>) -> Self {
+        Self {
+            code: "print_dialog_failed".to_string(),
+            message: message.into(),
+            details: Some(details.into()),
         }
     }
 }
@@ -224,6 +281,62 @@ pub fn save_transformer_sn(
         .map_err(AutomationCommandError::from_report_error)?;
 
     Ok(())
+}
+
+pub fn save_final_operator_name(
+    unit_folder: String,
+    operator_name: String,
+) -> Result<String, AutomationCommandError> {
+    if unit_folder.trim().is_empty() {
+        return Err(AutomationCommandError::validation(
+            "unit_folder_missing",
+            "Select Test Unit before printing the report.",
+        ));
+    }
+
+    let operator_name = operator_name.trim();
+
+    if operator_name.is_empty() {
+        return Err(AutomationCommandError::validation(
+            "blank_operator_name",
+            "Operator name is required before printing the report.",
+        ));
+    }
+
+    let unit_folder = PathBuf::from(unit_folder);
+    let print_report_path = write_final_operator_name(&unit_folder, operator_name)
+        .map_err(AutomationCommandError::from_print_report_error)?;
+
+    Ok(print_report_path.display().to_string())
+}
+
+pub fn open_print_report_dialog(unit_folder: String) -> Result<(), AutomationCommandError> {
+    if unit_folder.trim().is_empty() {
+        return Err(AutomationCommandError::validation(
+            "unit_folder_missing",
+            "Select Test Unit before printing the report.",
+        ));
+    }
+
+    let unit_folder = PathBuf::from(unit_folder);
+
+    if !unit_folder.is_dir() {
+        return Err(AutomationCommandError::report(
+            "unit_folder_missing",
+            "The selected unit folder does not exist.",
+            format!("unit folder does not exist: {}", unit_folder.display()),
+        ));
+    }
+
+    let print_report_path = require_print_report(&unit_folder)
+        .map_err(AutomationCommandError::from_print_report_error)?;
+
+    open_excel_print_dialog(&print_report_path).map_err(|error| {
+        AutomationCommandError::print_dialog(
+            "The Excel print dialog could not be opened for the print report.",
+            error.to_string(),
+        )
+    })
 }
 
 pub fn scan_unit_folder(unit_folder: String) -> Result<UnitFolderSummary, AutomationError> {
@@ -580,7 +693,6 @@ if ($excel.ActiveWindow -ne $null) {
   $excel.ActiveWindow.ScrollRow = [Math]::Max(1, $range.Row - 5)
   $excel.ActiveWindow.ScrollColumn = [Math]::Max(1, $range.Column - 3)
 }
-$excel.Activate()
 "#;
 
     let output = Command::new("powershell.exe")
@@ -629,16 +741,158 @@ fn open_excel_at_location(path: &Path, _sheet: &str, _cell: &str) -> Result<(), 
     open_path_with_default_app(path)
 }
 
+#[cfg(target_os = "windows")]
+fn open_excel_print_dialog(path: &Path) -> Result<(), AutomationError> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$path = $env:PDU_REPORT_PATH
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class PduExcelWindowFocus {
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+}
+"@
+try {
+  $excel = [Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application')
+} catch {
+  $excel = New-Object -ComObject Excel.Application
+}
+$excel.Visible = $true
+$workbook = $null
+foreach ($candidate in @($excel.Workbooks)) {
+  if ([string]::Equals($candidate.FullName, $path, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $workbook = $candidate
+    break
+  }
+}
+if ($null -eq $workbook) {
+  $workbook = $excel.Workbooks.Open($path)
+}
+$workbook.Activate()
+try {
+  $workbook.Windows.Item(1).Activate()
+} catch {
+  Write-Output ("Activating workbook window failed: " + $_.Exception.Message)
+}
+
+function Focus-ExcelWindow {
+  try {
+    $hwnd = [IntPtr]$excel.Hwnd
+    if ($hwnd -ne [IntPtr]::Zero) {
+      [void][PduExcelWindowFocus]::ShowWindow($hwnd, 9)
+      [void][PduExcelWindowFocus]::BringWindowToTop($hwnd)
+      [void][PduExcelWindowFocus]::SetForegroundWindow($hwnd)
+    }
+  } catch {
+    Write-Output ("Focusing Excel window failed: " + $_.Exception.Message)
+  }
+}
+
+try {
+  $activeSheetSelected = $false
+  foreach ($worksheet in @($workbook.Worksheets)) {
+    if ($worksheet.Visible -eq -1) {
+      if (-not $activeSheetSelected) {
+        $worksheet.Select($true)
+        $activeSheetSelected = $true
+      } else {
+        $worksheet.Select($false)
+      }
+    }
+  }
+
+  if (-not $activeSheetSelected) {
+    throw 'The workbook has no visible worksheets to print.'
+  }
+} catch {
+  Write-Output ("Selecting all worksheets failed: " + $_.Exception.Message)
+}
+
+$executeMsoError = $null
+try {
+  Focus-ExcelWindow
+  $excel.CommandBars.ExecuteMso('PrintPreviewAndPrint')
+  Start-Sleep -Milliseconds 200
+  Focus-ExcelWindow
+  exit 0
+} catch {
+  $executeMsoError = $_.Exception.Message
+}
+
+$missing = [Type]::Missing
+try {
+  Focus-ExcelWindow
+  [void]$workbook.PrintOut($missing, $missing, $missing, $true, $missing, $false, $true, $missing, $false)
+  Start-Sleep -Milliseconds 200
+  Focus-ExcelWindow
+  exit 0
+} catch {
+  throw ("PrintPreviewAndPrint failed: " + $executeMsoError + "; workbook print preview failed: " + $_.Exception.Message)
+}
+"#;
+
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            SCRIPT,
+        ])
+        .env("PDU_REPORT_PATH", path)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|error| {
+            AutomationError::OpenReport(format!(
+                "failed to open Excel print dialog for {}: {error}",
+                path.display()
+            ))
+        })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() { stderr } else { stdout };
+
+    Err(AutomationError::OpenReport(format!(
+        "failed to open Excel print dialog for {}{}",
+        path.display(),
+        if detail.is_empty() {
+            String::new()
+        } else {
+            format!(": {detail}")
+        }
+    )))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn open_excel_print_dialog(path: &Path) -> Result<(), AutomationError> {
+    Err(AutomationError::OpenReport(format!(
+        "Excel print dialog is only supported on Windows with Excel installed: {}",
+        path.display()
+    )))
+}
+
 #[cfg(test)]
 mod smoke_tests {
     use std::fs;
     use std::fs::File;
-    use std::io::{self, Read};
+    use std::io::{self, Read, Write};
     use std::path::Path;
 
     use tempfile::TempDir;
     use walkdir::WalkDir;
-    use zip::ZipArchive;
+    use zip::write::SimpleFileOptions;
+    use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
     use super::*;
 
@@ -774,6 +1028,57 @@ mod smoke_tests {
     }
 
     #[test]
+    fn final_operator_name_rejects_blank_operator_name() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+
+        let error = save_final_operator_name(unit_folder.display().to_string(), "   ".to_string())
+            .expect_err("blank operator name should fail");
+
+        assert_eq!(error.code, "blank_operator_name");
+        assert!(error.message.contains("Operator name is required"));
+    }
+
+    #[test]
+    fn final_operator_name_missing_print_report_returns_clear_error() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+
+        let error = save_final_operator_name(unit_folder.display().to_string(), "Sean".to_string())
+            .expect_err("missing print report should fail");
+
+        assert_eq!(error.code, "print_report_missing");
+        assert!(error.message.contains("print report workbook"));
+    }
+
+    #[test]
+    fn final_operator_name_locked_workbook_maps_to_clear_error() {
+        let locked = AutomationCommandError::from_print_report_error(ReportError::Io(
+            io::Error::from_raw_os_error(32),
+        ));
+
+        assert_eq!(locked.code, "workbook_locked");
+        assert!(locked.message.contains("print report workbook is locked"));
+    }
+
+    #[test]
+    fn final_operator_name_missing_sheet_maps_to_clear_error() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let workbook = unit_folder.join(reports::PRINT_TEMPLATE_NAME);
+        write_minimal_print_workbook(&workbook, "Wrong Sheet");
+
+        let error = save_final_operator_name(unit_folder.display().to_string(), "Sean".to_string())
+            .expect_err("missing final operator sheet should fail");
+
+        assert_eq!(error.code, "report_sheet_missing");
+        assert!(error.message.contains(reports::FINAL_OPERATOR_SHEET));
+    }
+
+    #[test]
     #[ignore = "requires a real PDU sample unit folder; set PDU_SAMPLE_UNIT_FOLDER"]
     fn real_sample_processes_representative_tasks_without_touching_source() {
         let sample = std::env::var("PDU_SAMPLE_UNIT_FOLDER")
@@ -814,6 +1119,45 @@ mod smoke_tests {
 
         let report_path = summary.report_path.expect("main report path");
         assert_workbook_package_is_valid_after_patch(Path::new(&report_path));
+    }
+
+    fn write_minimal_print_workbook(path: &Path, sheet_name: &str) {
+        let file = File::create(path).expect("create workbook");
+        let mut zip = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+
+        zip.start_file("[Content_Types].xml", options)
+            .expect("content types");
+        zip.write_all(
+            br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>"#,
+        )
+        .expect("write content types");
+
+        zip.start_file("xl/workbook.xml", options)
+            .expect("workbook xml");
+        zip.write_all(
+            format!(
+                r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="{sheet_name}" sheetId="1" r:id="rId1"/></sheets></workbook>"#
+            )
+            .as_bytes(),
+        )
+        .expect("write workbook");
+
+        zip.start_file("xl/_rels/workbook.xml.rels", options)
+            .expect("workbook rels");
+        zip.write_all(
+            br#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#,
+        )
+        .expect("write rels");
+
+        zip.start_file("xl/worksheets/sheet1.xml", options)
+            .expect("sheet xml");
+        zip.write_all(
+            br#"<worksheet><sheetData><row r="39"><c r="A39"><v>1</v></c></row></sheetData></worksheet>"#,
+        )
+        .expect("write sheet");
+
+        zip.finish().expect("finish workbook");
     }
 
     fn copy_dir(source: &Path, destination: &Path) {
