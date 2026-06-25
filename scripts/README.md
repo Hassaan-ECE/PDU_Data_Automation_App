@@ -1,10 +1,14 @@
 # Scripts
 
-Build, validation, smoke-test, and release helper scripts.
+Validation, release helpers, and local checks.
+
+All normal usage is with direct `bun` commands (bun install, bun run desktop, bun run build, etc.).
 
 ## Root Tooling
 
-The root `package.json` is the project task runner. It orchestrates frontend dev/build, desktop packaging, lint, and test commands. Dependencies and Bun lockfile live at the repo root; `scripts/run-bun.mjs` resolves the Bun binary the same way as `TE_Component_Inventory`.
+The root `package.json` is the project task runner. It orchestrates frontend dev/build, desktop packaging, lint, and test commands. Dependencies and Bun lockfile live at the repo root.
+
+Use `bun install` and `bun run <script>` directly (e.g. `bun run desktop`, `bun run build`).
 
 This layout is intentional for the current pilot. Moving `package.json` into `frontend/` requires a separate migration plan (workspace layout, CI commands, Tauri build paths).
 
@@ -12,7 +16,6 @@ This layout is intentional for the current pilot. Moving `package.json` into `fr
 
 | Script | Purpose |
 | ------ | ------- |
-| `run-bun.mjs` | Bun runner helper; use via `node scripts/run-bun.mjs <args>` |
 | `validate-local.mjs` | Runs the full local validation sequence used before cleanup/release work |
 | `fixtures/validate-report-layout-schema.mjs` | Validates report-layout JSON files against `shared/schemas/report-layout.schema.json` |
 | `release/check-version-consistency.mjs` | Confirms root package, Cargo, and Tauri versions match |
@@ -23,10 +26,9 @@ Subfolders are created only when the first real script is added. Do not create e
 
 ```text
 scripts/
-  build/      # Frontend/desktop build helpers
+  build/      # Frontend/desktop build helpers (future)
   release/    # Version checks, checksums, S-drive staging
   fixtures/   # Fixture copy/setup helpers
-  run-bun.mjs
   README.md
 ```
 
@@ -38,22 +40,22 @@ Near-term scripts (not yet added):
 
 ## Full Local Validation Checklist
 
-Run these before a structure-cleanup PR or release prep. All commands run from the repo root.
+Run these before a structure-cleanup PR or release prep. All commands run from the repo root using Bun.
 
 Preferred single command:
 
 ```powershell
-node scripts\run-bun.mjs run validate
+bun run validate
 ```
 
 Expanded sequence:
 
 ```powershell
-node scripts\run-bun.mjs run lint
-node scripts\run-bun.mjs run test
-node scripts\run-bun.mjs run build
-node scripts\run-bun.mjs run check:versions
-node scripts\run-bun.mjs run validate:report-layouts
+bun run lint
+bun run test
+bun run build
+bun run check:versions
+bun run validate:report-layouts
 cargo fmt --manifest-path backend\Cargo.toml --check
 cargo check --manifest-path backend\Cargo.toml
 cargo test --manifest-path backend\Cargo.toml
@@ -73,9 +75,9 @@ Phase-specific subsets:
 
 CI scope:
 
-- install Bun dependencies with the frozen lockfile
-- install stable Rust with `rustfmt`
-- run `node scripts\run-bun.mjs run validate`
+- `bun install --frozen-lockfile`
+- stable Rust + rustfmt
+- `bun run validate` (and the other `bun run` commands)
 
 CI will not initially build signed installers, publish releases, access S-drive paths, or require private updater keys.
 

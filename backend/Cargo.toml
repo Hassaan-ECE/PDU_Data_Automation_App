@@ -27,5 +27,6 @@ walkdir = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+tauri-cli = { version = "2", features = [] }
 roxmltree = "0.20"
 tempfile = "3"

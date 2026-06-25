@@ -4,9 +4,9 @@
   "version": "0.2.9",
   "identifier": "com.te.lab.pdu-data-automation",
   "build": {
-    "beforeDevCommand": "node node_modules/vite/bin/vite.js --config frontend/vite.config.ts",
+    "beforeDevCommand": "bun --bun vite --config frontend/vite.config.ts",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "node --max-old-space-size=4096 node_modules/typescript/bin/tsc -b tsconfig.json && node --max-old-space-size=4096 node_modules/vite/bin/vite.js build --config frontend/vite.config.ts",
+    "beforeBuildCommand": "bun --bun tsc -b && bun --bun vite build --config frontend/vite.config.ts",
     "frontendDist": "../frontend/dist"
   },
   "app": {

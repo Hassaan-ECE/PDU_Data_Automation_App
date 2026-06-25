@@ -5,11 +5,11 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const commands = [
-  ["node", ["scripts/run-bun.mjs", "run", "lint"]],
-  ["node", ["scripts/run-bun.mjs", "run", "test"]],
-  ["node", ["scripts/run-bun.mjs", "run", "build"]],
-  ["node", ["scripts/run-bun.mjs", "run", "check:versions"]],
-  ["node", ["scripts/run-bun.mjs", "run", "validate:report-layouts"]],
+  ["bun", ["run", "lint"]],
+  ["bun", ["run", "test"]],
+  ["bun", ["run", "build"]],
+  ["bun", ["run", "check:versions"]],
+  ["bun", ["run", "validate:report-layouts"]],
   ["cargo", ["fmt", "--manifest-path", "backend/Cargo.toml", "--check"]],
   ["cargo", ["check", "--manifest-path", "backend/Cargo.toml"]],
   ["cargo", ["test", "--manifest-path", "backend/Cargo.toml"]],
