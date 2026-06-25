@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
@@ -9,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use super::processors::ProcessorResult;
 
 pub const UNIT_STATE_FILE: &str = "unit_state.json";
+const UNIT_STATE_LOCK_FILE: &str = "unit_state.lock";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnitState {
@@ -100,24 +103,64 @@ pub fn state_path(unit_folder: &Path) -> PathBuf {
 }
 
 pub fn load_unit_state(unit_folder: &Path) -> io::Result<Option<UnitState>> {
-    let path = state_path(unit_folder);
+    let _lock = UnitStateLock::acquire(unit_folder)?;
 
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let content = fs::read_to_string(path)?;
-    let state = serde_json::from_str::<UnitState>(&content)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-
-    Ok(Some(state))
+    load_unit_state_unlocked(unit_folder)
 }
 
 pub fn load_or_default(unit_folder: &Path) -> io::Result<UnitState> {
     Ok(load_unit_state(unit_folder)?.unwrap_or_default())
 }
 
+#[cfg(test)]
 pub fn save_unit_state(unit_folder: &Path, state: &UnitState) -> io::Result<()> {
+    let _lock = UnitStateLock::acquire(unit_folder)?;
+
+    save_unit_state_unlocked(unit_folder, state)
+}
+
+pub fn load_or_ensure_task_entries(
+    unit_folder: &Path,
+    seeds: &[TaskStateSeed],
+) -> io::Result<UnitState> {
+    let _lock = UnitStateLock::acquire(unit_folder)?;
+    let mut state = load_or_default_unlocked(unit_folder)?;
+
+    if ensure_task_entries(&mut state, seeds) {
+        save_unit_state_unlocked(unit_folder, &state)?;
+    }
+
+    Ok(state)
+}
+
+fn load_unit_state_unlocked(unit_folder: &Path) -> io::Result<Option<UnitState>> {
+    let path = state_path(unit_folder);
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("failed to read {}: {error}", path.display()),
+            ))
+        }
+    };
+
+    let state = serde_json::from_str::<UnitState>(&content).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to parse {}: {error}", path.display()),
+        )
+    })?;
+
+    Ok(Some(state))
+}
+
+fn load_or_default_unlocked(unit_folder: &Path) -> io::Result<UnitState> {
+    Ok(load_unit_state_unlocked(unit_folder)?.unwrap_or_default())
+}
+
+fn save_unit_state_unlocked(unit_folder: &Path, state: &UnitState) -> io::Result<()> {
     let path = state_path(unit_folder);
     let temp_path = unit_folder.join(format!("{UNIT_STATE_FILE}.tmp"));
     let backup_path = unit_folder.join(format!("{UNIT_STATE_FILE}.bak"));
@@ -203,7 +246,8 @@ pub fn record_processor_result(
     task_id: &str,
     result: &ProcessorResult,
 ) -> io::Result<UnitState> {
-    let mut state = load_or_default(unit_folder)?;
+    let _lock = UnitStateLock::acquire(unit_folder)?;
+    let mut state = load_or_default_unlocked(unit_folder)?;
     let at = now_string();
     let entry = state
         .tasks
@@ -243,7 +287,7 @@ pub fn record_processor_result(
         csv_fingerprint: result.csv_fingerprint.clone(),
     });
 
-    save_unit_state(unit_folder, &state)?;
+    save_unit_state_unlocked(unit_folder, &state)?;
 
     Ok(state)
 }
@@ -254,4 +298,195 @@ pub fn now_string() -> String {
 
 fn should_refresh_from_scan(state: &str) -> bool {
     matches!(state, "off" | "detected")
+}
+
+struct UnitStateLock {
+    path: PathBuf,
+}
+
+impl UnitStateLock {
+    fn acquire(unit_folder: &Path) -> io::Result<Self> {
+        let path = unit_state_lock_path(unit_folder);
+        let started = Instant::now();
+        let max_wait = Duration::from_secs(5);
+
+        loop {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    if let Err(error) = writeln!(file, "pid={}", std::process::id()) {
+                        let _ = fs::remove_file(&path);
+                        return Err(error);
+                    }
+
+                    return Ok(Self { path });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    if started.elapsed() >= max_wait {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            format!(
+                                "{} is locked by another app operation",
+                                state_path(unit_folder).display()
+                            ),
+                        ));
+                    }
+
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(error) => {
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!("failed to create {}: {error}", path.display()),
+                    ))
+                }
+            }
+        }
+    }
+}
+
+impl Drop for UnitStateLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn unit_state_lock_path(unit_folder: &Path) -> PathBuf {
+    unit_folder.join(UNIT_STATE_LOCK_FILE)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::io;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn corrupt_unit_state_returns_invalid_data() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("unit");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        fs::write(state_path(&unit_folder), "{not valid json").expect("write corrupt state");
+
+        let error = load_or_default(&unit_folder).expect_err("corrupt state should fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains(UNIT_STATE_FILE));
+    }
+
+    #[test]
+    fn concurrent_state_writes_preserve_all_task_updates() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = Arc::new(temp.path().join("unit"));
+        fs::create_dir_all(unit_folder.as_ref()).expect("unit folder");
+        let writer_count = 8;
+        let barrier = Arc::new(Barrier::new(writer_count));
+        let handles = (0..writer_count)
+            .map(|index| {
+                let unit_folder = Arc::clone(&unit_folder);
+                let barrier = Arc::clone(&barrier);
+
+                thread::spawn(move || {
+                    barrier.wait();
+                    record_processor_result(
+                        unit_folder.as_ref(),
+                        &format!("task-{index}"),
+                        &processor_result(index),
+                    )
+                    .expect("record processor result");
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            handle.join().expect("writer thread");
+        }
+
+        let state = load_or_default(unit_folder.as_ref()).expect("load state");
+
+        for index in 0..writer_count {
+            let task_id = format!("task-{index}");
+            let expected_fingerprint = format!("fingerprint-{index}");
+            let entry = state.tasks.get(&task_id).expect("task entry");
+
+            assert_eq!(entry.state, "pass");
+            assert_eq!(
+                entry.csv_fingerprint.as_deref(),
+                Some(expected_fingerprint.as_str())
+            );
+        }
+
+        assert!(
+            !unit_state_lock_path(unit_folder.as_ref()).exists(),
+            "state lock should be removed after writes"
+        );
+    }
+
+    #[test]
+    fn save_unit_state_keeps_temp_and_backup_behavior() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("unit");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let path = state_path(&unit_folder);
+        let temp_path = unit_folder.join(format!("{UNIT_STATE_FILE}.tmp"));
+        let backup_path = unit_folder.join(format!("{UNIT_STATE_FILE}.bak"));
+        let mut state = UnitState::default();
+
+        state
+            .tasks
+            .insert("first".to_string(), task_state("first", "pass"));
+        save_unit_state(&unit_folder, &state).expect("first save");
+        let first_content = fs::read_to_string(&path).expect("first state content");
+
+        state
+            .tasks
+            .insert("second".to_string(), task_state("second", "fail"));
+        save_unit_state(&unit_folder, &state).expect("second save");
+
+        assert_eq!(
+            fs::read_to_string(&backup_path).expect("backup content"),
+            first_content
+        );
+        assert!(
+            !temp_path.exists(),
+            "temporary state file should be renamed away"
+        );
+
+        let reloaded = load_or_default(&unit_folder).expect("reloaded state");
+
+        assert!(reloaded.tasks.contains_key("first"));
+        assert!(reloaded.tasks.contains_key("second"));
+    }
+
+    fn processor_result(index: usize) -> ProcessorResult {
+        ProcessorResult {
+            state: "pass".to_string(),
+            code: 0,
+            message: format!("processed task {index}"),
+            log: Vec::new(),
+            report_path: None,
+            print_report_path: None,
+            failure: None,
+            source_csv_path: Some(format!("source-{index}.csv")),
+            csv_fingerprint: Some(format!("fingerprint-{index}")),
+        }
+    }
+
+    fn task_state(task_id: &str, state: &str) -> UnitTaskState {
+        UnitTaskState {
+            task_id: task_id.to_string(),
+            state: state.to_string(),
+            code: Some(0),
+            source_csv_path: None,
+            csv_fingerprint: None,
+            processed_at: Some(now_string()),
+            result: Some("test result".to_string()),
+            accepted: TaskAcceptance::default(),
+            audit_log: Vec::new(),
+        }
+    }
 }

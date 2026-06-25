@@ -8,7 +8,7 @@ mod unit_state;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -34,6 +34,8 @@ use self::unit_state::TaskStateSeed;
 pub enum AutomationError {
     #[error("{0}")]
     Report(#[from] ReportError),
+    #[error("unit state could not be read or written: {0}")]
+    UnitState(#[from] io::Error),
     #[error("unknown automation task id: {0}")]
     UnknownTask(String),
     #[error("{0}")]
@@ -181,6 +183,32 @@ impl AutomationCommandError {
         }
     }
 
+    fn from_unit_state_error(error: io::Error) -> Self {
+        let code = if error.kind() == io::ErrorKind::InvalidData {
+            "unit_state_corrupt"
+        } else if is_unit_state_locked_error(&error) {
+            "unit_state_locked"
+        } else if error.kind() == io::ErrorKind::PermissionDenied {
+            "unit_state_unreadable"
+        } else {
+            "unit_state_io_failed"
+        };
+        let message = match code {
+            "unit_state_corrupt" => {
+                "The saved unit state is corrupt and cannot be used. Stop and repair unit_state.json before continuing."
+            }
+            "unit_state_locked" => {
+                "The saved unit state is locked by another app operation. Wait for the current state write to finish and try again."
+            }
+            "unit_state_unreadable" => {
+                "The saved unit state could not be read or written because Windows denied access."
+            }
+            _ => "The saved unit state could not be read or written.",
+        };
+
+        Self::report(code, message, error.to_string())
+    }
+
     fn print_dialog(message: impl Into<String>, details: impl Into<String>) -> Self {
         Self {
             code: "print_dialog_failed".to_string(),
@@ -264,7 +292,7 @@ pub fn setup_unit_folder(unit_folder: String) -> Result<UnitFolderSummary, Autom
     let unit_folder = PathBuf::from(unit_folder);
     let report_setup = setup_reports(&unit_folder)?;
 
-    Ok(build_summary(&unit_folder, report_setup))
+    build_summary(&unit_folder, report_setup).map_err(AutomationError::UnitState)
 }
 
 pub fn find_latest_unit_candidate() -> LatestUnitCandidateResult {
@@ -296,7 +324,7 @@ pub fn setup_unit_folder_with_transformer_sn(
     write_transformer_serial_number(&unit_folder, transformer_sn)
         .map_err(AutomationCommandError::from_report_error)?;
 
-    Ok(build_summary(&unit_folder, report_setup))
+    build_summary(&unit_folder, report_setup).map_err(AutomationCommandError::from_unit_state_error)
 }
 
 pub fn save_transformer_sn(
@@ -356,8 +384,7 @@ pub fn save_final_operator_name(
     }
 
     let unit_folder = PathBuf::from(unit_folder);
-    let readiness = validate_ready_for_print_path(&unit_folder)
-        .map_err(AutomationCommandError::from_print_report_error)?;
+    let readiness = validate_ready_for_print_path(&unit_folder)?;
     if !readiness.ready {
         return Err(AutomationCommandError::print_readiness(&readiness));
     }
@@ -386,8 +413,7 @@ pub fn open_print_report_dialog(unit_folder: String) -> Result<(), AutomationCom
         ));
     }
 
-    let readiness = validate_ready_for_print_path(&unit_folder)
-        .map_err(AutomationCommandError::from_print_report_error)?;
+    let readiness = validate_ready_for_print_path(&unit_folder)?;
     if !readiness.ready {
         return Err(AutomationCommandError::print_readiness(&readiness));
     }
@@ -424,15 +450,19 @@ pub fn validate_ready_for_print(
     }
 
     validate_ready_for_print_path(&unit_folder)
-        .map_err(AutomationCommandError::from_print_report_error)
 }
 
-fn validate_ready_for_print_path(unit_folder: &Path) -> Result<PrintReadinessResult, ReportError> {
+fn validate_ready_for_print_path(
+    unit_folder: &Path,
+) -> Result<PrintReadinessResult, AutomationCommandError> {
     let mut blocking_issues = Vec::new();
 
-    require_print_report(unit_folder)?;
+    require_print_report(unit_folder).map_err(AutomationCommandError::from_print_report_error)?;
 
-    if read_transformer_serial_number(unit_folder)?.is_none() {
+    if read_transformer_serial_number(unit_folder)
+        .map_err(AutomationCommandError::from_print_report_error)?
+        .is_none()
+    {
         blocking_issues.push(PrintReadinessBlocker {
             task_id: None,
             label: None,
@@ -441,7 +471,6 @@ fn validate_ready_for_print_path(unit_folder: &Path) -> Result<PrintReadinessRes
         });
     }
 
-    let mut state = unit_state::load_or_default(unit_folder).unwrap_or_default();
     let seeds = automation_tasks()
         .into_iter()
         .map(|task| TaskStateSeed {
@@ -452,9 +481,8 @@ fn validate_ready_for_print_path(unit_folder: &Path) -> Result<PrintReadinessRes
         })
         .collect::<Vec<_>>();
 
-    if unit_state::ensure_task_entries(&mut state, &seeds) {
-        let _ = unit_state::save_unit_state(unit_folder, &state);
-    }
+    let state = unit_state::load_or_ensure_task_entries(unit_folder, &seeds)
+        .map_err(AutomationCommandError::from_unit_state_error)?;
 
     for task in automation_tasks() {
         let Some(entry) = state.tasks.get(&task.id) else {
@@ -512,7 +540,7 @@ pub fn scan_unit_folder(unit_folder: String) -> Result<UnitFolderSummary, Automa
     let unit_folder = PathBuf::from(unit_folder);
     let report_setup = inspect_reports(&unit_folder)?;
 
-    Ok(build_summary(&unit_folder, report_setup))
+    build_summary(&unit_folder, report_setup).map_err(AutomationError::UnitState)
 }
 
 pub fn process_task(
@@ -521,7 +549,7 @@ pub fn process_task(
 ) -> Result<TaskProcessResult, AutomationError> {
     let unit_folder = PathBuf::from(unit_folder);
     let task = find_task(&task_id).ok_or_else(|| AutomationError::UnknownTask(task_id.clone()))?;
-    let state = unit_state::load_or_default(&unit_folder).unwrap_or_default();
+    let state = unit_state::load_or_default(&unit_folder)?;
     let already_processed_fingerprint = state
         .tasks
         .get(&task_id)
@@ -540,14 +568,7 @@ pub fn process_task(
         )
     });
 
-    if let Err(error) = unit_state::record_processor_result(&unit_folder, &task_id, &result) {
-        let mut result = result;
-        result.log.push(format!(
-            "[state] Failed to write {}: {error}",
-            unit_state::UNIT_STATE_FILE
-        ));
-        return Ok(to_task_process_result(task_id, result));
-    }
+    unit_state::record_processor_result(&unit_folder, &task_id, &result)?;
 
     Ok(to_task_process_result(task_id, result))
 }
@@ -571,7 +592,7 @@ pub fn open_report_location(
     open_excel_at_location(&report_path, &sheet, &cell)
 }
 
-fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> UnitFolderSummary {
+fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> io::Result<UnitFolderSummary> {
     let detected = detected_steps(unit_folder);
     let mut steps_to_paths = HashMap::<u16, Vec<PathBuf>>::new();
 
@@ -581,7 +602,6 @@ fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> UnitFolderSum
 
     let mut detected_task_ids = HashSet::<String>::new();
     let automation_tasks = automation_tasks();
-    let mut state = unit_state::load_or_default(unit_folder).unwrap_or_default();
     let seeds = automation_tasks
         .iter()
         .map(|task| {
@@ -609,17 +629,8 @@ fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> UnitFolderSum
         })
         .collect::<Vec<_>>();
 
-    let state_changed = unit_state::ensure_task_entries(&mut state, &seeds);
-    let mut warnings = report_setup.warnings;
-
-    if state_changed {
-        if let Err(error) = unit_state::save_unit_state(unit_folder, &state) {
-            warnings.push(format!(
-                "could not write {}: {error}",
-                unit_state::UNIT_STATE_FILE
-            ));
-        }
-    }
+    let warnings = report_setup.warnings;
+    let state = unit_state::load_or_ensure_task_entries(unit_folder, &seeds)?;
 
     let tasks = automation_tasks
         .into_iter()
@@ -672,7 +683,7 @@ fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> UnitFolderSum
         })
         .collect::<Vec<_>>();
 
-    UnitFolderSummary {
+    Ok(UnitFolderSummary {
         unit_folder: unit_folder.display().to_string(),
         serial_number: report_setup.serial_number,
         report_path: report_setup.report_path,
@@ -680,7 +691,7 @@ fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> UnitFolderSum
         detected_count: detected_task_ids.len(),
         tasks,
         warnings,
-    }
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -860,6 +871,11 @@ fn is_locked_file_error(error: &std::io::Error) -> bool {
             error.kind(),
             std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
         )
+}
+
+fn is_unit_state_locked_error(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(32 | 33 | 1224))
+        || error.kind() == std::io::ErrorKind::WouldBlock
 }
 
 fn csv_start_time_millis(metadata: &fs::Metadata) -> Option<u64> {
@@ -1507,6 +1523,77 @@ mod smoke_tests {
             .expect_err("incomplete task state should block final operator write");
 
         assert_eq!(error.code, "print_validation_failed");
+    }
+
+    #[test]
+    fn scan_rejects_corrupt_unit_state_sidecar() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        fs::write(unit_state::state_path(&unit_folder), "{not valid json")
+            .expect("write corrupt unit state");
+
+        let error =
+            scan_unit_folder(unit_folder.display().to_string()).expect_err("scan should fail");
+
+        match error {
+            AutomationError::UnitState(error) => {
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                assert!(error.to_string().contains(unit_state::UNIT_STATE_FILE));
+            }
+            other => panic!("expected unit state error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn print_validation_rejects_corrupt_unit_state_sidecar() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let main_workbook = unit_folder.join(format!(
+            "{}262343000072.xlsx",
+            reports::MAIN_REPORT_SN_PREFIX
+        ));
+        write_minimal_main_workbook(&main_workbook);
+        write_minimal_print_workbook(
+            &unit_folder.join(reports::PRINT_TEMPLATE_NAME),
+            reports::FINAL_OPERATOR_SHEET,
+        );
+        fs::write(unit_state::state_path(&unit_folder), "{not valid json")
+            .expect("write corrupt unit state");
+
+        let error = validate_ready_for_print(unit_folder.display().to_string())
+            .expect_err("print readiness should fail");
+
+        assert_eq!(error.code, "unit_state_corrupt");
+        assert!(error.message.contains("unit_state.json"));
+        assert!(error
+            .details
+            .as_deref()
+            .is_some_and(|details| details.contains(unit_state::UNIT_STATE_FILE)));
+    }
+
+    #[test]
+    fn process_task_rejects_corrupt_unit_state_before_processing() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        fs::write(unit_state::state_path(&unit_folder), "{not valid json")
+            .expect("write corrupt unit state");
+
+        let error = process_task(
+            unit_folder.display().to_string(),
+            "208v-transformer".to_string(),
+        )
+        .expect_err("processing should fail before using corrupt state");
+
+        match error {
+            AutomationError::UnitState(error) => {
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                assert!(error.to_string().contains(unit_state::UNIT_STATE_FILE));
+            }
+            other => panic!("expected unit state error, got {other:?}"),
+        }
     }
 
     #[test]
