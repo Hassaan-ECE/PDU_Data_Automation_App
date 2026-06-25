@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File};
+use std::ffi::OsString;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
 
 use regex::Regex;
 use serde::Serialize;
@@ -46,6 +48,8 @@ pub enum ReportError {
     SheetDataMissing(String),
     #[error("workbook XML could not be decoded as UTF-8: {0}")]
     InvalidUtf8(String),
+    #[error("workbook is locked by another app operation: {0}")]
+    WorkbookLocked(String),
 }
 
 pub type ReportResult<T> = Result<T, ReportError>;
@@ -75,6 +79,21 @@ pub struct CellUpdate {
     pub sheet: String,
     pub cell: String,
     pub value: CellValue,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkbookPatch {
+    pub path: PathBuf,
+    pub updates: Vec<CellUpdate>,
+}
+
+impl WorkbookPatch {
+    pub fn new(path: impl Into<PathBuf>, updates: Vec<CellUpdate>) -> Self {
+        Self {
+            path: path.into(),
+            updates,
+        }
+    }
 }
 
 impl CellUpdate {
@@ -180,6 +199,15 @@ pub fn write_transformer_serial_number(
     Ok(report_path)
 }
 
+pub fn read_transformer_serial_number(unit_folder: &Path) -> ReportResult<Option<String>> {
+    let report_path = require_main_report(unit_folder)?;
+    let value = read_cell_text(&report_path, "Test Summary", "D1")?
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    Ok(value)
+}
+
 pub fn write_final_operator_name(unit_folder: &Path, operator_name: &str) -> ReportResult<PathBuf> {
     if !unit_folder.is_dir() {
         return Err(ReportError::UnitFolderMissing(
@@ -226,6 +254,35 @@ pub fn require_main_report(unit_folder: &Path) -> ReportResult<PathBuf> {
 pub fn require_print_report(unit_folder: &Path) -> ReportResult<PathBuf> {
     find_print_report(unit_folder)
         .ok_or_else(|| ReportError::PrintReportMissing(unit_folder.display().to_string()))
+}
+
+fn read_cell_text(path: &Path, sheet: &str, cell: &str) -> ReportResult<Option<String>> {
+    let mut archive = ZipArchive::new(File::open(path)?)?;
+    let mut entries = Vec::new();
+
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        let name = entry.name().to_string();
+        let is_dir = entry.is_dir();
+        let mut data = Vec::new();
+
+        if !is_dir {
+            entry.read_to_end(&mut data)?;
+        }
+
+        entries.push(ZipEntry { name, is_dir, data });
+    }
+
+    let workbook_xml = entry_text(&entries, "xl/workbook.xml")?;
+    let rels_xml = entry_text(&entries, "xl/_rels/workbook.xml.rels")?;
+    let sheet_paths = sheet_paths_by_name(&workbook_xml, &rels_xml);
+    let sheet_path = sheet_paths
+        .get(sheet)
+        .ok_or_else(|| ReportError::SheetMissing(sheet.to_string()))?;
+    let sheet_xml = entry_text(&entries, sheet_path)?;
+    let shared_strings = shared_strings(&entries)?;
+
+    Ok(extract_cell_text(&sheet_xml, cell, &shared_strings))
 }
 
 pub fn extract_serial_number(unit_folder: &Path) -> Option<String> {
@@ -293,7 +350,42 @@ pub fn patch_workbook(path: &Path, updates: &[CellUpdate]) -> ReportResult<()> {
         return Ok(());
     }
 
+    let _lock = WorkbookLock::acquire(path)?;
     rewrite_workbook(path, updates, false)
+}
+
+pub fn patch_workbooks_transactional(patches: &[WorkbookPatch]) -> ReportResult<()> {
+    let patches = patches
+        .iter()
+        .filter(|patch| !patch.updates.is_empty())
+        .collect::<Vec<_>>();
+
+    if patches.is_empty() {
+        return Ok(());
+    }
+
+    if patches.len() == 1 {
+        return patch_workbook(&patches[0].path, &patches[0].updates);
+    }
+
+    let mut patched = Vec::<PathBuf>::new();
+
+    for patch in patches {
+        if let Err(error) = patch_workbook(&patch.path, &patch.updates) {
+            for patched_path in patched.iter().rev() {
+                let backup = backup_path_for(patched_path);
+                if backup.is_file() {
+                    let _ = fs::copy(&backup, patched_path);
+                }
+            }
+
+            return Err(error);
+        }
+
+        patched.push(patch.path.clone());
+    }
+
+    Ok(())
 }
 
 pub fn repair_workbook(path: &Path) -> ReportResult<()> {
@@ -381,10 +473,9 @@ fn rewrite_workbook(
 
     removed_entries.insert("xl/calcChain.xml".to_string());
 
-    let temp_path = path.with_extension("xlsx.tmp");
+    let temp_path = temp_path_for(path);
     write_repacked_zip(&entries, &replacements, &removed_entries, &temp_path)?;
-    fs::remove_file(path)?;
-    fs::rename(temp_path, path)?;
+    replace_with_backup(path, &temp_path)?;
 
     Ok(())
 }
@@ -584,6 +675,96 @@ fn write_repacked_zip(
 
     writer.finish()?;
     Ok(())
+}
+
+struct WorkbookLock {
+    path: PathBuf,
+}
+
+impl WorkbookLock {
+    fn acquire(workbook_path: &Path) -> ReportResult<Self> {
+        let path = lock_path_for(workbook_path);
+        let started = Instant::now();
+        let max_wait = Duration::from_secs(5);
+
+        loop {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    writeln!(file, "pid={}", std::process::id())?;
+                    return Ok(Self { path });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if started.elapsed() >= max_wait {
+                        return Err(ReportError::WorkbookLocked(
+                            workbook_path.display().to_string(),
+                        ));
+                    }
+
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+}
+
+impl Drop for WorkbookLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn replace_with_backup(path: &Path, temp_path: &Path) -> ReportResult<()> {
+    let backup_path = backup_path_for(path);
+
+    if path.is_file() {
+        fs::copy(path, &backup_path)?;
+    }
+
+    match replace_file(temp_path, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if backup_path.is_file() {
+                let _ = fs::copy(&backup_path, path);
+            }
+            let _ = fs::remove_file(temp_path);
+            Err(error)
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn replace_file(temp_path: &Path, path: &Path) -> ReportResult<()> {
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+
+    fs::rename(temp_path, path)?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn replace_file(temp_path: &Path, path: &Path) -> ReportResult<()> {
+    fs::rename(temp_path, path)?;
+    Ok(())
+}
+
+fn temp_path_for(path: &Path) -> PathBuf {
+    append_extension(path, ".tmp")
+}
+
+fn backup_path_for(path: &Path) -> PathBuf {
+    append_extension(path, ".bak")
+}
+
+fn lock_path_for(path: &Path) -> PathBuf {
+    append_extension(path, ".lock")
+}
+
+fn append_extension(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = OsString::from(path.as_os_str());
+    value.push(suffix);
+    PathBuf::from(value)
 }
 
 fn force_full_recalculation(workbook_xml: &str) -> String {
@@ -1199,6 +1380,50 @@ fn column_number_to_name(mut number: u32) -> Option<String> {
 
     bytes.reverse();
     String::from_utf8(bytes).ok()
+}
+
+fn shared_strings(entries: &[ZipEntry]) -> ReportResult<Vec<String>> {
+    let Ok(xml) = entry_text(entries, "xl/sharedStrings.xml") else {
+        return Ok(Vec::new());
+    };
+
+    let text_re = Regex::new(r#"(?s)<t(?:\s[^>]*)?>(.*?)</t>"#).expect("shared string regex");
+
+    Ok(text_re
+        .captures_iter(&xml)
+        .filter_map(|captures| captures.get(1))
+        .map(|match_| decode_xml_attr(match_.as_str()))
+        .collect())
+}
+
+fn extract_cell_text(xml: &str, cell: &str, shared_strings: &[String]) -> Option<String> {
+    let pattern = format!(r#"(?s)<c\b[^>]*\br="{}"[^>]*>.*?</c>"#, regex::escape(cell));
+    let cell_re = Regex::new(&pattern).ok()?;
+    let cell_xml = cell_re.find(xml)?.as_str();
+    let cell_type = extract_attr(cell_xml, "t");
+
+    if cell_type.as_deref() == Some("inlineStr") {
+        return extract_tag_text(cell_xml, "t");
+    }
+
+    let value = extract_tag_text(cell_xml, "v")?;
+
+    if cell_type.as_deref() == Some("s") {
+        let index = value.trim().parse::<usize>().ok()?;
+        return shared_strings.get(index).cloned();
+    }
+
+    Some(value)
+}
+
+fn extract_tag_text(xml: &str, tag: &str) -> Option<String> {
+    let pattern = format!(r#"(?s)<{tag}(?:\s[^>]*)?>(.*?)</{tag}>"#);
+    let tag_re = Regex::new(&pattern).ok()?;
+
+    tag_re
+        .captures(xml)
+        .and_then(|captures| captures.get(1))
+        .map(|match_| decode_xml_attr(match_.as_str()))
 }
 
 fn render_cell(cell: &str, style: Option<&str>, value: &CellValue) -> String {

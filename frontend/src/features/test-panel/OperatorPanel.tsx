@@ -14,17 +14,26 @@ import {
   saveTransformerSn,
   scanUnitFolder,
   setupUnitFolder,
+  validateReadyForPrint,
   type BackendTaskStatus,
   type BackendStatus,
   type FailureDetail,
   type FailureLocation,
   type LayoutLoadResponse,
+  type PrintReadinessBlocker,
   type TaskProcessResult,
   type UnitFolderSummary,
 } from "@/integrations/tauri/backend";
 import { markStartup } from "@/shared/lib/startupTiming";
 import { cn } from "@/shared/lib/utils";
 
+import {
+  addOperatorName,
+  loadOperatorNames,
+  matchingOperatorNames,
+  operatorNameKey,
+  storeOperatorNames,
+} from "./operatorNames";
 import { stateStyles } from "./stateStyles";
 import { legacyPanelItems } from "./taskModel";
 import { isSectionItem, type PanelItem, type SectionItem, type TaskItem, type TaskState } from "./types";
@@ -34,8 +43,6 @@ import { useDesktopUpdates } from "./useDesktopUpdates";
 const DEFAULT_LOAD_DURATION_SECONDS = 3 * 60;
 const TRANSFORMER_DURATION_SECONDS = 60;
 const SYSTEM_BURN_IN_DURATION_SECONDS = 2 * 60 * 60;
-const DEFAULT_OPERATOR_NAMES = ["Sean", "Long", "Jose"];
-const OPERATOR_NAMES_STORAGE_KEY = "pdu.operatorNames";
 
 type BacklogPromptState = {
   count: number;
@@ -55,97 +62,19 @@ type TaskFailureNotice = {
 
 type BackendTaskStatusMap = Record<string, BackendTaskStatus | undefined>;
 
-function operatorNameKey(name: string) {
-  return name.trim().toLowerCase();
-}
-
-function normalizeOperatorNames(values: unknown): string[] {
-  if (!Array.isArray(values)) {
-    return [...DEFAULT_OPERATOR_NAMES];
+function printReadinessMessage(blockers: PrintReadinessBlocker[]) {
+  if (blockers.length === 0) {
+    return "";
   }
 
-  const seen = new Set<string>();
-  const names: string[] = [];
+  return blockers
+    .slice(0, 6)
+    .map((blocker) => {
+      const label = blocker.label ?? blocker.task_id ?? "Report";
 
-  for (const value of values) {
-    if (typeof value !== "string") {
-      continue;
-    }
-
-    const trimmed = value.trim();
-    const key = operatorNameKey(trimmed);
-
-    if (!trimmed || seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-    names.push(trimmed);
-  }
-
-  return names;
-}
-
-function storeOperatorNames(names: string[]) {
-  const normalized = normalizeOperatorNames(names);
-
-  try {
-    window.localStorage.setItem(OPERATOR_NAMES_STORAGE_KEY, JSON.stringify(normalized));
-  } catch {
-    // localStorage can be unavailable in restricted browser contexts.
-  }
-
-  return normalized;
-}
-
-function loadOperatorNames() {
-  try {
-    const stored = window.localStorage.getItem(OPERATOR_NAMES_STORAGE_KEY);
-
-    if (stored === null) {
-      return storeOperatorNames([...DEFAULT_OPERATOR_NAMES]);
-    }
-
-    const parsed = JSON.parse(stored) as unknown;
-    const normalized = normalizeOperatorNames(parsed);
-
-    if (JSON.stringify(parsed) !== JSON.stringify(normalized)) {
-      storeOperatorNames(normalized);
-    }
-
-    return normalized;
-  } catch {
-    return storeOperatorNames([...DEFAULT_OPERATOR_NAMES]);
-  }
-}
-
-function addOperatorName(names: string[], name: string) {
-  const normalized = normalizeOperatorNames(names);
-  const trimmed = name.trim();
-  const key = operatorNameKey(trimmed);
-
-  if (!trimmed || normalized.some((operatorName) => operatorNameKey(operatorName) === key)) {
-    return normalized;
-  }
-
-  return [...normalized, trimmed];
-}
-
-function matchingOperatorNames(names: string[], query: string) {
-  const key = operatorNameKey(query);
-
-  if (!key) {
-    return names;
-  }
-
-  const startsWith = names.filter((name) => operatorNameKey(name).startsWith(key));
-  const contains = names.filter((name) => {
-    const nameKey = operatorNameKey(name);
-
-    return !nameKey.startsWith(key) && nameKey.includes(key);
-  });
-
-  return [...startsWith, ...contains];
+      return `${label}: ${blocker.reason}`;
+    })
+    .join("\n");
 }
 
 function formatTime(seconds: number) {
@@ -807,6 +736,7 @@ export function OperatorPanel() {
   const [printOperatorPromptOpen, setPrintOperatorPromptOpen] = useState(false);
   const [operatorNameDraft, setOperatorNameDraft] = useState("");
   const [operatorNameError, setOperatorNameError] = useState("");
+  const [printReadinessBlockers, setPrintReadinessBlockers] = useState<PrintReadinessBlocker[]>([]);
   const [operatorDropdownOpen, setOperatorDropdownOpen] = useState(false);
   const [operatorFilterText, setOperatorFilterText] = useState("");
   const [isOpeningPrintDialog, setIsOpeningPrintDialog] = useState(false);
@@ -1740,6 +1670,7 @@ export function OperatorPanel() {
     processDetectedBacklogRef.current = null;
     latestTaskStatusesRef.current = {};
     setFailureNotices({});
+    setPrintReadinessBlockers([]);
     resetTransformerSnState();
     activateTask(null);
     selectedFolderRef.current = selected;
@@ -2008,6 +1939,21 @@ export function OperatorPanel() {
       return;
     }
 
+    try {
+      const readiness = await validateReadyForPrint(unitFolder);
+
+      if (!readiness.ready) {
+        setPrintReadinessBlockers(readiness.blocking_issues);
+        setLastMessage(readiness.message);
+        return;
+      }
+    } catch (error) {
+      const message = detailedMessageFromUnknownError(error);
+      setLastMessage(message);
+      return;
+    }
+
+    setPrintReadinessBlockers([]);
     setOperatorNameDraft((current) => current.trim() || operatorNames[0] || "");
     setOperatorNameError("");
     setOperatorDropdownOpen(false);
@@ -2036,6 +1982,13 @@ export function OperatorPanel() {
   }
 
   async function handleConfirmPrintReport() {
+    if (processingTaskRef.current || isRunningRef.current) {
+      const message = "Pause and wait for the current step to finish before printing the report";
+      setOperatorNameError(message);
+      setLastMessage(message);
+      return;
+    }
+
     const operatorName = operatorNameDraft.trim();
 
     if (!operatorName) {
@@ -2055,11 +2008,22 @@ export function OperatorPanel() {
     setLastMessage("Saving final operator name");
 
     try {
+      const readiness = await validateReadyForPrint(unitFolder);
+
+      if (!readiness.ready) {
+        const message = printReadinessMessage(readiness.blocking_issues) || readiness.message;
+        setPrintReadinessBlockers(readiness.blocking_issues);
+        setOperatorNameError(message);
+        setLastMessage(readiness.message);
+        return;
+      }
+
       await saveFinalOperatorName(unitFolder, operatorName);
       setOperatorNames((current) => storeOperatorNames(addOperatorName(current, operatorName)));
       setLastMessage("Opening print dialog");
       await openPrintReportDialog(unitFolder);
       setPrintOperatorPromptOpen(false);
+      setPrintReadinessBlockers([]);
       setOperatorDropdownOpen(false);
       setOperatorFilterText("");
       setLastMessage("Print dialog opened");
@@ -2338,6 +2302,42 @@ export function OperatorPanel() {
         </div>
       </footer>
 
+      {printReadinessBlockers.length > 0 && !printOperatorPromptOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
+          <section className="w-full max-w-[420px] rounded-md border border-[#454542] bg-[#292928] p-4 text-white shadow-2xl">
+            <div className="text-center text-[12pt] font-semibold leading-tight">
+              Print Blocked
+            </div>
+            <div className="mt-3 max-h-56 overflow-y-auto rounded border border-[#454542] bg-[#1f1f1e] p-2 text-[8pt] leading-snug text-[#f4d0cb] [scrollbar-width:thin]">
+              {printReadinessBlockers.slice(0, 12).map((blocker, index) => (
+                <div key={`${blocker.task_id ?? blocker.code}-${index}`} className="py-1">
+                  <span className="font-semibold text-white">
+                    {blocker.label ?? blocker.task_id ?? "Report"}
+                  </span>
+                  {": "}
+                  <span>{blocker.reason}</span>
+                </div>
+              ))}
+              {printReadinessBlockers.length > 12 ? (
+                <div className="border-t border-[#454542] pt-1 text-[#d8d2c8]">
+                  {printReadinessBlockers.length - 12} more blocking issue
+                  {printReadinessBlockers.length - 12 === 1 ? "" : "s"}
+                </div>
+              ) : null}
+            </div>
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setPrintReadinessBlockers([])}
+                className="inline-flex min-h-9 items-center justify-center rounded-md bg-[#3a3a38] px-3 py-2 text-[9pt] font-semibold text-white shadow-sm transition hover:bg-[#454542]"
+              >
+                Close
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
       {printOperatorPromptOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
           <section className="w-full max-w-[320px] rounded-md border border-[#454542] bg-[#292928] p-4 text-white shadow-2xl">
@@ -2365,6 +2365,7 @@ export function OperatorPanel() {
                     setOperatorNameDraft(value);
                     setOperatorFilterText(value);
                     setOperatorNameError("");
+                    setPrintReadinessBlockers([]);
                     setOperatorDropdownOpen(true);
                   }}
                   onKeyDown={(event) => {
@@ -2437,12 +2438,26 @@ export function OperatorPanel() {
                   {operatorNameError}
                 </div>
               ) : null}
+              {printReadinessBlockers.length > 0 ? (
+                <div className="mt-2 max-h-28 overflow-y-auto rounded border border-[#59342e] bg-[#241f1e] p-2 text-[7.5pt] leading-tight text-[#f4d0cb] [scrollbar-width:thin]">
+                  {printReadinessBlockers.slice(0, 6).map((blocker, index) => (
+                    <div key={`${blocker.task_id ?? blocker.code}-${index}`} className="py-0.5">
+                      <span className="font-semibold text-white">
+                        {blocker.label ?? blocker.task_id ?? "Report"}
+                      </span>
+                      {": "}
+                      <span>{blocker.reason}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
             <div className="mt-4 grid grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={() => {
                   setPrintOperatorPromptOpen(false);
+                  setPrintReadinessBlockers([]);
                   setOperatorDropdownOpen(false);
                   setOperatorFilterText("");
                 }}

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use regex::Regex;
 use thiserror::Error;
@@ -10,10 +10,13 @@ use crate::config::{
     MappingDefinition, MappingRow, ReportLayoutProfile, TaskDefinition, TransformDefinition,
 };
 
-use super::csv_data::{required_number, round_to, CsvDataError, CsvTable};
+use super::csv_data::{
+    csv_fingerprint, required_number, round_to, wait_for_stable_csv, CsvDataError, CsvTable,
+};
 use super::processors::{FailureDetail, ProcessorResult};
 use super::reports::{
-    patch_workbook, require_main_report, require_print_report, CellUpdate, ReportError,
+    patch_workbooks_transactional, require_main_report, require_print_report, CellUpdate,
+    ReportError, WorkbookPatch,
 };
 
 #[derive(Debug, Error)]
@@ -44,12 +47,22 @@ impl From<CsvDataError> for MappedProcessorError {
 
 type MappedAttempt<T> = Result<T, MappedProcessorError>;
 
+const CSV_STABLE_FOR: Duration = Duration::from_millis(400);
+const CSV_MAX_WAIT: Duration = Duration::from_millis(1_500);
+
+#[derive(Debug, Clone)]
+struct CsvSource {
+    path: PathBuf,
+    fingerprint: String,
+}
+
 pub fn process_task(
     profile: &ReportLayoutProfile,
     task: &TaskDefinition,
     unit_folder: &Path,
+    already_processed_fingerprint: Option<&str>,
 ) -> ProcessorResult {
-    match process_task_inner(profile, task, unit_folder) {
+    match process_task_inner(profile, task, unit_folder, already_processed_fingerprint) {
         Ok(result) => result,
         Err(MappedProcessorError::CsvNotReady(message)) => ProcessorResult {
             state: "waiting".to_string(),
@@ -59,10 +72,12 @@ pub fn process_task(
             log: Vec::new(),
             report_path: None,
             print_report_path: None,
+            source_csv_path: None,
+            csv_fingerprint: None,
         },
         Err(MappedProcessorError::MissingCsv(message)) => ProcessorResult {
             state: "warning".to_string(),
-            code: 2,
+            code: 3,
             failure: Some(FailureDetail {
                 title: "CSV Not Found".to_string(),
                 message: message.clone(),
@@ -72,6 +87,8 @@ pub fn process_task(
             log: Vec::new(),
             report_path: None,
             print_report_path: None,
+            source_csv_path: None,
+            csv_fingerprint: None,
         },
         Err(error) => {
             let message = error.to_string();
@@ -87,6 +104,8 @@ pub fn process_task(
                 log: Vec::new(),
                 report_path: None,
                 print_report_path: None,
+                source_csv_path: None,
+                csv_fingerprint: None,
             }
         }
     }
@@ -96,6 +115,7 @@ fn process_task_inner(
     profile: &ReportLayoutProfile,
     task: &TaskDefinition,
     unit_folder: &Path,
+    already_processed_fingerprint: Option<&str>,
 ) -> MappedAttempt<ProcessorResult> {
     if task.mappings.is_empty() {
         return Err(MappedProcessorError::Config(format!(
@@ -104,11 +124,15 @@ fn process_task_inner(
         )));
     }
 
-    let csv_path = require_csv_by_pattern(unit_folder, &task.csv_pattern, &task.label)?;
-    let table = CsvTable::read(&csv_path)?;
+    let csv_source = require_csv_by_pattern(unit_folder, &task.csv_pattern, &task.label)?;
+    if let Some(result) = idempotent_success(task, &csv_source, already_processed_fingerprint) {
+        return Ok(result);
+    }
+
+    let table = CsvTable::read(&csv_source.path)?;
     let mut log = vec![
         format!("[mapped] {}", task.label),
-        format!("[mapped] CSV: {}", csv_path.display()),
+        format!("[mapped] CSV: {}", csv_source.path.display()),
     ];
     let mut updates_by_workbook = HashMap::<String, Vec<CellUpdate>>::new();
 
@@ -143,6 +167,8 @@ fn process_task_inner(
 
     let mut paths_by_workbook = HashMap::<String, PathBuf>::new();
 
+    let mut workbook_patches = Vec::new();
+
     for (workbook, updates) in updates_by_workbook {
         let workbook_path = resolve_workbook_path(profile, unit_folder, &workbook)?;
         log.push(format!(
@@ -150,14 +176,17 @@ fn process_task_inner(
             workbook,
             workbook_path.display()
         ));
-        patch_workbook(&workbook_path, &updates)?;
+        workbook_patches.push(WorkbookPatch::new(workbook_path.clone(), updates));
         paths_by_workbook.insert(workbook, workbook_path);
     }
+
+    patch_workbooks_transactional(&workbook_patches)?;
 
     Ok(success(
         format!("{} processed successfully", task.label),
         log,
         paths_by_workbook,
+        Some(csv_source),
     ))
 }
 
@@ -279,17 +308,22 @@ fn require_csv_by_pattern(
     unit_folder: &Path,
     csv_pattern: &str,
     task_label: &str,
-) -> MappedAttempt<PathBuf> {
-    find_latest_file_by_pattern(unit_folder, csv_pattern).ok_or_else(|| {
+) -> MappedAttempt<CsvSource> {
+    let path = find_latest_file_by_pattern(unit_folder, csv_pattern).ok_or_else(|| {
         MappedProcessorError::MissingCsv(format!(
             "{task_label}: no matching CSV '{}' found under {}",
             csv_pattern,
             unit_folder.display()
         ))
-    })
+    })?;
+
+    wait_for_stable_csv(&path, CSV_STABLE_FOR, CSV_MAX_WAIT)?;
+    let fingerprint = csv_fingerprint(&path)?;
+
+    Ok(CsvSource { path, fingerprint })
 }
 
-fn find_latest_file_by_pattern(root: &Path, pattern: &str) -> Option<PathBuf> {
+pub(crate) fn find_latest_file_by_pattern(root: &Path, pattern: &str) -> Option<PathBuf> {
     let pattern = wildcard_pattern_to_regex(pattern)?;
 
     WalkDir::new(root)
@@ -338,6 +372,7 @@ fn success(
     message: String,
     log: Vec<String>,
     paths_by_workbook: HashMap<String, PathBuf>,
+    csv_source: Option<CsvSource>,
 ) -> ProcessorResult {
     ProcessorResult {
         state: "pass".to_string(),
@@ -351,7 +386,36 @@ fn success(
             .get("print")
             .map(|path| path.display().to_string()),
         failure: None,
+        source_csv_path: csv_source
+            .as_ref()
+            .map(|source| source.path.display().to_string()),
+        csv_fingerprint: csv_source.map(|source| source.fingerprint),
     }
+}
+
+fn idempotent_success(
+    task: &TaskDefinition,
+    csv_source: &CsvSource,
+    already_processed_fingerprint: Option<&str>,
+) -> Option<ProcessorResult> {
+    if already_processed_fingerprint != Some(csv_source.fingerprint.as_str()) {
+        return None;
+    }
+
+    Some(success(
+        format!(
+            "{} already processed from the same CSV; no workbook changes were applied",
+            task.label
+        ),
+        vec![format!(
+            "[idempotent] {} already processed from {} ({})",
+            task.label,
+            csv_source.path.display(),
+            csv_source.fingerprint
+        )],
+        HashMap::new(),
+        Some(csv_source.clone()),
+    ))
 }
 
 fn format_number_for_log(value: f64, transform: Option<&TransformDefinition>) -> String {

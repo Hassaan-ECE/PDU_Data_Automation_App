@@ -33,6 +33,13 @@ export interface BackendTaskStatus {
   latest_csv_created_ms: number | null;
   latest_csv_readable: boolean | null;
   timer_start_ms: number | null;
+  processable: boolean;
+  match_reason: string;
+  source_csv_path: string | null;
+  csv_fingerprint: string | null;
+  processed_at: string | null;
+  result: string | null;
+  accepted: boolean;
 }
 
 export interface UnitFolderSummary {
@@ -81,6 +88,21 @@ export interface TaskProcessResult {
   report_path: string | null;
   print_report_path: string | null;
   failure: FailureDetail | null;
+  source_csv_path: string | null;
+  csv_fingerprint: string | null;
+}
+
+export interface PrintReadinessBlocker {
+  task_id: string | null;
+  label: string | null;
+  code: string;
+  reason: string;
+}
+
+export interface PrintReadinessResult {
+  ready: boolean;
+  message: string;
+  blocking_issues: PrintReadinessBlocker[];
 }
 
 export function isTauriRuntime() {
@@ -176,6 +198,18 @@ export async function openPrintReportDialog(unitFolder: string): Promise<void> {
   return invoke<void>("open_print_report_dialog", { unitFolder });
 }
 
+export async function validateReadyForPrint(unitFolder: string): Promise<PrintReadinessResult> {
+  if (!isTauriRuntime()) {
+    return {
+      blocking_issues: [],
+      message: "Ready to print.",
+      ready: true,
+    };
+  }
+
+  return invoke<PrintReadinessResult>("validate_ready_for_print", { unitFolder });
+}
+
 export async function scanUnitFolder(unitFolder: string): Promise<UnitFolderSummary | null> {
   if (!isTauriRuntime()) {
     return mockUnitFolderSummary(unitFolder);
@@ -200,6 +234,8 @@ export async function processAutomationTask(
       report_path: null,
       print_report_path: null,
       failure: null,
+      source_csv_path: null,
+      csv_fingerprint: null,
     };
   }
 

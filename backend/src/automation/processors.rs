@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use chrono::Local;
 use serde::Serialize;
@@ -9,10 +10,13 @@ use crate::config::{
     BreakerMetricThresholds, SystemMetricThresholds,
 };
 
-use super::csv_data::{find_latest_csv, required_number, round_to, CsvDataError, CsvTable};
+use super::csv_data::{
+    csv_fingerprint, find_latest_csv, required_number, round_to, wait_for_stable_csv, CsvDataError,
+    CsvTable,
+};
 use super::reports::{
-    extract_serial_number, patch_workbook, require_main_report, require_print_report, CellUpdate,
-    ReportError,
+    extract_serial_number, patch_workbook, patch_workbooks_transactional, require_main_report,
+    require_print_report, CellUpdate, ReportError, WorkbookPatch,
 };
 use super::tasks::{
     step_for_breaker, step_for_system, AutomationTask, LoadLevel, TaskKind, VoltageSet,
@@ -27,6 +31,8 @@ pub struct ProcessorResult {
     pub report_path: Option<String>,
     pub print_report_path: Option<String>,
     pub failure: Option<FailureDetail>,
+    pub source_csv_path: Option<String>,
+    pub csv_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -71,8 +77,21 @@ impl From<CsvDataError> for ProcessorError {
 
 type ProcessorAttempt<T> = Result<T, ProcessorError>;
 
-pub fn process_task(task: &AutomationTask, unit_folder: &Path) -> ProcessorResult {
-    match process_task_inner(task, unit_folder) {
+const CSV_STABLE_FOR: Duration = Duration::from_millis(400);
+const CSV_MAX_WAIT: Duration = Duration::from_millis(1_500);
+
+#[derive(Debug, Clone)]
+struct CsvSource {
+    path: PathBuf,
+    fingerprint: String,
+}
+
+pub fn process_task(
+    task: &AutomationTask,
+    unit_folder: &Path,
+    already_processed_fingerprint: Option<&str>,
+) -> ProcessorResult {
+    match process_task_inner(task, unit_folder, already_processed_fingerprint) {
         Ok(result) => result,
         Err(ProcessorError::CsvNotReady(message)) => ProcessorResult {
             state: "waiting".to_string(),
@@ -82,10 +101,12 @@ pub fn process_task(task: &AutomationTask, unit_folder: &Path) -> ProcessorResul
             log: Vec::new(),
             report_path: None,
             print_report_path: None,
+            source_csv_path: None,
+            csv_fingerprint: None,
         },
         Err(ProcessorError::MissingCsv(message)) => ProcessorResult {
             state: "warning".to_string(),
-            code: 2,
+            code: 3,
             failure: Some(FailureDetail {
                 title: "CSV Not Found".to_string(),
                 message: message.clone(),
@@ -95,6 +116,8 @@ pub fn process_task(task: &AutomationTask, unit_folder: &Path) -> ProcessorResul
             log: Vec::new(),
             report_path: None,
             print_report_path: None,
+            source_csv_path: None,
+            csv_fingerprint: None,
         },
         Err(error) => {
             let message = error.to_string();
@@ -110,6 +133,8 @@ pub fn process_task(task: &AutomationTask, unit_folder: &Path) -> ProcessorResul
                 log: Vec::new(),
                 report_path: None,
                 print_report_path: None,
+                source_csv_path: None,
+                csv_fingerprint: None,
             }
         }
     }
@@ -118,17 +143,37 @@ pub fn process_task(task: &AutomationTask, unit_folder: &Path) -> ProcessorResul
 fn process_task_inner(
     task: &AutomationTask,
     unit_folder: &Path,
+    already_processed_fingerprint: Option<&str>,
 ) -> ProcessorAttempt<ProcessorResult> {
     match task.kind {
-        TaskKind::Transformer { voltage } => process_transformer(task, unit_folder, voltage),
-        TaskKind::System { voltage, load } => process_system(task, unit_folder, voltage, load),
+        TaskKind::Transformer { voltage } => {
+            process_transformer(task, unit_folder, voltage, already_processed_fingerprint)
+        }
+        TaskKind::System { voltage, load } => process_system(
+            task,
+            unit_folder,
+            voltage,
+            load,
+            already_processed_fingerprint,
+        ),
         TaskKind::Breaker {
             voltage,
             breaker,
             load,
-        } => process_breaker(task, unit_folder, voltage, breaker, load),
-        TaskKind::SystemBurnIn => process_system_burn_in(task, unit_folder),
-        TaskKind::BreakerBurnIn { breaker } => process_breaker_burn_in(task, unit_folder, breaker),
+        } => process_breaker(
+            task,
+            unit_folder,
+            voltage,
+            breaker,
+            load,
+            already_processed_fingerprint,
+        ),
+        TaskKind::SystemBurnIn => {
+            process_system_burn_in(task, unit_folder, already_processed_fingerprint)
+        }
+        TaskKind::BreakerBurnIn { breaker } => {
+            process_breaker_burn_in(task, unit_folder, breaker, already_processed_fingerprint)
+        }
     }
 }
 
@@ -136,6 +181,7 @@ fn process_transformer(
     task: &AutomationTask,
     unit_folder: &Path,
     voltage: VoltageSet,
+    already_processed_fingerprint: Option<&str>,
 ) -> ProcessorAttempt<ProcessorResult> {
     let step = match voltage {
         VoltageSet::V208 => 14,
@@ -145,18 +191,22 @@ fn process_transformer(
         VoltageSet::V208 => "XFMR Check_208VAC",
         VoltageSet::V415 => "XFMR Check_415VAC",
     };
-    let csv_path = require_csv(
+    let csv_source = require_csv(
         unit_folder,
         step,
         &["TRANSFORMER_TEST_DATA_AVG"],
         &task.label,
     )?;
-    let table = CsvTable::read(&csv_path)?;
+    if let Some(result) = idempotent_success(task, &csv_source, already_processed_fingerprint) {
+        return Ok(result);
+    }
+
+    let table = CsvTable::read(&csv_source.path)?;
     let row = table.first_data_row_after_header()?;
     let report_path = require_main_report(unit_folder)?;
     let mut updates = Vec::new();
     let mut log = vec![
-        format!("[xfmr] Step {step}: {}", csv_path.display()),
+        format!("[xfmr] Step {step}: {}", csv_source.path.display()),
         format!("[xfmr] Report: {}", report_path.display()),
     ];
 
@@ -178,6 +228,7 @@ fn process_transformer(
         log,
         Some(report_path),
         None,
+        Some(csv_source),
     ))
 }
 
@@ -186,26 +237,31 @@ fn process_system(
     unit_folder: &Path,
     voltage: VoltageSet,
     load: LoadLevel,
+    already_processed_fingerprint: Option<&str>,
 ) -> ProcessorAttempt<ProcessorResult> {
     let step = step_for_system(voltage, load);
     let sheet = match voltage {
         VoltageSet::V208 => "System Test - 480_208",
         VoltageSet::V415 => "System Test - 480_415",
     };
-    let csv_path = require_csv(
+    let csv_source = require_csv(
         unit_folder,
         step,
         &["SYSTEM_ACCURACY_TEST_DATA_AVG"],
         &task.label,
     )?;
-    let table = CsvTable::read(&csv_path)?;
+    if let Some(result) = idempotent_success(task, &csv_source, already_processed_fingerprint) {
+        return Ok(result);
+    }
+
+    let table = CsvTable::read(&csv_source.path)?;
     let row = table.last_data_row_after_header()?;
     let report_path = require_main_report(unit_folder)?;
     let mut updates = Vec::new();
     let mut values = HashMap::<String, f64>::new();
     let mut log = vec![
         format!("[system] {} {}", voltage.display(), load.system_test_name()),
-        format!("[system] CSV: {}", csv_path.display()),
+        format!("[system] CSV: {}", csv_source.path.display()),
     ];
 
     add_system_group(
@@ -251,10 +307,10 @@ fn process_system(
 
     let thresholds = load_accuracy_thresholds()?;
     let failures = add_system_accuracy_updates(&mut updates, &values, sheet, load, &thresholds);
-    patch_workbook(&report_path, &updates)?;
 
     if failures.is_empty() {
         log.push("[system] Verification Result: PASS".to_string());
+        patch_workbook(&report_path, &updates)?;
         Ok(success(
             format!(
                 "{} {} processed successfully",
@@ -264,6 +320,7 @@ fn process_system(
             log,
             Some(report_path),
             None,
+            Some(csv_source),
         ))
     } else {
         log.extend(failures.iter().map(|failure| format!("[system] {failure}")));
@@ -281,7 +338,14 @@ fn process_system(
             failures.first(),
         );
 
-        Ok(failed(message, log, Some(report_path), None, failure))
+        Ok(failed(
+            message,
+            log,
+            Some(report_path),
+            None,
+            failure,
+            Some(csv_source),
+        ))
     }
 }
 
@@ -291,11 +355,16 @@ fn process_breaker(
     voltage: VoltageSet,
     breaker: u8,
     load: LoadLevel,
+    already_processed_fingerprint: Option<&str>,
 ) -> ProcessorAttempt<ProcessorResult> {
     let step = step_for_breaker(voltage, breaker, load);
     let csv_fragment = format!("SUB_FEED_{breaker:02}_ACCURACY_TEST_DATA_AVG");
-    let csv_path = require_csv(unit_folder, step, &[csv_fragment.as_str()], &task.label)?;
-    let table = CsvTable::read(&csv_path)?;
+    let csv_source = require_csv(unit_folder, step, &[csv_fragment.as_str()], &task.label)?;
+    if let Some(result) = idempotent_success(task, &csv_source, already_processed_fingerprint) {
+        return Ok(result);
+    }
+
+    let table = CsvTable::read(&csv_source.path)?;
     let row = table.last_data_row_after_header()?;
     let report_path = require_main_report(unit_folder)?;
     let sheet = match voltage {
@@ -309,7 +378,7 @@ fn process_breaker(
             voltage.display(),
             load.display()
         ),
-        format!("[breaker] CSV: {}", csv_path.display()),
+        format!("[breaker] CSV: {}", csv_source.path.display()),
     ];
 
     add_breaker_cf_updates(&mut updates, unit_folder, voltage, breaker);
@@ -325,10 +394,9 @@ fn process_breaker(
         &thresholds,
     )?;
 
-    patch_workbook(&report_path, &updates)?;
-
     if failures.is_empty() {
         log.push("[breaker] Verification Result: PASS".to_string());
+        patch_workbook(&report_path, &updates)?;
         Ok(success(
             format!(
                 "{} Breaker {breaker} {} processed successfully",
@@ -338,6 +406,7 @@ fn process_breaker(
             log,
             Some(report_path),
             None,
+            Some(csv_source),
         ))
     } else {
         log.extend(
@@ -359,21 +428,33 @@ fn process_breaker(
             failures.first(),
         );
 
-        Ok(failed(message, log, Some(report_path), None, failure))
+        Ok(failed(
+            message,
+            log,
+            Some(report_path),
+            None,
+            failure,
+            Some(csv_source),
+        ))
     }
 }
 
 fn process_system_burn_in(
     task: &AutomationTask,
     unit_folder: &Path,
+    already_processed_fingerprint: Option<&str>,
 ) -> ProcessorAttempt<ProcessorResult> {
-    let csv_path = require_csv(
+    let csv_source = require_csv(
         unit_folder,
         72,
         &["SYSTEM_ACCURACY_TEST_DATA_AVG"],
         &task.label,
     )?;
-    let table = CsvTable::read(&csv_path)?;
+    if let Some(result) = idempotent_success(task, &csv_source, already_processed_fingerprint) {
+        return Ok(result);
+    }
+
+    let table = CsvTable::read(&csv_source.path)?;
     let row = table.last_data_row()?;
     let report_path = require_main_report(unit_folder)?;
     let print_path = require_print_report(unit_folder)?;
@@ -382,7 +463,7 @@ fn process_system_burn_in(
     let mut main_updates = Vec::new();
     let mut print_updates = Vec::new();
     let mut log = vec![
-        format!("[burn-in system] CSV: {}", csv_path.display()),
+        format!("[burn-in system] CSV: {}", csv_source.path.display()),
         format!("[burn-in system] Main: {}", report_path.display()),
         format!("[burn-in system] Print: {}", print_path.display()),
     ];
@@ -409,8 +490,10 @@ fn process_system_burn_in(
 
     print_updates.push(CellUpdate::text("Test Report", "K3", today));
 
-    patch_workbook(&report_path, &main_updates)?;
-    patch_workbook(&print_path, &print_updates)?;
+    patch_workbooks_transactional(&[
+        WorkbookPatch::new(report_path.clone(), main_updates),
+        WorkbookPatch::new(print_path.clone(), print_updates),
+    ])?;
     log.push("[burn-in system] Reports updated".to_string());
 
     Ok(success(
@@ -418,6 +501,7 @@ fn process_system_burn_in(
         log,
         Some(report_path),
         Some(print_path),
+        Some(csv_source),
     ))
 }
 
@@ -425,11 +509,16 @@ fn process_breaker_burn_in(
     task: &AutomationTask,
     unit_folder: &Path,
     breaker: u8,
+    already_processed_fingerprint: Option<&str>,
 ) -> ProcessorAttempt<ProcessorResult> {
     let step = 72 + u16::from(breaker);
     let csv_fragment = format!("SUB_FEED_{breaker:02}_ACCURACY_TEST_DATA_AVG");
-    let csv_path = require_csv(unit_folder, step, &[csv_fragment.as_str()], &task.label)?;
-    let table = CsvTable::read(&csv_path)?;
+    let csv_source = require_csv(unit_folder, step, &[csv_fragment.as_str()], &task.label)?;
+    if let Some(result) = idempotent_success(task, &csv_source, already_processed_fingerprint) {
+        return Ok(result);
+    }
+
+    let table = CsvTable::read(&csv_source.path)?;
     let row = table.last_data_row()?;
     let report_path = require_main_report(unit_folder)?;
     let print_path = require_print_report(unit_folder)?;
@@ -439,7 +528,7 @@ fn process_breaker_burn_in(
     let mut print_updates = Vec::new();
     let mut log = vec![format!(
         "[burn-in breaker] Breaker {breaker} CSV: {}",
-        csv_path.display()
+        csv_source.path.display()
     )];
 
     for (metric_offset, metric) in ["V", "I", "P", "PF"].iter().enumerate() {
@@ -494,8 +583,10 @@ fn process_breaker_burn_in(
         }
     }
 
-    patch_workbook(&report_path, &main_updates)?;
-    patch_workbook(&print_path, &print_updates)?;
+    patch_workbooks_transactional(&[
+        WorkbookPatch::new(report_path.clone(), main_updates),
+        WorkbookPatch::new(print_path.clone(), print_updates),
+    ])?;
     log.push("[burn-in breaker] Reports updated".to_string());
 
     Ok(success(
@@ -503,6 +594,7 @@ fn process_breaker_burn_in(
         log,
         Some(report_path),
         Some(print_path),
+        Some(csv_source),
     ))
 }
 
@@ -511,6 +603,7 @@ fn success(
     log: Vec<String>,
     report_path: Option<PathBuf>,
     print_report_path: Option<PathBuf>,
+    csv_source: Option<CsvSource>,
 ) -> ProcessorResult {
     ProcessorResult {
         state: "pass".to_string(),
@@ -520,6 +613,10 @@ fn success(
         report_path: report_path.map(|path| path.display().to_string()),
         print_report_path: print_report_path.map(|path| path.display().to_string()),
         failure: None,
+        source_csv_path: csv_source
+            .as_ref()
+            .map(|source| source.path.display().to_string()),
+        csv_fingerprint: csv_source.map(|source| source.fingerprint),
     }
 }
 
@@ -529,6 +626,7 @@ fn failed(
     report_path: Option<PathBuf>,
     print_report_path: Option<PathBuf>,
     failure: FailureDetail,
+    csv_source: Option<CsvSource>,
 ) -> ProcessorResult {
     ProcessorResult {
         state: "fail".to_string(),
@@ -538,7 +636,37 @@ fn failed(
         report_path: report_path.map(|path| path.display().to_string()),
         print_report_path: print_report_path.map(|path| path.display().to_string()),
         failure: Some(failure),
+        source_csv_path: csv_source
+            .as_ref()
+            .map(|source| source.path.display().to_string()),
+        csv_fingerprint: csv_source.map(|source| source.fingerprint),
     }
+}
+
+fn idempotent_success(
+    task: &AutomationTask,
+    csv_source: &CsvSource,
+    already_processed_fingerprint: Option<&str>,
+) -> Option<ProcessorResult> {
+    if already_processed_fingerprint != Some(csv_source.fingerprint.as_str()) {
+        return None;
+    }
+
+    Some(success(
+        format!(
+            "{} already processed from the same CSV; no workbook changes were applied",
+            task.label
+        ),
+        vec![format!(
+            "[idempotent] {} already processed from {} ({})",
+            task.label,
+            csv_source.path.display(),
+            csv_source.fingerprint
+        )],
+        None,
+        None,
+        Some(csv_source.clone()),
+    ))
 }
 
 fn require_csv(
@@ -546,18 +674,23 @@ fn require_csv(
     step: u16,
     required_fragments: &[&str],
     task_label: &str,
-) -> ProcessorAttempt<PathBuf> {
+) -> ProcessorAttempt<CsvSource> {
     let fragments = required_fragments
         .iter()
         .map(|fragment| (*fragment).to_string())
         .collect::<Vec<_>>();
 
-    find_latest_csv(unit_folder, step, &fragments).ok_or_else(|| {
+    let path = find_latest_csv(unit_folder, step, &fragments).ok_or_else(|| {
         ProcessorError::MissingCsv(format!(
             "{task_label}: no matching STEP{step} CSV found under {}",
             unit_folder.display()
         ))
-    })
+    })?;
+
+    wait_for_stable_csv(&path, CSV_STABLE_FOR, CSV_MAX_WAIT)?;
+    let fingerprint = csv_fingerprint(&path)?;
+
+    Ok(CsvSource { path, fingerprint })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -968,6 +1101,9 @@ fn add_breaker_cf_updates(
     let Some(csv_path) = find_latest_csv(unit_folder, step, &[csv_fragment]) else {
         return;
     };
+    if wait_for_stable_csv(&csv_path, CSV_STABLE_FOR, CSV_MAX_WAIT).is_err() {
+        return;
+    }
     let Ok(table) = CsvTable::read(&csv_path) else {
         return;
     };

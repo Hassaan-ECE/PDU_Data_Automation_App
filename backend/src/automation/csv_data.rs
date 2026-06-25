@@ -1,5 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use csv::ReaderBuilder;
 use thiserror::Error;
@@ -17,6 +19,8 @@ pub enum CsvDataError {
     },
     #[error("CSV file has no data rows: {0}")]
     Empty(String),
+    #[error("CSV file is still changing and is not ready to process: {0}")]
+    Unstable(String),
     #[error("{label} source column {column} is missing from {file}")]
     MissingColumn {
         file: String,
@@ -42,10 +46,70 @@ pub enum CsvDataError {
 
 pub type CsvResult<T> = Result<T, CsvDataError>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CsvFileSnapshot {
+    len: u64,
+    modified_ms: Option<u128>,
+}
+
+pub fn wait_for_stable_csv(path: &Path, stable_for: Duration, max_wait: Duration) -> CsvResult<()> {
+    if stable_for.is_zero() {
+        csv_file_snapshot(path)?;
+        return Ok(());
+    }
+
+    let started = Instant::now();
+    let mut previous = csv_file_snapshot(path)?;
+    let mut stable_since = Instant::now();
+    let poll_interval = Duration::from_millis(100).min(stable_for);
+
+    loop {
+        if stable_since.elapsed() >= stable_for {
+            return Ok(());
+        }
+
+        if started.elapsed() >= max_wait {
+            return Err(CsvDataError::Unstable(path.display().to_string()));
+        }
+
+        thread::sleep(poll_interval);
+
+        let current = csv_file_snapshot(path)?;
+        if current == previous {
+            continue;
+        }
+
+        previous = current;
+        stable_since = Instant::now();
+    }
+}
+
+pub fn csv_fingerprint(path: &Path) -> CsvResult<String> {
+    let metadata = fs::metadata(path)?;
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(system_time_millis)
+        .unwrap_or_default();
+    let bytes = fs::read(path)?;
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+
+    for byte in &bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+
+    Ok(format!(
+        "fnv1a64:{hash:016x}:size:{}:mtime_ms:{modified_ms}",
+        metadata.len()
+    ))
+}
+
 impl CsvDataError {
     pub fn is_transient_file_access(&self) -> bool {
         match self {
             CsvDataError::Io(source) => is_transient_file_access_error(source),
+            CsvDataError::Unstable(_) => true,
             CsvDataError::Csv { source, .. } => match source.kind() {
                 csv::ErrorKind::Io(source) => is_transient_file_access_error(source),
                 _ => false,
@@ -309,6 +373,19 @@ fn sniff_delimiter(path: &Path) -> CsvResult<u8> {
     }
 }
 
+fn csv_file_snapshot(path: &Path) -> CsvResult<CsvFileSnapshot> {
+    let metadata = fs::metadata(path)?;
+
+    Ok(CsvFileSnapshot {
+        len: metadata.len(),
+        modified_ms: metadata.modified().ok().and_then(system_time_millis),
+    })
+}
+
+fn system_time_millis(time: SystemTime) -> Option<u128> {
+    Some(time.duration_since(UNIX_EPOCH).ok()?.as_millis())
+}
+
 fn is_transient_file_access_error(error: &std::io::Error) -> bool {
     matches!(error.raw_os_error(), Some(32 | 33))
         || matches!(
@@ -321,6 +398,8 @@ fn is_transient_file_access_error(error: &std::io::Error) -> bool {
 mod tests {
     use super::*;
     use std::io::ErrorKind;
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn excel_columns_are_zero_based() {
@@ -360,5 +439,44 @@ mod tests {
         };
 
         assert!(!error.is_transient_file_access());
+    }
+
+    #[test]
+    fn stable_csv_wait_passes_after_unchanged_window() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let csv_path = temp.path().join("stable.csv");
+        fs::write(&csv_path, "a,b\n1,2\n").expect("write csv");
+
+        wait_for_stable_csv(
+            &csv_path,
+            Duration::from_millis(20),
+            Duration::from_millis(200),
+        )
+        .expect("stable csv should pass");
+    }
+
+    #[test]
+    fn changing_csv_wait_returns_unstable_transient_error() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let csv_path = temp.path().join("changing.csv");
+        fs::write(&csv_path, "a,b\n1,2\n").expect("write csv");
+        let writer_path = csv_path.clone();
+
+        let writer = thread::spawn(move || {
+            for index in 0..5 {
+                thread::sleep(Duration::from_millis(25));
+                fs::write(&writer_path, format!("a,b\n{index},2\n")).expect("rewrite csv");
+            }
+        });
+
+        let error = wait_for_stable_csv(
+            &csv_path,
+            Duration::from_millis(80),
+            Duration::from_millis(120),
+        )
+        .expect_err("changing csv should not become stable before max wait");
+
+        writer.join().expect("writer thread");
+        assert!(error.is_transient_file_access());
     }
 }

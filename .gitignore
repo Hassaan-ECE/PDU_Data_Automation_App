@@ -29,6 +29,9 @@ release/**/SHA256SUMS.txt
 # Runtime/app data
 *.log
 *.tmp
+*.bak
+*.lock
+unit_state.json
 .tmp/
 
 # Python leftovers from legacy scripts or migration spikes

@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   saveTransformerSn: vi.fn(),
   scanUnitFolder: vi.fn(),
   setupUnitFolder: vi.fn(),
+  validateReadyForPrint: vi.fn(),
 }));
 
 vi.mock("@/integrations/tauri/backend", () => ({
@@ -30,6 +31,7 @@ vi.mock("@/integrations/tauri/backend", () => ({
   saveTransformerSn: mocks.saveTransformerSn,
   scanUnitFolder: mocks.scanUnitFolder,
   setupUnitFolder: mocks.setupUnitFolder,
+  validateReadyForPrint: mocks.validateReadyForPrint,
 }));
 
 import { App } from "@/app/App";
@@ -106,6 +108,11 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     mocks.saveFinalOperatorName.mockResolvedValue("C:\\PDU500\\262343000072\\print.xlsx");
     mocks.saveTransformerSn.mockResolvedValue(undefined);
     mocks.openPrintReportDialog.mockResolvedValue(undefined);
+    mocks.validateReadyForPrint.mockResolvedValue({
+      blocking_issues: [],
+      message: "Ready to print.",
+      ready: true,
+    });
   });
 
   afterEach(() => {
@@ -318,6 +325,9 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     await setupUnitReadyForPrint();
 
     fireEvent.click(screen.getByRole("button", { name: "Print Report" }));
+    await waitFor(() => {
+      expect(mocks.validateReadyForPrint).toHaveBeenCalledWith("C:\\PDU500\\262343000072");
+    });
     fireEvent.click(await screen.findByRole("button", { name: "Confirm & Print" }));
 
     await waitFor(() => {
@@ -326,6 +336,39 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     await waitFor(() => {
       expect(mocks.openPrintReportDialog).toHaveBeenCalledWith("C:\\PDU500\\262343000072");
     });
+  });
+
+  it("shows backend print blockers before collecting the final operator name", async () => {
+    mocks.validateReadyForPrint.mockResolvedValueOnce({
+      blocking_issues: [
+        {
+          code: "task_fail",
+          label: "208V Transformer Check",
+          reason: "Task failed and has not been explicitly accepted.",
+          task_id: "208v-transformer",
+        },
+      ],
+      message: "Report is not ready to print. 1 blocking issue must be resolved.",
+      ready: false,
+    });
+
+    render(<App />);
+
+    await setupUnitReadyForPrint();
+
+    fireEvent.click(screen.getByRole("button", { name: "Print Report" }));
+
+    const blockerTitle = await screen.findByText("Print Blocked");
+    const blockerDialog = blockerTitle.closest("section");
+
+    expect(blockerDialog).not.toBeNull();
+    expect(within(blockerDialog as HTMLElement).getByText("208V Transformer Check")).toBeInTheDocument();
+    expect(
+      within(blockerDialog as HTMLElement).getByText("Task failed and has not been explicitly accepted."),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Operator name")).not.toBeInTheDocument();
+    expect(mocks.saveFinalOperatorName).not.toHaveBeenCalled();
+    expect(mocks.openPrintReportDialog).not.toHaveBeenCalled();
   });
 
   it("shows print-dialog error details when Excel automation fails", async () => {

@@ -12,6 +12,7 @@ const backendMocks = vi.hoisted(() => ({
   saveTransformerSn: vi.fn(),
   scanUnitFolder: vi.fn(),
   setupUnitFolder: vi.fn(),
+  validateReadyForPrint: vi.fn(),
 }));
 
 const updaterMocks = vi.hoisted(() => ({
@@ -30,6 +31,7 @@ vi.mock("@/integrations/tauri/backend", () => ({
   saveTransformerSn: backendMocks.saveTransformerSn,
   scanUnitFolder: backendMocks.scanUnitFolder,
   setupUnitFolder: backendMocks.setupUnitFolder,
+  validateReadyForPrint: backendMocks.validateReadyForPrint,
 }));
 
 vi.mock("@tauri-apps/plugin-updater", () => ({
@@ -62,6 +64,11 @@ describe("OperatorPanel updater timing", () => {
     backendMocks.saveTransformerSn.mockResolvedValue(undefined);
     backendMocks.scanUnitFolder.mockResolvedValue(null);
     backendMocks.setupUnitFolder.mockResolvedValue(null);
+    backendMocks.validateReadyForPrint.mockResolvedValue({
+      blocking_issues: [],
+      message: "Ready to print.",
+      ready: true,
+    });
   });
 
   afterEach(() => {

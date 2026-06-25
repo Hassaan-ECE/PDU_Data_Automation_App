@@ -19,6 +19,9 @@
     "preview": "vite preview --config frontend/vite.config.ts",
     "tauri": "cd backend && node ../node_modules/@tauri-apps/cli/tauri.js",
     "test": "vitest --run --config frontend/vite.config.ts",
+    "check:versions": "node scripts/release/check-version-consistency.mjs",
+    "validate": "node scripts/validate-local.mjs",
+    "validate:report-layouts": "node scripts/fixtures/validate-report-layout-schema.mjs",
     "bun:direct": "node scripts/run-bun.mjs"
   },
   "dependencies": {
@@ -43,6 +46,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "ajv": "^6.15.0",
     "eslint": "^9.39.4",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",

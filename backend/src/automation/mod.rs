@@ -4,6 +4,7 @@ mod processors;
 mod reports;
 pub mod tasks;
 mod unit_candidates;
+mod unit_state;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -18,14 +19,16 @@ use thiserror::Error;
 
 use crate::config::load_layout_profile;
 
-use self::csv_data::detected_steps;
+use self::csv_data::{detected_steps, find_latest_csv};
 use self::processors::{FailureDetail, ProcessorResult};
 use self::reports::{
-    inspect_reports, require_print_report, setup_reports, setup_reports_with_serial_number,
-    write_final_operator_name, write_transformer_serial_number, ReportError, ReportSetup,
+    inspect_reports, read_transformer_serial_number, require_print_report, setup_reports,
+    setup_reports_with_serial_number, write_final_operator_name, write_transformer_serial_number,
+    ReportError, ReportSetup,
 };
 use self::tasks::{automation_tasks, find_task};
 pub use self::unit_candidates::{LatestUnitCandidateResult, UnitCandidate};
+use self::unit_state::TaskStateSeed;
 
 #[derive(Debug, Error)]
 pub enum AutomationError {
@@ -70,6 +73,11 @@ impl AutomationCommandError {
             ReportError::Io(source) if is_locked_file_error(source) => Self::report(
                 "workbook_locked",
                 "The main report workbook is locked or open in another program. Close Excel or ATS access to the report and try again.",
+                error.to_string(),
+            ),
+            ReportError::WorkbookLocked(_) => Self::report(
+                "workbook_locked",
+                "The main report workbook is locked by another app operation. Wait for the current write to finish and try again.",
                 error.to_string(),
             ),
             ReportError::Zip(zip::result::ZipError::Io(source))
@@ -121,6 +129,11 @@ impl AutomationCommandError {
                 "The print report workbook is locked or open in another program. Close Excel or ATS access to the report and try again.",
                 error.to_string(),
             ),
+            ReportError::WorkbookLocked(_) => Self::report(
+                "workbook_locked",
+                "The print report workbook is locked by another app operation. Wait for the current write to finish and try again.",
+                error.to_string(),
+            ),
             ReportError::Zip(zip::result::ZipError::Io(source))
                 if is_locked_file_error(source) =>
             {
@@ -138,6 +151,11 @@ impl AutomationCommandError {
             ReportError::PrintReportMissing(_) => Self::report(
                 "print_report_missing",
                 "The print report workbook was not found. Check the selected unit folder and report template setup.",
+                error.to_string(),
+            ),
+            ReportError::MainReportMissing(_) => Self::report(
+                "main_report_missing",
+                "The main report workbook was not found. Check the selected unit folder and report template setup.",
                 error.to_string(),
             ),
             ReportError::SheetMissing(sheet) => Self::report(
@@ -170,6 +188,16 @@ impl AutomationCommandError {
             details: Some(details.into()),
         }
     }
+
+    fn print_readiness(readiness: &PrintReadinessResult) -> Self {
+        let details = serde_json::to_string(&readiness.blocking_issues).ok();
+
+        Self {
+            code: "print_validation_failed".to_string(),
+            message: readiness.message.clone(),
+            details,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -194,6 +222,13 @@ pub struct TaskStatus {
     pub latest_csv_created_ms: Option<u64>,
     pub latest_csv_readable: Option<bool>,
     pub timer_start_ms: Option<u64>,
+    pub processable: bool,
+    pub match_reason: String,
+    pub source_csv_path: Option<String>,
+    pub csv_fingerprint: Option<String>,
+    pub processed_at: Option<String>,
+    pub result: Option<String>,
+    pub accepted: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -206,6 +241,23 @@ pub struct TaskProcessResult {
     pub report_path: Option<String>,
     pub print_report_path: Option<String>,
     pub failure: Option<FailureDetail>,
+    pub source_csv_path: Option<String>,
+    pub csv_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PrintReadinessResult {
+    pub ready: bool,
+    pub message: String,
+    pub blocking_issues: Vec<PrintReadinessBlocker>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PrintReadinessBlocker {
+    pub task_id: Option<String>,
+    pub label: Option<String>,
+    pub code: String,
+    pub reason: String,
 }
 
 pub fn setup_unit_folder(unit_folder: String) -> Result<UnitFolderSummary, AutomationError> {
@@ -304,6 +356,12 @@ pub fn save_final_operator_name(
     }
 
     let unit_folder = PathBuf::from(unit_folder);
+    let readiness = validate_ready_for_print_path(&unit_folder)
+        .map_err(AutomationCommandError::from_print_report_error)?;
+    if !readiness.ready {
+        return Err(AutomationCommandError::print_readiness(&readiness));
+    }
+
     let print_report_path = write_final_operator_name(&unit_folder, operator_name)
         .map_err(AutomationCommandError::from_print_report_error)?;
 
@@ -328,6 +386,12 @@ pub fn open_print_report_dialog(unit_folder: String) -> Result<(), AutomationCom
         ));
     }
 
+    let readiness = validate_ready_for_print_path(&unit_folder)
+        .map_err(AutomationCommandError::from_print_report_error)?;
+    if !readiness.ready {
+        return Err(AutomationCommandError::print_readiness(&readiness));
+    }
+
     let print_report_path = require_print_report(&unit_folder)
         .map_err(AutomationCommandError::from_print_report_error)?;
 
@@ -337,6 +401,111 @@ pub fn open_print_report_dialog(unit_folder: String) -> Result<(), AutomationCom
             error.to_string(),
         )
     })
+}
+
+pub fn validate_ready_for_print(
+    unit_folder: String,
+) -> Result<PrintReadinessResult, AutomationCommandError> {
+    if unit_folder.trim().is_empty() {
+        return Err(AutomationCommandError::validation(
+            "unit_folder_missing",
+            "Select Test Unit before printing the report.",
+        ));
+    }
+
+    let unit_folder = PathBuf::from(unit_folder);
+
+    if !unit_folder.is_dir() {
+        return Err(AutomationCommandError::report(
+            "unit_folder_missing",
+            "The selected unit folder does not exist.",
+            format!("unit folder does not exist: {}", unit_folder.display()),
+        ));
+    }
+
+    validate_ready_for_print_path(&unit_folder)
+        .map_err(AutomationCommandError::from_print_report_error)
+}
+
+fn validate_ready_for_print_path(unit_folder: &Path) -> Result<PrintReadinessResult, ReportError> {
+    let mut blocking_issues = Vec::new();
+
+    require_print_report(unit_folder)?;
+
+    if read_transformer_serial_number(unit_folder)?.is_none() {
+        blocking_issues.push(PrintReadinessBlocker {
+            task_id: None,
+            label: None,
+            code: "transformer_sn_missing".to_string(),
+            reason: "Transformer SN is missing from the saved main report.".to_string(),
+        });
+    }
+
+    let mut state = unit_state::load_or_default(unit_folder).unwrap_or_default();
+    let seeds = automation_tasks()
+        .into_iter()
+        .map(|task| TaskStateSeed {
+            task_id: task.id,
+            state: "off".to_string(),
+            source_csv_path: None,
+            csv_fingerprint: None,
+        })
+        .collect::<Vec<_>>();
+
+    if unit_state::ensure_task_entries(&mut state, &seeds) {
+        let _ = unit_state::save_unit_state(unit_folder, &state);
+    }
+
+    for task in automation_tasks() {
+        let Some(entry) = state.tasks.get(&task.id) else {
+            blocking_issues.push(PrintReadinessBlocker {
+                task_id: Some(task.id.clone()),
+                label: Some(task.label.clone()),
+                code: "task_state_missing".to_string(),
+                reason: "Task has no persisted processing state.".to_string(),
+            });
+            continue;
+        };
+
+        if entry.is_print_ready() {
+            continue;
+        }
+
+        blocking_issues.push(PrintReadinessBlocker {
+            task_id: Some(task.id.clone()),
+            label: Some(task.label.clone()),
+            code: format!("task_{}", entry.state),
+            reason: task_blocking_reason(&entry.state),
+        });
+    }
+
+    let ready = blocking_issues.is_empty();
+    let message = if ready {
+        "Ready to print.".to_string()
+    } else {
+        format!(
+            "Report is not ready to print. {} blocking issue{} must be resolved.",
+            blocking_issues.len(),
+            if blocking_issues.len() == 1 { "" } else { "s" }
+        )
+    };
+
+    Ok(PrintReadinessResult {
+        ready,
+        message,
+        blocking_issues,
+    })
+}
+
+fn task_blocking_reason(state: &str) -> String {
+    match state {
+        "fail" => "Task failed and has not been explicitly accepted.".to_string(),
+        "waiting" => "Task is still waiting for stable CSV data.".to_string(),
+        "warning" => "Task has a warning or missing CSV and has not been resolved.".to_string(),
+        "detected" => "Task CSV was detected but has not been processed successfully.".to_string(),
+        "off" => "Task has not been detected or processed successfully.".to_string(),
+        other => format!("Task is not print-ready (state: {other})."),
+    }
 }
 
 pub fn scan_unit_folder(unit_folder: String) -> Result<UnitFolderSummary, AutomationError> {
@@ -352,8 +521,33 @@ pub fn process_task(
 ) -> Result<TaskProcessResult, AutomationError> {
     let unit_folder = PathBuf::from(unit_folder);
     let task = find_task(&task_id).ok_or_else(|| AutomationError::UnknownTask(task_id.clone()))?;
-    let result = process_task_with_profile_mapping(&task_id, &unit_folder)
-        .unwrap_or_else(|| processors::process_task(&task, &unit_folder));
+    let state = unit_state::load_or_default(&unit_folder).unwrap_or_default();
+    let already_processed_fingerprint = state
+        .tasks
+        .get(&task_id)
+        .and_then(|entry| entry.already_processed_fingerprint())
+        .map(ToOwned::to_owned);
+    let result = process_task_with_profile_mapping(
+        &task_id,
+        &unit_folder,
+        already_processed_fingerprint.as_deref(),
+    )
+    .unwrap_or_else(|| {
+        processors::process_task(
+            &task,
+            &unit_folder,
+            already_processed_fingerprint.as_deref(),
+        )
+    });
+
+    if let Err(error) = unit_state::record_processor_result(&unit_folder, &task_id, &result) {
+        let mut result = result;
+        result.log.push(format!(
+            "[state] Failed to write {}: {error}",
+            unit_state::UNIT_STATE_FILE
+        ));
+        return Ok(to_task_process_result(task_id, result));
+    }
 
     Ok(to_task_process_result(task_id, result))
 }
@@ -386,7 +580,48 @@ fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> UnitFolderSum
     }
 
     let mut detected_task_ids = HashSet::<String>::new();
-    let tasks = automation_tasks()
+    let automation_tasks = automation_tasks();
+    let mut state = unit_state::load_or_default(unit_folder).unwrap_or_default();
+    let seeds = automation_tasks
+        .iter()
+        .map(|task| {
+            let detected_for_task = task
+                .detection_steps
+                .iter()
+                .copied()
+                .filter(|step| steps_to_paths.contains_key(step))
+                .collect::<Vec<_>>();
+            let csv_match = task_csv_match(unit_folder, task);
+
+            TaskStateSeed {
+                task_id: task.id.clone(),
+                state: if detected_for_task.is_empty() {
+                    "off".to_string()
+                } else {
+                    "detected".to_string()
+                },
+                source_csv_path: csv_match
+                    .path
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                csv_fingerprint: None,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let state_changed = unit_state::ensure_task_entries(&mut state, &seeds);
+    let mut warnings = report_setup.warnings;
+
+    if state_changed {
+        if let Err(error) = unit_state::save_unit_state(unit_folder, &state) {
+            warnings.push(format!(
+                "could not write {}: {error}",
+                unit_state::UNIT_STATE_FILE
+            ));
+        }
+    }
+
+    let tasks = automation_tasks
         .into_iter()
         .map(|task| {
             let detected_for_task = task
@@ -404,23 +639,35 @@ fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> UnitFolderSum
             let timer_start_ms =
                 timer_start_millis_for_steps(&task.detection_steps, &steps_to_paths)
                     .or(latest_csv_created_ms);
-            let state = if detected_for_task.is_empty() {
+            let detected_state = if detected_for_task.is_empty() {
                 "off"
             } else {
                 detected_task_ids.insert(task.id.clone());
                 "detected"
             };
+            let csv_match = task_csv_match(unit_folder, &task);
+            let persisted = state.tasks.get(&task.id);
+            let state = persisted
+                .map(|entry| merged_summary_state(entry, detected_state))
+                .unwrap_or_else(|| detected_state.to_string());
 
             TaskStatus {
                 task_id: task.id,
                 label: task.label,
                 step: task.step_display,
-                state: state.to_string(),
+                state,
                 detected_steps: detected_for_task,
                 latest_csv,
                 latest_csv_created_ms,
                 latest_csv_readable,
                 timer_start_ms,
+                processable: csv_match.processable,
+                match_reason: csv_match.reason,
+                source_csv_path: persisted.and_then(|entry| entry.source_csv_path.clone()),
+                csv_fingerprint: persisted.and_then(|entry| entry.csv_fingerprint.clone()),
+                processed_at: persisted.and_then(|entry| entry.processed_at.clone()),
+                result: persisted.and_then(|entry| entry.result.clone()),
+                accepted: persisted.is_some_and(|entry| entry.accepted.accepted),
             }
         })
         .collect::<Vec<_>>();
@@ -432,7 +679,119 @@ fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> UnitFolderSum
         print_report_path: report_setup.print_report_path,
         detected_count: detected_task_ids.len(),
         tasks,
-        warnings: report_setup.warnings,
+        warnings,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TaskCsvMatch {
+    path: Option<PathBuf>,
+    processable: bool,
+    reason: String,
+}
+
+fn merged_summary_state(entry: &unit_state::UnitTaskState, detected_state: &str) -> String {
+    if entry.accepted.accepted {
+        return "pass".to_string();
+    }
+
+    match entry.state.as_str() {
+        "pass" | "fail" | "waiting" | "warning" => entry.state.clone(),
+        _ => detected_state.to_string(),
+    }
+}
+
+fn task_csv_match(unit_folder: &Path, task: &tasks::AutomationTask) -> TaskCsvMatch {
+    if let Some(mapped_path) = mapped_csv_match(unit_folder, &task.id) {
+        let readable = csv_file_is_readable(&mapped_path);
+        return TaskCsvMatch {
+            reason: if readable {
+                format!("matched configured CSV pattern: {}", mapped_path.display())
+            } else {
+                format!(
+                    "configured CSV is not readable yet: {}",
+                    mapped_path.display()
+                )
+            },
+            processable: readable,
+            path: Some(mapped_path),
+        };
+    }
+
+    let Some((step, fragments)) = built_in_csv_requirement(task) else {
+        return TaskCsvMatch {
+            path: None,
+            processable: false,
+            reason: "task has no CSV processor requirement".to_string(),
+        };
+    };
+
+    match find_latest_csv(unit_folder, step, &fragments) {
+        Some(path) => {
+            let readable = csv_file_is_readable(&path);
+            TaskCsvMatch {
+                reason: if readable {
+                    format!("matched required STEP{step} CSV: {}", path.display())
+                } else {
+                    format!(
+                        "required STEP{step} CSV is not readable yet: {}",
+                        path.display()
+                    )
+                },
+                processable: readable,
+                path: Some(path),
+            }
+        }
+        None => TaskCsvMatch {
+            path: None,
+            processable: false,
+            reason: format!(
+                "no processable STEP{step} CSV found with required fragment(s): {}",
+                fragments.join(", ")
+            ),
+        },
+    }
+}
+
+fn mapped_csv_match(unit_folder: &Path, task_id: &str) -> Option<PathBuf> {
+    let profile = load_layout_profile().ok()?;
+    let task = profile
+        .task_groups
+        .iter()
+        .flat_map(|group| group.tasks.iter())
+        .find(|task| task.id == task_id && !task.mappings.is_empty())?;
+
+    mapped::find_latest_file_by_pattern(unit_folder, &task.csv_pattern)
+}
+
+fn built_in_csv_requirement(task: &tasks::AutomationTask) -> Option<(u16, Vec<String>)> {
+    use tasks::TaskKind;
+
+    match task.kind {
+        TaskKind::Transformer { voltage } => Some((
+            match voltage {
+                tasks::VoltageSet::V208 => 14,
+                tasks::VoltageSet::V415 => 43,
+            },
+            vec!["TRANSFORMER_TEST_DATA_AVG".to_string()],
+        )),
+        TaskKind::System { voltage, load } => Some((
+            tasks::step_for_system(voltage, load),
+            vec!["SYSTEM_ACCURACY_TEST_DATA_AVG".to_string()],
+        )),
+        TaskKind::Breaker {
+            voltage,
+            breaker,
+            load,
+        } => Some((
+            tasks::step_for_breaker(voltage, breaker, load),
+            vec![format!("SUB_FEED_{breaker:02}_ACCURACY_TEST_DATA_AVG")],
+        )),
+        TaskKind::SystemBurnIn => Some((72, vec!["SYSTEM_ACCURACY_TEST_DATA_AVG".to_string()])),
+        TaskKind::BreakerBurnIn { breaker } => Some((
+            72 + u16::from(breaker),
+            vec![format!("SUB_FEED_{breaker:02}_ACCURACY_TEST_DATA_AVG")],
+        )),
     }
 }
 
@@ -527,10 +886,16 @@ fn to_task_process_result(task_id: String, result: ProcessorResult) -> TaskProce
         report_path: result.report_path,
         print_report_path: result.print_report_path,
         failure: result.failure,
+        source_csv_path: result.source_csv_path,
+        csv_fingerprint: result.csv_fingerprint,
     }
 }
 
-fn process_task_with_profile_mapping(task_id: &str, unit_folder: &Path) -> Option<ProcessorResult> {
+fn process_task_with_profile_mapping(
+    task_id: &str,
+    unit_folder: &Path,
+    already_processed_fingerprint: Option<&str>,
+) -> Option<ProcessorResult> {
     let profile = load_layout_profile().ok()?;
     let task = profile
         .task_groups
@@ -542,7 +907,12 @@ fn process_task_with_profile_mapping(task_id: &str, unit_folder: &Path) -> Optio
         return None;
     }
 
-    Some(mapped::process_task(&profile, task, unit_folder))
+    Some(mapped::process_task(
+        &profile,
+        task,
+        unit_folder,
+        already_processed_fingerprint,
+    ))
 }
 
 fn validate_report_path(unit_folder: &str, path: &str) -> Result<PathBuf, AutomationError> {
@@ -1068,14 +1438,149 @@ mod smoke_tests {
         let temp = TempDir::new().expect("temp dir");
         let unit_folder = temp.path().join("262343000072");
         fs::create_dir_all(&unit_folder).expect("unit folder");
+        let main_workbook = unit_folder.join(format!(
+            "{}262343000072.xlsx",
+            reports::MAIN_REPORT_SN_PREFIX
+        ));
+        write_minimal_main_workbook(&main_workbook);
         let workbook = unit_folder.join(reports::PRINT_TEMPLATE_NAME);
         write_minimal_print_workbook(&workbook, "Wrong Sheet");
+        write_ready_unit_state(&unit_folder);
 
         let error = save_final_operator_name(unit_folder.display().to_string(), "Sean".to_string())
             .expect_err("missing final operator sheet should fail");
 
         assert_eq!(error.code, "report_sheet_missing");
         assert!(error.message.contains(reports::FINAL_OPERATOR_SHEET));
+    }
+
+    #[test]
+    fn verification_failure_does_not_patch_workbook() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let report = unit_folder.join(format!(
+            "{}262343000072.xlsx",
+            reports::MAIN_REPORT_SN_PREFIX
+        ));
+        fs::write(&report, b"ORIGINAL REPORT").expect("write sentinel report");
+        write_system_accuracy_csv(
+            &unit_folder.join("unit_STEP15_SYSTEM_ACCURACY_TEST_DATA_AVG.csv"),
+            true,
+        );
+
+        let result = process_task(
+            unit_folder.display().to_string(),
+            "208v-system-100% Load".to_string(),
+        )
+        .expect("task should return result");
+
+        assert_eq!(result.state, "fail", "{}", result.message);
+        assert_eq!(fs::read(&report).expect("read report"), b"ORIGINAL REPORT");
+    }
+
+    #[test]
+    fn print_validation_blocks_incomplete_tasks_and_final_operator_write() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let main_workbook = unit_folder.join(format!(
+            "{}262343000072.xlsx",
+            reports::MAIN_REPORT_SN_PREFIX
+        ));
+        write_minimal_main_workbook(&main_workbook);
+        write_minimal_print_workbook(
+            &unit_folder.join(reports::PRINT_TEMPLATE_NAME),
+            reports::FINAL_OPERATOR_SHEET,
+        );
+
+        let readiness = validate_ready_for_print(unit_folder.display().to_string())
+            .expect("validation should return blockers");
+
+        assert!(!readiness.ready);
+        assert!(readiness
+            .blocking_issues
+            .iter()
+            .any(|issue| issue.task_id.as_deref() == Some("208v-transformer")));
+
+        let error = save_final_operator_name(unit_folder.display().to_string(), "Sean".to_string())
+            .expect_err("incomplete task state should block final operator write");
+
+        assert_eq!(error.code, "print_validation_failed");
+    }
+
+    #[test]
+    fn scan_restores_task_state_from_unit_state_sidecar() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let mut state = unit_state::UnitState::default();
+        state.tasks.insert(
+            "208v-transformer".to_string(),
+            unit_state::UnitTaskState {
+                task_id: "208v-transformer".to_string(),
+                state: "pass".to_string(),
+                code: Some(0),
+                source_csv_path: None,
+                csv_fingerprint: Some("test-fingerprint".to_string()),
+                processed_at: Some(unit_state::now_string()),
+                result: Some("processed before restart".to_string()),
+                accepted: unit_state::TaskAcceptance::default(),
+                audit_log: Vec::new(),
+            },
+        );
+        unit_state::save_unit_state(&unit_folder, &state).expect("write state");
+
+        let summary = scan_unit_folder(unit_folder.display().to_string()).expect("scan");
+        let transformer = summary
+            .tasks
+            .iter()
+            .find(|task| task.task_id == "208v-transformer")
+            .expect("transformer task");
+
+        assert_eq!(transformer.state, "pass");
+        assert_eq!(
+            transformer.csv_fingerprint.as_deref(),
+            Some("test-fingerprint")
+        );
+    }
+
+    #[test]
+    fn same_fingerprint_pass_short_circuits_without_workbook_patch() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let csv_path = unit_folder.join("unit_STEP15_SYSTEM_ACCURACY_TEST_DATA_AVG.csv");
+        write_system_accuracy_csv(&csv_path, false);
+        let fingerprint = csv_data::csv_fingerprint(&csv_path).expect("fingerprint");
+        let mut state = unit_state::UnitState::default();
+        state.tasks.insert(
+            "208v-system-100% Load".to_string(),
+            unit_state::UnitTaskState {
+                task_id: "208v-system-100% Load".to_string(),
+                state: "pass".to_string(),
+                code: Some(0),
+                source_csv_path: Some(csv_path.display().to_string()),
+                csv_fingerprint: Some(fingerprint),
+                processed_at: Some(unit_state::now_string()),
+                result: Some("already processed".to_string()),
+                accepted: unit_state::TaskAcceptance::default(),
+                audit_log: Vec::new(),
+            },
+        );
+        unit_state::save_unit_state(&unit_folder, &state).expect("write state");
+
+        let result = process_task(
+            unit_folder.display().to_string(),
+            "208v-system-100% Load".to_string(),
+        )
+        .expect("task should short-circuit");
+
+        assert_eq!(result.state, "pass");
+        assert!(result
+            .message
+            .contains("already processed from the same CSV"));
+        assert_eq!(result.report_path, None);
     }
 
     #[test]
@@ -1158,6 +1663,82 @@ mod smoke_tests {
         .expect("write sheet");
 
         zip.finish().expect("finish workbook");
+    }
+
+    fn write_minimal_main_workbook(path: &Path) {
+        let file = File::create(path).expect("create workbook");
+        let mut zip = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+
+        zip.start_file("[Content_Types].xml", options)
+            .expect("content types");
+        zip.write_all(
+            br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>"#,
+        )
+        .expect("write content types");
+
+        zip.start_file("xl/workbook.xml", options)
+            .expect("workbook xml");
+        zip.write_all(
+            br#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Test Summary" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+        )
+        .expect("write workbook");
+
+        zip.start_file("xl/_rels/workbook.xml.rels", options)
+            .expect("workbook rels");
+        zip.write_all(
+            br#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#,
+        )
+        .expect("write rels");
+
+        zip.start_file("xl/worksheets/sheet1.xml", options)
+            .expect("sheet xml");
+        zip.write_all(
+            br#"<worksheet><sheetData><row r="1"><c r="D1" t="inlineStr"><is><t>TX-READY</t></is></c></row></sheetData></worksheet>"#,
+        )
+        .expect("write sheet");
+
+        zip.finish().expect("finish workbook");
+    }
+
+    fn write_ready_unit_state(unit_folder: &Path) {
+        let mut state = unit_state::UnitState::default();
+
+        for task in automation_tasks() {
+            state.tasks.insert(
+                task.id.clone(),
+                unit_state::UnitTaskState {
+                    task_id: task.id,
+                    state: "pass".to_string(),
+                    code: Some(0),
+                    source_csv_path: None,
+                    csv_fingerprint: None,
+                    processed_at: Some(unit_state::now_string()),
+                    result: Some("test ready state".to_string()),
+                    accepted: unit_state::TaskAcceptance::default(),
+                    audit_log: Vec::new(),
+                },
+            );
+        }
+
+        unit_state::save_unit_state(unit_folder, &state).expect("write ready unit state");
+    }
+
+    fn write_system_accuracy_csv(path: &Path, force_failure: bool) {
+        let column_count = csv_data::excel_col_to_index("EO").expect("EO index") + 1;
+        let mut headers = Vec::new();
+        let mut row = vec!["1".to_string(); column_count];
+
+        for index in 0..column_count {
+            headers.push(format!("col{index}"));
+        }
+
+        if force_failure {
+            let detect_voltage_a = csv_data::excel_col_to_index("CH").expect("CH index");
+            row[detect_voltage_a] = "2".to_string();
+        }
+
+        fs::write(path, format!("{}\n{}\n", headers.join(","), row.join(","))).expect("write csv");
     }
 
     fn copy_dir(source: &Path, destination: &Path) {

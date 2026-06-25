@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   saveTransformerSn: vi.fn(),
   scanUnitFolder: vi.fn(),
   setupUnitFolder: vi.fn(),
+  validateReadyForPrint: vi.fn(),
 }));
 
 vi.mock("@/integrations/tauri/backend", () => ({
@@ -26,6 +27,7 @@ vi.mock("@/integrations/tauri/backend", () => ({
   saveTransformerSn: mocks.saveTransformerSn,
   scanUnitFolder: mocks.scanUnitFolder,
   setupUnitFolder: mocks.setupUnitFolder,
+  validateReadyForPrint: mocks.validateReadyForPrint,
 }));
 
 import { App } from "@/app/App";
@@ -118,6 +120,11 @@ describe("OperatorPanel current-step scrolling", () => {
     mocks.saveTransformerSn.mockResolvedValue(undefined);
     mocks.setupUnitFolder.mockResolvedValue(summary);
     mocks.scanUnitFolder.mockResolvedValue(summary);
+    mocks.validateReadyForPrint.mockResolvedValue({
+      blocking_issues: [],
+      message: "Ready to print.",
+      ready: true,
+    });
   });
 
   afterEach(() => {
