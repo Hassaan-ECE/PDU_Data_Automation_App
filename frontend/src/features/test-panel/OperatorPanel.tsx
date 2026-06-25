@@ -710,6 +710,7 @@ export function OperatorPanel() {
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
   const [backendStatusLoaded, setBackendStatusLoaded] = useState(false);
   const [layoutProfile, setLayoutProfile] = useState<LayoutLoadResponse | null>(null);
+  const [layoutProfileError, setLayoutProfileError] = useState("");
   const [layoutProfileLoaded, setLayoutProfileLoaded] = useState(false);
   const [scrollCue, setScrollCue] = useState({ top: false, bottom: false });
   const [currentStepFollowMode, setCurrentStepFollowMode] = useState(false);
@@ -794,6 +795,7 @@ export function OperatorPanel() {
     void loadLayoutProfile()
       .then((profile) => {
         setLayoutProfile(profile);
+        setLayoutProfileError("");
         markStartup(
           "layout_profile_loaded",
           profile
@@ -807,8 +809,12 @@ export function OperatorPanel() {
         );
       })
       .catch((error) => {
+        const message = messageFromUnknownError(error);
+
+        setLayoutProfile(null);
+        setLayoutProfileError(message);
         markStartup("layout_profile_loaded", {
-          error: messageFromUnknownError(error),
+          error: message,
         });
       })
       .finally(() => setLayoutProfileLoaded(true));
@@ -2053,6 +2059,8 @@ export function OperatorPanel() {
 
   const footerText = setupWarnings.length
     ? setupWarnings[0]
+    : layoutProfileError
+      ? layoutProfileError
     : isScanningFolder
       ? "Scanning unit folder..."
     : isSettingUpReports

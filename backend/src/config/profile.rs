@@ -24,6 +24,8 @@ pub enum LayoutProfileError {
         path: String,
         source: serde_json::Error,
     },
+    #[error("layout profile is invalid in {path}: {details}")]
+    InvalidProfile { path: String, details: String },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -229,7 +231,7 @@ pub fn load_layout_profile() -> Result<ReportLayoutProfile, LayoutProfileError> 
         }
     }
 
-    ReportLayoutProfile::from_json_with_path("built-in defaults".to_string(), DEFAULT_PROFILE_JSON)
+    parse_and_validate_profile("built-in defaults".to_string(), DEFAULT_PROFILE_JSON)
 }
 
 fn configured_profile_path() -> Option<PathBuf> {
@@ -272,7 +274,24 @@ fn load_from_path(path: PathBuf) -> Result<ReportLayoutProfile, LayoutProfileErr
         source,
     })?;
 
-    ReportLayoutProfile::from_json_with_path(display_path, &json)
+    parse_and_validate_profile(display_path, &json)
+}
+
+fn parse_and_validate_profile(
+    path: String,
+    json: &str,
+) -> Result<ReportLayoutProfile, LayoutProfileError> {
+    let profile = ReportLayoutProfile::from_json_with_path(path.clone(), json)?;
+    let validation = profile.validate();
+
+    if validation.is_valid() {
+        return Ok(profile);
+    }
+
+    Err(LayoutProfileError::InvalidProfile {
+        path,
+        details: validation.errors.join("; "),
+    })
 }
 
 #[cfg(test)]
@@ -595,6 +614,10 @@ fn is_supported_row_selector(selector: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
     use super::*;
     use crate::automation::tasks::automation_tasks;
 
@@ -727,5 +750,63 @@ mod tests {
             .errors
             .iter()
             .any(|error| error.contains("must use a numeric step")));
+    }
+
+    #[test]
+    fn load_from_path_rejects_invalid_json() {
+        let temp = TempDir::new().expect("temp dir");
+        let profile_path = temp.path().join("broken.layout.json");
+        fs::write(&profile_path, "{not valid json").expect("write broken profile");
+
+        let error = load_from_path(profile_path).expect_err("invalid JSON should fail");
+
+        assert!(matches!(error, LayoutProfileError::InvalidJson { .. }));
+    }
+
+    #[test]
+    fn load_from_path_rejects_validation_errors() {
+        let temp = TempDir::new().expect("temp dir");
+        let profile_path = temp.path().join("invalid.layout.json");
+        fs::write(
+            &profile_path,
+            r#"{
+  "schema_version": 99,
+  "profile_id": "invalid",
+  "display_name": "Invalid",
+  "templates": {
+    "default_template_root": "C:/PDU500/00_Template",
+    "main_report_template": "main.xlsx",
+    "print_report_template": "print.xlsx"
+  },
+  "workbooks": {
+    "main": { "file_pattern": "*.xlsx" }
+  },
+  "task_groups": [
+    {
+      "id": "group",
+      "label": "Group",
+      "tasks": [
+        {
+          "id": "task",
+          "label": "Task",
+          "step": 1,
+          "processor": "built_in",
+          "csv_pattern": "*.csv"
+        }
+      ]
+    }
+  ]
+}"#,
+        )
+        .expect("write invalid profile");
+
+        let error = load_from_path(profile_path).expect_err("invalid profile should fail");
+
+        match error {
+            LayoutProfileError::InvalidProfile { details, .. } => {
+                assert!(details.contains("unsupported schema_version"));
+            }
+            other => panic!("expected invalid profile error, got {other:?}"),
+        }
     }
 }

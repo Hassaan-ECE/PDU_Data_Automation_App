@@ -17,7 +17,7 @@ use regex::Regex;
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::config::load_layout_profile;
+use crate::config::{load_layout_profile, LayoutProfileError, ReportLayoutProfile, TaskDefinition};
 
 use self::csv_data::{detected_steps, find_latest_csv};
 use self::processors::{FailureDetail, ProcessorResult};
@@ -36,6 +36,8 @@ pub enum AutomationError {
     Report(#[from] ReportError),
     #[error("unit state could not be read or written: {0}")]
     UnitState(#[from] io::Error),
+    #[error("{0}")]
+    LayoutProfile(#[from] LayoutProfileError),
     #[error("unknown automation task id: {0}")]
     UnknownTask(String),
     #[error("{0}")]
@@ -209,6 +211,37 @@ impl AutomationCommandError {
         Self::report(code, message, error.to_string())
     }
 
+    fn from_layout_profile_error(error: LayoutProfileError) -> Self {
+        let code = match &error {
+            LayoutProfileError::ReadFailed { .. } => "layout_profile_read_failed",
+            LayoutProfileError::InvalidJson { .. } => "layout_profile_invalid_json",
+            LayoutProfileError::InvalidProfile { .. } => "layout_profile_invalid",
+        };
+
+        Self::report(
+            code,
+            "The report layout profile could not be loaded. Fix the configured layout profile before continuing.",
+            error.to_string(),
+        )
+    }
+
+    fn from_automation_error(error: AutomationError) -> Self {
+        match error {
+            AutomationError::Report(error) => Self::from_report_error(error),
+            AutomationError::UnitState(error) => Self::from_unit_state_error(error),
+            AutomationError::LayoutProfile(error) => Self::from_layout_profile_error(error),
+            AutomationError::UnknownTask(task_id) => Self::validation(
+                "unknown_task",
+                format!("Unknown automation task id: {task_id}"),
+            ),
+            AutomationError::OpenReport(message) => Self::report(
+                "automation_failed",
+                "The requested automation action could not be completed.",
+                message,
+            ),
+        }
+    }
+
     fn print_dialog(message: impl Into<String>, details: impl Into<String>) -> Self {
         Self {
             code: "print_dialog_failed".to_string(),
@@ -292,7 +325,7 @@ pub fn setup_unit_folder(unit_folder: String) -> Result<UnitFolderSummary, Autom
     let unit_folder = PathBuf::from(unit_folder);
     let report_setup = setup_reports(&unit_folder)?;
 
-    build_summary(&unit_folder, report_setup).map_err(AutomationError::UnitState)
+    build_summary(&unit_folder, report_setup)
 }
 
 pub fn find_latest_unit_candidate() -> LatestUnitCandidateResult {
@@ -324,7 +357,7 @@ pub fn setup_unit_folder_with_transformer_sn(
     write_transformer_serial_number(&unit_folder, transformer_sn)
         .map_err(AutomationCommandError::from_report_error)?;
 
-    build_summary(&unit_folder, report_setup).map_err(AutomationCommandError::from_unit_state_error)
+    build_summary(&unit_folder, report_setup).map_err(AutomationCommandError::from_automation_error)
 }
 
 pub fn save_transformer_sn(
@@ -457,6 +490,7 @@ fn validate_ready_for_print_path(
 ) -> Result<PrintReadinessResult, AutomationCommandError> {
     let mut blocking_issues = Vec::new();
 
+    load_layout_profile().map_err(AutomationCommandError::from_layout_profile_error)?;
     require_print_report(unit_folder).map_err(AutomationCommandError::from_print_report_error)?;
 
     if read_transformer_serial_number(unit_folder)
@@ -540,7 +574,7 @@ pub fn scan_unit_folder(unit_folder: String) -> Result<UnitFolderSummary, Automa
     let unit_folder = PathBuf::from(unit_folder);
     let report_setup = inspect_reports(&unit_folder)?;
 
-    build_summary(&unit_folder, report_setup).map_err(AutomationError::UnitState)
+    build_summary(&unit_folder, report_setup)
 }
 
 pub fn process_task(
@@ -549,6 +583,7 @@ pub fn process_task(
 ) -> Result<TaskProcessResult, AutomationError> {
     let unit_folder = PathBuf::from(unit_folder);
     let task = find_task(&task_id).ok_or_else(|| AutomationError::UnknownTask(task_id.clone()))?;
+    let profile = load_layout_profile()?;
     let state = unit_state::load_or_default(&unit_folder)?;
     let already_processed_fingerprint = state
         .tasks
@@ -556,6 +591,7 @@ pub fn process_task(
         .and_then(|entry| entry.already_processed_fingerprint())
         .map(ToOwned::to_owned);
     let result = process_task_with_profile_mapping(
+        &profile,
         &task_id,
         &unit_folder,
         already_processed_fingerprint.as_deref(),
@@ -592,7 +628,10 @@ pub fn open_report_location(
     open_excel_at_location(&report_path, &sheet, &cell)
 }
 
-fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> io::Result<UnitFolderSummary> {
+fn build_summary(
+    unit_folder: &Path,
+    report_setup: ReportSetup,
+) -> Result<UnitFolderSummary, AutomationError> {
     let detected = detected_steps(unit_folder);
     let mut steps_to_paths = HashMap::<u16, Vec<PathBuf>>::new();
 
@@ -602,6 +641,7 @@ fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> io::Result<Un
 
     let mut detected_task_ids = HashSet::<String>::new();
     let automation_tasks = automation_tasks();
+    let profile = load_layout_profile()?;
     let seeds = automation_tasks
         .iter()
         .map(|task| {
@@ -611,7 +651,7 @@ fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> io::Result<Un
                 .copied()
                 .filter(|step| steps_to_paths.contains_key(step))
                 .collect::<Vec<_>>();
-            let csv_match = task_csv_match(unit_folder, task);
+            let csv_match = task_csv_match(unit_folder, task, &profile);
 
             TaskStateSeed {
                 task_id: task.id.clone(),
@@ -656,7 +696,7 @@ fn build_summary(unit_folder: &Path, report_setup: ReportSetup) -> io::Result<Un
                 detected_task_ids.insert(task.id.clone());
                 "detected"
             };
-            let csv_match = task_csv_match(unit_folder, &task);
+            let csv_match = task_csv_match(unit_folder, &task, &profile);
             let persisted = state.tasks.get(&task.id);
             let state = persisted
                 .map(|entry| merged_summary_state(entry, detected_state))
@@ -712,8 +752,12 @@ fn merged_summary_state(entry: &unit_state::UnitTaskState, detected_state: &str)
     }
 }
 
-fn task_csv_match(unit_folder: &Path, task: &tasks::AutomationTask) -> TaskCsvMatch {
-    if let Some(mapped_path) = mapped_csv_match(unit_folder, &task.id) {
+fn task_csv_match(
+    unit_folder: &Path,
+    task: &tasks::AutomationTask,
+    profile: &ReportLayoutProfile,
+) -> TaskCsvMatch {
+    if let Some(mapped_path) = mapped_csv_match(profile, unit_folder, &task.id) {
         let readable = csv_file_is_readable(&mapped_path);
         return TaskCsvMatch {
             reason: if readable {
@@ -764,13 +808,12 @@ fn task_csv_match(unit_folder: &Path, task: &tasks::AutomationTask) -> TaskCsvMa
     }
 }
 
-fn mapped_csv_match(unit_folder: &Path, task_id: &str) -> Option<PathBuf> {
-    let profile = load_layout_profile().ok()?;
-    let task = profile
-        .task_groups
-        .iter()
-        .flat_map(|group| group.tasks.iter())
-        .find(|task| task.id == task_id && !task.mappings.is_empty())?;
+fn mapped_csv_match(
+    profile: &ReportLayoutProfile,
+    unit_folder: &Path,
+    task_id: &str,
+) -> Option<PathBuf> {
+    let task = profile_task(profile, task_id).filter(|task| !task.mappings.is_empty())?;
 
     mapped::find_latest_file_by_pattern(unit_folder, &task.csv_pattern)
 }
@@ -908,27 +951,31 @@ fn to_task_process_result(task_id: String, result: ProcessorResult) -> TaskProce
 }
 
 fn process_task_with_profile_mapping(
+    profile: &ReportLayoutProfile,
     task_id: &str,
     unit_folder: &Path,
     already_processed_fingerprint: Option<&str>,
 ) -> Option<ProcessorResult> {
-    let profile = load_layout_profile().ok()?;
-    let task = profile
-        .task_groups
-        .iter()
-        .flat_map(|group| group.tasks.iter())
-        .find(|task| task.id == task_id)?;
+    let task = profile_task(profile, task_id)?;
 
     if task.mappings.is_empty() {
         return None;
     }
 
     Some(mapped::process_task(
-        &profile,
+        profile,
         task,
         unit_folder,
         already_processed_fingerprint,
     ))
+}
+
+fn profile_task<'a>(profile: &'a ReportLayoutProfile, task_id: &str) -> Option<&'a TaskDefinition> {
+    profile
+        .task_groups
+        .iter()
+        .flat_map(|group| group.tasks.iter())
+        .find(|task| task.id == task_id)
 }
 
 fn validate_report_path(unit_folder: &str, path: &str) -> Result<PathBuf, AutomationError> {
@@ -1411,6 +1458,50 @@ mod smoke_tests {
         ));
         assert_eq!(missing_sheet.code, "report_sheet_missing");
         assert!(missing_sheet.message.contains("Test Summary"));
+    }
+
+    #[test]
+    fn layout_profile_errors_map_to_stable_codes() {
+        let read_failed =
+            AutomationCommandError::from_layout_profile_error(LayoutProfileError::ReadFailed {
+                path: "C:/PDU500/config/report-layouts/missing.json".to_string(),
+                source: io::Error::new(io::ErrorKind::NotFound, "missing"),
+            });
+        assert_eq!(read_failed.code, "layout_profile_read_failed");
+        assert!(read_failed.message.contains("layout profile"));
+
+        let invalid_json =
+            ReportLayoutProfile::from_json("{not valid json").expect_err("invalid JSON");
+        let invalid_json = AutomationCommandError::from_layout_profile_error(invalid_json);
+        assert_eq!(invalid_json.code, "layout_profile_invalid_json");
+
+        let invalid_profile =
+            AutomationCommandError::from_layout_profile_error(LayoutProfileError::InvalidProfile {
+                path: "C:/PDU500/config/report-layouts/pdu500.rev02.layout.json".to_string(),
+                details: "unsupported schema_version".to_string(),
+            });
+        assert_eq!(invalid_profile.code, "layout_profile_invalid");
+        assert!(invalid_profile
+            .details
+            .as_deref()
+            .is_some_and(|details| details.contains("unsupported schema_version")));
+    }
+
+    #[test]
+    fn valid_profile_without_mapping_still_allows_built_in_processor_fallback() {
+        let profile = ReportLayoutProfile::from_json(include_str!(
+            "../../../config/report-layouts/pdu500.rev02.layout.json"
+        ))
+        .expect("default profile should parse");
+
+        let result = process_task_with_profile_mapping(
+            &profile,
+            "208v-system-100% Load",
+            Path::new("C:/PDU500/262343000072"),
+            None,
+        );
+
+        assert!(result.is_none());
     }
 
     #[test]

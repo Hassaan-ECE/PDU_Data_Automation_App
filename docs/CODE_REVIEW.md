@@ -10,7 +10,7 @@
 
 The v0.2.9 pilot is a solid, well-engineered replacement that largely succeeds at preserving the legacy operator workflow and visual model while moving toward the intended architecture. Strengths include strict no-silent-zero CSV handling, high-fidelity Excel patching with extensive fidelity tests, unit_state-driven restart resilience and idempotency, a working mapped data-driven path for at least transformer writes, and clear error surfacing. The separation of concerns (frontend UI/workflow, Rust file/CSV/Excel logic, config-driven mappings) is mostly respected.
 
-Main remaining risk areas: invalid external layout profiles can be silently ignored in mapped processing; hard-coded behavior and paths are still incomplete migrations from Rust into `config/report-layouts/`; runtime config discovery ships Tauri resources but does not resolve them at runtime; OperatorPanel.tsx is still monolithic (~2500 LOC); task definitions are duplicated across taskModel.ts / tasks.rs / layout JSONs; and the report-write Windows replace path is still delete+rename rather than an atomic replace. The app is pilot-ready for limited production comparison but carries maintenance and deployment risks if not addressed before full cut-over.
+Main remaining risk areas: hard-coded behavior and paths are still incomplete migrations from Rust into `config/report-layouts/`; runtime config discovery ships Tauri resources but does not resolve them at runtime; OperatorPanel.tsx is still monolithic (~2500 LOC); task definitions are duplicated across taskModel.ts / tasks.rs / layout JSONs; and the report-write Windows replace path is still delete+rename rather than an atomic replace. The app is pilot-ready for limited production comparison but carries maintenance and deployment risks if not addressed before full cut-over.
 
 ## Architecture & Structure
 
@@ -29,6 +29,7 @@ Main remaining risk areas: invalid external layout profiles can be silently igno
 
 ### Positive observations
 - `automation/mod.rs` cleanly dispatches to mapped vs processor; `build_summary`, `task_csv_match`, and readiness checks centralize state merging.
+- Layout profile loading now fails loudly for unreadable, invalid JSON, or semantically invalid profiles. Scan/build-summary and task processing use a validated profile instead of silently falling back to built-in processors.
 - `reports.rs` Excel path is strong overall (WorkbookLock file mutex, .bak, transactional multi-patch rollback, force recalc, style preservation), with the Windows replace caveat called out below.
 - `csv_data.rs`: stability polling, fingerprinting (fnv1a64 + size + mtime), strict `required_number` + typed errors for blank/missing/non-numeric.
 - `unit_state.rs`: audit log, an acceptance data shape, fingerprint idempotency, temp+rename+backup save, explicit corrupt-state errors, and a `unit_state.lock` around read-modify-write paths. `is_print_ready` and `already_processed_fingerprint` are directionally correct, but acceptance is not exposed through a command/UI yet (see Issue 15).
@@ -45,10 +46,10 @@ Main remaining risk areas: invalid external layout profiles can be silently igno
 - Status: resolved on 2026-06-25
 
 ### Issue 2 -- Severity: bug
-- File: backend/src/automation/mod.rs:757 and 899
-- Description: `mapped_csv_match` and `process_task_with_profile_mapping` both call `load_layout_profile().ok()?`. If an external layout profile exists but is unreadable or invalid, the error is discarded and the app silently falls back to built-in task matching/processors. That hides configuration mistakes in the exact path that is supposed to prove the data-driven mapping model.
-- Suggestion: Return a visible command error or warning when an explicitly configured profile (`PDU_LAYOUT_PROFILE_PATH` or `C:/PDU500/config/...`) fails to load. Only fall back to built-ins for missing optional dev files or intentional built-in defaults. Add a test that sets an invalid profile path and asserts processing does not silently use the legacy processor.
-- Status: open
+- File: backend/src/automation/mod.rs and backend/src/config/profile.rs
+- Description: Originally, `mapped_csv_match` and `process_task_with_profile_mapping` called `load_layout_profile().ok()?`, discarding profile load failures and silently falling back to built-in task matching/processors. This has been fixed: the profile loader now parses and validates before returning, automation paths load a validated profile and pass it through mapped dispatch/CSV matching, and layout-profile errors map to visible command error codes.
+- Suggestion: Treat the original bug as resolved. Remaining follow-up: add an end-to-end command test with a deliberately invalid `PDU_LAYOUT_PROFILE_PATH` once environment-variable isolation is available, so the user-visible command path is covered directly rather than only helper/error-mapping paths.
+- Status: resolved on 2026-06-25, with end-to-end invalid-profile command coverage as a future test hardening item
 
 ### Issue 3 -- Severity: bug
 - File: backend/src/automation/reports.rs:16 (and related)
@@ -135,7 +136,8 @@ Main remaining risk areas: invalid external layout profiles can be silently igno
 - Unit folder / candidate / discovery tests exist.
 - Schema validation script and `validate:report-layouts` are good.
 - New `unit_state` tests cover corrupt sidecars in scan, print readiness, and process paths, plus concurrent state writes preserving all task updates.
-- Gaps: no automated test that a freshly bundled installer can load its packaged layout JSON without C:/PDU500 or cwd layout. No test that invalid external profile config fails loudly instead of falling back. Limited frontend coverage of the full runner + state machine (mostly setup/scroll/updater tests). No stress test for concurrent process + scan + print at the command/UI orchestration level.
+- New layout-profile tests cover invalid JSON, validation failures, stable error-code mapping, and preservation of built-in processor fallback when a valid profile task intentionally has no mappings.
+- Gaps: no automated test that a freshly bundled installer can load its packaged layout JSON without C:/PDU500 or cwd layout. Limited frontend coverage of the full runner + state machine (mostly setup/scroll/updater tests). No stress test for concurrent process + scan + print at the command/UI orchestration level.
 
 ## Packaging, Bundling, Updater, Installer Notes
 
@@ -143,7 +145,7 @@ Main remaining risk areas: invalid external layout profiles can be silently igno
 - Updater is readiness-based and uses GitHub latest.json (correct per AGENTS).
 - NSIS currentUser installer is the right choice.
 - Version consistency script exists (`scripts/release/check-version-consistency.mjs`).
-- Risk: if packaged layout JSONs are not resolved after install, the app uses compile-time include defaults unless an external `C:/PDU500/config/...` file exists. If an external layout exists but is invalid, the current mapped processing path can silently fall back to built-in processors.
+- Risk: if packaged layout JSONs are not resolved after install, the app uses compile-time include defaults unless an external `C:/PDU500/config/...` file exists. Invalid external layout profiles now fail visibly instead of silently falling back.
 
 ## Other Positive Details
 
@@ -154,16 +156,15 @@ Main remaining risk areas: invalid external layout profiles can be silently igno
 - Docs are accurate and useful (LEGACY_BEHAVIOR.md, ARCHITECTURE.md, CONFIGURATION_MODEL.md).
 
 ## Recommendations (priority order)
-1. Make profile/config load failures visible in mapped processing and scan paths (Issue 2).
-2. Eliminate hardcoded TEMPLATE_DIR and wire profile template root everywhere (Issue 3).
-3. Implement proper Tauri resource resolution for layouts (Issue 4) and test in a packaged build.
-4. Split OperatorPanel.tsx and drive more of the panel from the profile (Issues 6, 7).
-5. Continue migrating remaining tasks to mappings + remove duplication.
-6. Decide and implement the acceptance override policy (Issue 15).
-7. Add a "packaged layout load" test.
-8. Later hardening: stale-lock recovery for `unit_state.lock` and workbook locks.
+1. Eliminate hardcoded TEMPLATE_DIR and wire profile template root everywhere (Issue 3).
+2. Implement proper Tauri resource resolution for layouts (Issue 4) and test in a packaged build.
+3. Split OperatorPanel.tsx and drive more of the panel from the profile (Issues 6, 7).
+4. Continue migrating remaining tasks to mappings + remove duplication.
+5. Decide and implement the acceptance override policy (Issue 15).
+6. Add a "packaged layout load" test.
+7. Later hardening: stale-lock recovery for `unit_state.lock` and workbook locks, plus an end-to-end invalid-profile command test.
 
-This review has been updated after the `unit_state` error-handling and locking fixes landed.
+This review has been updated after the `unit_state` error-handling/locking fixes and layout-profile failure-handling fixes landed.
 
 ## Files Referenced (selected)
 - backend/src/automation/{mod.rs, reports.rs, processors.rs, mapped.rs, csv_data.rs, tasks.rs, unit_state.rs, unit_candidates.rs}
