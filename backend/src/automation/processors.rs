@@ -15,8 +15,9 @@ use super::csv_data::{
     CsvTable,
 };
 use super::reports::{
-    extract_serial_number, patch_workbook, patch_workbooks_transactional, require_main_report,
-    require_print_report, CellUpdate, ReportError, WorkbookPatch,
+    extract_serial_number, patch_workbook, patch_workbooks_transactional,
+    require_main_report_with_config, require_print_report_with_config, CellUpdate, ReportError,
+    ReportFileConfig, WorkbookPatch,
 };
 use super::tasks::{
     step_for_breaker, step_for_system, AutomationTask, LoadLevel, TaskKind, VoltageSet,
@@ -90,8 +91,14 @@ pub fn process_task(
     task: &AutomationTask,
     unit_folder: &Path,
     already_processed_fingerprint: Option<&str>,
+    report_config: &ReportFileConfig,
 ) -> ProcessorResult {
-    match process_task_inner(task, unit_folder, already_processed_fingerprint) {
+    match process_task_inner(
+        task,
+        unit_folder,
+        already_processed_fingerprint,
+        report_config,
+    ) {
         Ok(result) => result,
         Err(ProcessorError::CsvNotReady(message)) => ProcessorResult {
             state: "waiting".to_string(),
@@ -144,17 +151,23 @@ fn process_task_inner(
     task: &AutomationTask,
     unit_folder: &Path,
     already_processed_fingerprint: Option<&str>,
+    report_config: &ReportFileConfig,
 ) -> ProcessorAttempt<ProcessorResult> {
     match task.kind {
-        TaskKind::Transformer { voltage } => {
-            process_transformer(task, unit_folder, voltage, already_processed_fingerprint)
-        }
+        TaskKind::Transformer { voltage } => process_transformer(
+            task,
+            unit_folder,
+            voltage,
+            already_processed_fingerprint,
+            report_config,
+        ),
         TaskKind::System { voltage, load } => process_system(
             task,
             unit_folder,
             voltage,
             load,
             already_processed_fingerprint,
+            report_config,
         ),
         TaskKind::Breaker {
             voltage,
@@ -167,13 +180,21 @@ fn process_task_inner(
             breaker,
             load,
             already_processed_fingerprint,
+            report_config,
         ),
-        TaskKind::SystemBurnIn => {
-            process_system_burn_in(task, unit_folder, already_processed_fingerprint)
-        }
-        TaskKind::BreakerBurnIn { breaker } => {
-            process_breaker_burn_in(task, unit_folder, breaker, already_processed_fingerprint)
-        }
+        TaskKind::SystemBurnIn => process_system_burn_in(
+            task,
+            unit_folder,
+            already_processed_fingerprint,
+            report_config,
+        ),
+        TaskKind::BreakerBurnIn { breaker } => process_breaker_burn_in(
+            task,
+            unit_folder,
+            breaker,
+            already_processed_fingerprint,
+            report_config,
+        ),
     }
 }
 
@@ -182,6 +203,7 @@ fn process_transformer(
     unit_folder: &Path,
     voltage: VoltageSet,
     already_processed_fingerprint: Option<&str>,
+    report_config: &ReportFileConfig,
 ) -> ProcessorAttempt<ProcessorResult> {
     let step = match voltage {
         VoltageSet::V208 => 14,
@@ -203,7 +225,7 @@ fn process_transformer(
 
     let table = CsvTable::read(&csv_source.path)?;
     let row = table.first_data_row_after_header()?;
-    let report_path = require_main_report(unit_folder)?;
+    let report_path = require_main_report_with_config(unit_folder, report_config)?;
     let mut updates = Vec::new();
     let mut log = vec![
         format!("[xfmr] Step {step}: {}", csv_source.path.display()),
@@ -238,6 +260,7 @@ fn process_system(
     voltage: VoltageSet,
     load: LoadLevel,
     already_processed_fingerprint: Option<&str>,
+    report_config: &ReportFileConfig,
 ) -> ProcessorAttempt<ProcessorResult> {
     let step = step_for_system(voltage, load);
     let sheet = match voltage {
@@ -256,7 +279,7 @@ fn process_system(
 
     let table = CsvTable::read(&csv_source.path)?;
     let row = table.last_data_row_after_header()?;
-    let report_path = require_main_report(unit_folder)?;
+    let report_path = require_main_report_with_config(unit_folder, report_config)?;
     let mut updates = Vec::new();
     let mut values = HashMap::<String, f64>::new();
     let mut log = vec![
@@ -356,6 +379,7 @@ fn process_breaker(
     breaker: u8,
     load: LoadLevel,
     already_processed_fingerprint: Option<&str>,
+    report_config: &ReportFileConfig,
 ) -> ProcessorAttempt<ProcessorResult> {
     let step = step_for_breaker(voltage, breaker, load);
     let csv_fragment = format!("SUB_FEED_{breaker:02}_ACCURACY_TEST_DATA_AVG");
@@ -366,7 +390,7 @@ fn process_breaker(
 
     let table = CsvTable::read(&csv_source.path)?;
     let row = table.last_data_row_after_header()?;
-    let report_path = require_main_report(unit_folder)?;
+    let report_path = require_main_report_with_config(unit_folder, report_config)?;
     let sheet = match voltage {
         VoltageSet::V208 => "Subfeed - 480_208",
         VoltageSet::V415 => "Subfeed - 480_415",
@@ -443,6 +467,7 @@ fn process_system_burn_in(
     task: &AutomationTask,
     unit_folder: &Path,
     already_processed_fingerprint: Option<&str>,
+    report_config: &ReportFileConfig,
 ) -> ProcessorAttempt<ProcessorResult> {
     let csv_source = require_csv(
         unit_folder,
@@ -456,8 +481,8 @@ fn process_system_burn_in(
 
     let table = CsvTable::read(&csv_source.path)?;
     let row = table.last_data_row()?;
-    let report_path = require_main_report(unit_folder)?;
-    let print_path = require_print_report(unit_folder)?;
+    let report_path = require_main_report_with_config(unit_folder, report_config)?;
+    let print_path = require_print_report_with_config(unit_folder, report_config)?;
     let serial = extract_serial_number(unit_folder).unwrap_or_default();
     let today = Local::now().format("%m/%d/%Y").to_string();
     let mut main_updates = Vec::new();
@@ -510,6 +535,7 @@ fn process_breaker_burn_in(
     unit_folder: &Path,
     breaker: u8,
     already_processed_fingerprint: Option<&str>,
+    report_config: &ReportFileConfig,
 ) -> ProcessorAttempt<ProcessorResult> {
     let step = 72 + u16::from(breaker);
     let csv_fragment = format!("SUB_FEED_{breaker:02}_ACCURACY_TEST_DATA_AVG");
@@ -520,8 +546,8 @@ fn process_breaker_burn_in(
 
     let table = CsvTable::read(&csv_source.path)?;
     let row = table.last_data_row()?;
-    let report_path = require_main_report(unit_folder)?;
-    let print_path = require_print_report(unit_folder)?;
+    let report_path = require_main_report_with_config(unit_folder, report_config)?;
+    let print_path = require_print_report_with_config(unit_folder, report_config)?;
     let main_row = 11 + (u32::from(breaker) - 1) * 4;
     let print_row = 6 + (u32::from(breaker) - 1) * 4;
     let mut main_updates = Vec::new();

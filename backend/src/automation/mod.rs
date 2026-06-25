@@ -22,9 +22,10 @@ use crate::config::{load_layout_profile, LayoutProfileError, ReportLayoutProfile
 use self::csv_data::{detected_steps, find_latest_csv};
 use self::processors::{FailureDetail, ProcessorResult};
 use self::reports::{
-    inspect_reports, read_transformer_serial_number, require_print_report, setup_reports,
-    setup_reports_with_serial_number, write_final_operator_name, write_transformer_serial_number,
-    ReportError, ReportSetup,
+    inspect_reports_with_config, read_transformer_serial_number_with_config,
+    require_print_report_with_config, setup_reports_with_serial_number_template_root_and_config,
+    setup_reports_with_template_root_and_config, write_final_operator_name_with_config,
+    write_transformer_serial_number_with_config, ReportError, ReportFileConfig, ReportSetup,
 };
 use self::tasks::{automation_tasks, find_task};
 pub use self::unit_candidates::{LatestUnitCandidateResult, UnitCandidate};
@@ -323,9 +324,13 @@ pub struct PrintReadinessBlocker {
 
 pub fn setup_unit_folder(unit_folder: String) -> Result<UnitFolderSummary, AutomationError> {
     let unit_folder = PathBuf::from(unit_folder);
-    let report_setup = setup_reports(&unit_folder)?;
+    let profile = load_layout_profile()?;
+    let template_root = profile_template_root(&profile);
+    let report_config = report_file_config(&profile);
+    let report_setup =
+        setup_reports_with_template_root_and_config(&unit_folder, &template_root, &report_config)?;
 
-    build_summary(&unit_folder, report_setup)
+    build_summary_with_profile(&unit_folder, report_setup, &profile)
 }
 
 pub fn find_latest_unit_candidate() -> LatestUnitCandidateResult {
@@ -351,13 +356,23 @@ pub fn setup_unit_folder_with_transformer_sn(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let report_setup = setup_reports_with_serial_number(&unit_folder, unit_serial_number)
+    let profile =
+        load_layout_profile().map_err(AutomationCommandError::from_layout_profile_error)?;
+    let template_root = profile_template_root(&profile);
+    let report_config = report_file_config(&profile);
+    let report_setup = setup_reports_with_serial_number_template_root_and_config(
+        &unit_folder,
+        unit_serial_number,
+        &template_root,
+        &report_config,
+    )
+    .map_err(AutomationCommandError::from_report_error)?;
+
+    write_transformer_serial_number_with_config(&unit_folder, transformer_sn, &report_config)
         .map_err(AutomationCommandError::from_report_error)?;
 
-    write_transformer_serial_number(&unit_folder, transformer_sn)
-        .map_err(AutomationCommandError::from_report_error)?;
-
-    build_summary(&unit_folder, report_setup).map_err(AutomationCommandError::from_automation_error)
+    build_summary_with_profile(&unit_folder, report_setup, &profile)
+        .map_err(AutomationCommandError::from_automation_error)
 }
 
 pub fn save_transformer_sn(
@@ -390,7 +405,11 @@ pub fn save_transformer_sn(
         ));
     }
 
-    write_transformer_serial_number(&unit_folder, transformer_sn)
+    let profile =
+        load_layout_profile().map_err(AutomationCommandError::from_layout_profile_error)?;
+    let report_config = report_file_config(&profile);
+
+    write_transformer_serial_number_with_config(&unit_folder, transformer_sn, &report_config)
         .map_err(AutomationCommandError::from_report_error)?;
 
     Ok(())
@@ -422,8 +441,12 @@ pub fn save_final_operator_name(
         return Err(AutomationCommandError::print_readiness(&readiness));
     }
 
-    let print_report_path = write_final_operator_name(&unit_folder, operator_name)
-        .map_err(AutomationCommandError::from_print_report_error)?;
+    let profile =
+        load_layout_profile().map_err(AutomationCommandError::from_layout_profile_error)?;
+    let report_config = report_file_config(&profile);
+    let print_report_path =
+        write_final_operator_name_with_config(&unit_folder, operator_name, &report_config)
+            .map_err(AutomationCommandError::from_print_report_error)?;
 
     Ok(print_report_path.display().to_string())
 }
@@ -451,7 +474,10 @@ pub fn open_print_report_dialog(unit_folder: String) -> Result<(), AutomationCom
         return Err(AutomationCommandError::print_readiness(&readiness));
     }
 
-    let print_report_path = require_print_report(&unit_folder)
+    let profile =
+        load_layout_profile().map_err(AutomationCommandError::from_layout_profile_error)?;
+    let report_config = report_file_config(&profile);
+    let print_report_path = require_print_report_with_config(&unit_folder, &report_config)
         .map_err(AutomationCommandError::from_print_report_error)?;
 
     open_excel_print_dialog(&print_report_path).map_err(|error| {
@@ -490,10 +516,13 @@ fn validate_ready_for_print_path(
 ) -> Result<PrintReadinessResult, AutomationCommandError> {
     let mut blocking_issues = Vec::new();
 
-    load_layout_profile().map_err(AutomationCommandError::from_layout_profile_error)?;
-    require_print_report(unit_folder).map_err(AutomationCommandError::from_print_report_error)?;
+    let profile =
+        load_layout_profile().map_err(AutomationCommandError::from_layout_profile_error)?;
+    let report_config = report_file_config(&profile);
+    require_print_report_with_config(unit_folder, &report_config)
+        .map_err(AutomationCommandError::from_print_report_error)?;
 
-    if read_transformer_serial_number(unit_folder)
+    if read_transformer_serial_number_with_config(unit_folder, &report_config)
         .map_err(AutomationCommandError::from_print_report_error)?
         .is_none()
     {
@@ -572,9 +601,11 @@ fn task_blocking_reason(state: &str) -> String {
 
 pub fn scan_unit_folder(unit_folder: String) -> Result<UnitFolderSummary, AutomationError> {
     let unit_folder = PathBuf::from(unit_folder);
-    let report_setup = inspect_reports(&unit_folder)?;
+    let profile = load_layout_profile()?;
+    let report_config = report_file_config(&profile);
+    let report_setup = inspect_reports_with_config(&unit_folder, &report_config)?;
 
-    build_summary(&unit_folder, report_setup)
+    build_summary_with_profile(&unit_folder, report_setup, &profile)
 }
 
 pub fn process_task(
@@ -584,6 +615,7 @@ pub fn process_task(
     let unit_folder = PathBuf::from(unit_folder);
     let task = find_task(&task_id).ok_or_else(|| AutomationError::UnknownTask(task_id.clone()))?;
     let profile = load_layout_profile()?;
+    let report_config = report_file_config(&profile);
     let state = unit_state::load_or_default(&unit_folder)?;
     let already_processed_fingerprint = state
         .tasks
@@ -601,6 +633,7 @@ pub fn process_task(
             &task,
             &unit_folder,
             already_processed_fingerprint.as_deref(),
+            &report_config,
         )
     });
 
@@ -628,9 +661,10 @@ pub fn open_report_location(
     open_excel_at_location(&report_path, &sheet, &cell)
 }
 
-fn build_summary(
+fn build_summary_with_profile(
     unit_folder: &Path,
     report_setup: ReportSetup,
+    profile: &ReportLayoutProfile,
 ) -> Result<UnitFolderSummary, AutomationError> {
     let detected = detected_steps(unit_folder);
     let mut steps_to_paths = HashMap::<u16, Vec<PathBuf>>::new();
@@ -641,7 +675,6 @@ fn build_summary(
 
     let mut detected_task_ids = HashSet::<String>::new();
     let automation_tasks = automation_tasks();
-    let profile = load_layout_profile()?;
     let seeds = automation_tasks
         .iter()
         .map(|task| {
@@ -651,7 +684,7 @@ fn build_summary(
                 .copied()
                 .filter(|step| steps_to_paths.contains_key(step))
                 .collect::<Vec<_>>();
-            let csv_match = task_csv_match(unit_folder, task, &profile);
+            let csv_match = task_csv_match(unit_folder, task, profile);
 
             TaskStateSeed {
                 task_id: task.id.clone(),
@@ -696,7 +729,7 @@ fn build_summary(
                 detected_task_ids.insert(task.id.clone());
                 "detected"
             };
-            let csv_match = task_csv_match(unit_folder, &task, &profile);
+            let csv_match = task_csv_match(unit_folder, &task, profile);
             let persisted = state.tasks.get(&task.id);
             let state = persisted
                 .map(|entry| merged_summary_state(entry, detected_state))
@@ -732,6 +765,31 @@ fn build_summary(
         tasks,
         warnings,
     })
+}
+
+fn profile_template_root(profile: &ReportLayoutProfile) -> PathBuf {
+    PathBuf::from(&profile.templates.default_template_root)
+}
+
+fn report_file_config(profile: &ReportLayoutProfile) -> ReportFileConfig {
+    let defaults = ReportFileConfig::legacy_defaults();
+    let main_report_pattern = profile
+        .workbooks
+        .get("main")
+        .map(|workbook| workbook.file_pattern.clone())
+        .unwrap_or(defaults.main_report_pattern);
+    let print_report_pattern = profile
+        .workbooks
+        .get("print")
+        .map(|workbook| workbook.file_pattern.clone())
+        .unwrap_or(defaults.print_report_pattern);
+
+    ReportFileConfig::new(
+        profile.templates.main_report_template.clone(),
+        profile.templates.print_report_template.clone(),
+        main_report_pattern,
+        print_report_pattern,
+    )
 }
 
 #[derive(Debug, Clone)]

@@ -10,7 +10,7 @@
 
 The v0.2.9 pilot is a solid, well-engineered replacement that largely succeeds at preserving the legacy operator workflow and visual model while moving toward the intended architecture. Strengths include strict no-silent-zero CSV handling, high-fidelity Excel patching with extensive fidelity tests, unit_state-driven restart resilience and idempotency, a working mapped data-driven path for at least transformer writes, and clear error surfacing. The separation of concerns (frontend UI/workflow, Rust file/CSV/Excel logic, config-driven mappings) is mostly respected.
 
-Main remaining risk areas: hard-coded behavior and paths are still incomplete migrations from Rust into `config/report-layouts/`; runtime config discovery ships Tauri resources but does not resolve them at runtime; OperatorPanel.tsx is still monolithic (~2500 LOC); task definitions are duplicated across taskModel.ts / tasks.rs / layout JSONs; and the report-write Windows replace path is still delete+rename rather than an atomic replace. The app is pilot-ready for limited production comparison but carries maintenance and deployment risks if not addressed before full cut-over.
+Main remaining risk areas: runtime config discovery ships Tauri resources but does not resolve them at runtime; OperatorPanel.tsx is still monolithic (~2500 LOC); task definitions are duplicated across taskModel.ts / tasks.rs / layout JSONs; profile/config loading is repeated frequently; and the report-write Windows replace path is still delete+rename rather than an atomic replace. The app is pilot-ready for limited production comparison but carries maintenance and deployment risks if not addressed before full cut-over.
 
 ## Architecture & Structure
 
@@ -30,6 +30,8 @@ Main remaining risk areas: hard-coded behavior and paths are still incomplete mi
 ### Positive observations
 - `automation/mod.rs` cleanly dispatches to mapped vs processor; `build_summary`, `task_csv_match`, and readiness checks centralize state merging.
 - Layout profile loading now fails loudly for unreadable, invalid JSON, or semantically invalid profiles. Scan/build-summary and task processing use a validated profile instead of silently falling back to built-in processors.
+- Report setup and latest-unit suggestion now use `profile.templates.default_template_root` instead of the old hardcoded `C:/PDU500/00_Template` directory.
+- Report setup, report discovery, built-in processor report lookup, and mapped workbook lookup now use profile-derived template names and `workbooks.*.file_pattern` for main/print reports.
 - `reports.rs` Excel path is strong overall (WorkbookLock file mutex, .bak, transactional multi-patch rollback, force recalc, style preservation), with the Windows replace caveat called out below.
 - `csv_data.rs`: stability polling, fingerprinting (fnv1a64 + size + mtime), strict `required_number` + typed errors for blank/missing/non-numeric.
 - `unit_state.rs`: audit log, an acceptance data shape, fingerprint idempotency, temp+rename+backup save, explicit corrupt-state errors, and a `unit_state.lock` around read-modify-write paths. `is_print_ready` and `already_processed_fingerprint` are directionally correct, but acceptance is not exposed through a command/UI yet (see Issue 15).
@@ -52,10 +54,10 @@ Main remaining risk areas: hard-coded behavior and paths are still incomplete mi
 - Status: resolved on 2026-06-25, with end-to-end invalid-profile command coverage as a future test hardening item
 
 ### Issue 3 -- Severity: bug
-- File: backend/src/automation/reports.rs:16 (and related)
-- Description: Hardcoded `pub const TEMPLATE_DIR: &str = "C:/PDU500/00_Template";` is still used in `setup_reports_with_serial_number`, `copy_templates`, and `unit_candidates.rs:147` (and candidate_roots). The active profile (`config/report-layouts/pdu500.rev02.layout.json`) and `ReportTemplates.default_template_root` duplicate this value. AGENTS.md explicitly says "Prefer editable config files under `config/report-layouts/` over hardcoded cell maps" (and by extension paths). If the template root moves or a new profile changes it, code and config can diverge.
-- Suggestion: Remove the const. Load template root from the active `ReportLayoutProfile` (already loaded in many paths) or make reports setup take the resolved root. Update unit_candidates similarly. Keep only as a last-resort fallback with warning.
-- Status: open
+- File: backend/src/automation/reports.rs, backend/src/automation/mod.rs, backend/src/automation/unit_candidates.rs
+- Description: Originally, hardcoded `TEMPLATE_DIR = "C:/PDU500/00_Template"` was used by report setup and unit candidate discovery while the active profile also declared `templates.default_template_root`. This has been fixed: setup flows load the layout profile, pass `profile.templates.default_template_root` into report setup, and latest-unit discovery derives its search root from the profile template root's parent.
+- Suggestion: Treat the original directory-root bug as resolved. The broader template filename/discovery migration has also since been completed (see Issue 16), with only minor hardening items left around serial placeholder configurability and shared wildcard helpers.
+- Status: resolved on 2026-06-25
 
 ### Issue 4 -- Severity: bug
 - File: backend/src/config/profile.rs:220 (load_layout_profile and candidate_profile_paths)
@@ -129,6 +131,12 @@ Main remaining risk areas: hard-coded behavior and paths are still incomplete mi
 - Suggestion: Decide the intended policy. If explicit operator acceptance is required, add a command with operator name/reason, audit entry, and UI affordance in the failure notice. If acceptance is not intended for the pilot, remove or hide the path from readiness wording so operators are not told about an unavailable action.
 - Status: open
 
+### Issue 16 -- Severity: suggestion
+- File: backend/src/automation/reports.rs, backend/src/automation/mod.rs, backend/src/automation/processors.rs, backend/src/automation/mapped.rs, backend/src/config/profile.rs
+- Description: Originally, template filenames and workbook discovery were still hardcoded in Rust after the template root became profile-driven. This has been fixed with `ReportFileConfig`: report setup uses `templates.main_report_template` and `templates.print_report_template`; discovery and require paths use `workbooks.main.file_pattern` and `workbooks.print.file_pattern`; built-in processors receive the report config; mapped workbook lookup now consistently uses profile workbook patterns; and profile validation requires `main` and `print` workbook definitions.
+- Suggestion: Treat the original filename/discovery migration as resolved. Remaining hardening: `SN##` serial substitution is still an implicit convention in `ReportFileConfig::main_report_name`, wildcard conversion is duplicated with `mapped.rs`, invalid/generated-impossible patterns quietly produce no discovery results, and there is not yet a full `setup_unit_folder` + `process_task` integration test using a modified profile JSON with non-default template names/patterns.
+- Status: resolved on 2026-06-25, with serial placeholder and pattern-helper cleanup as future hardening
+
 ## Testing & Validation Observations
 
 - Strong coverage of CSV error cases (blank, malformed, missing column) in `backend/tests/csv_parsing.rs` and fixtures/. The tests assert that failures produce "fail" + code 1 with the exact error text and no success path.
@@ -137,6 +145,8 @@ Main remaining risk areas: hard-coded behavior and paths are still incomplete mi
 - Schema validation script and `validate:report-layouts` are good.
 - New `unit_state` tests cover corrupt sidecars in scan, print readiness, and process paths, plus concurrent state writes preserving all task updates.
 - New layout-profile tests cover invalid JSON, validation failures, stable error-code mapping, and preservation of built-in processor fallback when a valid profile task intentionally has no mappings.
+- New template-root tests cover setup using a supplied template root and unit-candidate roots following the profile template root parent.
+- New report file config tests cover custom template filenames and custom workbook discovery patterns; profile tests now require `main` and `print` workbook definitions.
 - Gaps: no automated test that a freshly bundled installer can load its packaged layout JSON without C:/PDU500 or cwd layout. Limited frontend coverage of the full runner + state machine (mostly setup/scroll/updater tests). No stress test for concurrent process + scan + print at the command/UI orchestration level.
 
 ## Packaging, Bundling, Updater, Installer Notes
@@ -156,15 +166,14 @@ Main remaining risk areas: hard-coded behavior and paths are still incomplete mi
 - Docs are accurate and useful (LEGACY_BEHAVIOR.md, ARCHITECTURE.md, CONFIGURATION_MODEL.md).
 
 ## Recommendations (priority order)
-1. Eliminate hardcoded TEMPLATE_DIR and wire profile template root everywhere (Issue 3).
-2. Implement proper Tauri resource resolution for layouts (Issue 4) and test in a packaged build.
-3. Split OperatorPanel.tsx and drive more of the panel from the profile (Issues 6, 7).
-4. Continue migrating remaining tasks to mappings + remove duplication.
-5. Decide and implement the acceptance override policy (Issue 15).
-6. Add a "packaged layout load" test.
-7. Later hardening: stale-lock recovery for `unit_state.lock` and workbook locks, plus an end-to-end invalid-profile command test.
+1. Implement proper Tauri resource resolution for layouts (Issue 4) and test in a packaged build.
+2. Split OperatorPanel.tsx and drive more of the panel from the profile (Issues 6, 7).
+3. Continue migrating remaining tasks to mappings + remove duplication.
+4. Decide and implement the acceptance override policy (Issue 15).
+5. Add a "packaged layout load" test.
+6. Later hardening: cache profile/config loads (Issue 8), stale-lock recovery for `unit_state.lock` and workbook locks, explicit serial placeholder config, shared wildcard matching helper, and an end-to-end invalid-profile command test.
 
-This review has been updated after the `unit_state` error-handling/locking fixes and layout-profile failure-handling fixes landed.
+This review has been updated after the `unit_state` error-handling/locking fixes, layout-profile failure-handling fixes, profile-driven template-root fix, and profile-driven report filename/discovery fix landed.
 
 ## Files Referenced (selected)
 - backend/src/automation/{mod.rs, reports.rs, processors.rs, mapped.rs, csv_data.rs, tasks.rs, unit_state.rs, unit_candidates.rs}

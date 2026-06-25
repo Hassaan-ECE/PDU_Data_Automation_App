@@ -13,10 +13,8 @@ use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-pub const TEMPLATE_DIR: &str = "C:/PDU500/00_Template";
 pub const MAIN_TEMPLATE_NAME: &str = "PDUD500442AM088_Test Report_0.2CT_Rev02_SN##.xlsx";
 pub const PRINT_TEMPLATE_NAME: &str = "PDUD500442AA088_0.2CT Test Report Print.xlsx";
-pub const MAIN_REPORT_PREFIX: &str = "PDUD500442AM088_Test Report_0.2CT_Rev02_";
 pub const MAIN_REPORT_SN_PREFIX: &str = "PDUD500442AM088_Test Report_0.2CT_Rev02_SN";
 pub const PRINT_REPORT_PREFIX: &str = "PDUD500442AA088";
 pub const FINAL_OPERATOR_SHEET: &str = "Test Report #2";
@@ -69,6 +67,50 @@ struct ReportDiscovery {
 }
 
 #[derive(Debug, Clone)]
+pub struct ReportFileConfig {
+    pub main_template_name: String,
+    pub print_template_name: String,
+    pub main_report_pattern: String,
+    pub print_report_pattern: String,
+}
+
+impl ReportFileConfig {
+    pub fn new(
+        main_template_name: impl Into<String>,
+        print_template_name: impl Into<String>,
+        main_report_pattern: impl Into<String>,
+        print_report_pattern: impl Into<String>,
+    ) -> Self {
+        Self {
+            main_template_name: main_template_name.into(),
+            print_template_name: print_template_name.into(),
+            main_report_pattern: main_report_pattern.into(),
+            print_report_pattern: print_report_pattern.into(),
+        }
+    }
+
+    pub fn legacy_defaults() -> Self {
+        Self::new(
+            MAIN_TEMPLATE_NAME,
+            PRINT_TEMPLATE_NAME,
+            format!("{MAIN_REPORT_SN_PREFIX}*.xlsx"),
+            format!("{PRINT_REPORT_PREFIX}*.xlsx"),
+        )
+    }
+
+    fn main_report_name(&self, serial_number: Option<&str>) -> String {
+        match serial_number {
+            Some(serial_number) => self.main_template_name.replace("##", serial_number),
+            None => self.main_template_name.clone(),
+        }
+    }
+
+    fn print_report_name(&self) -> String {
+        self.print_template_name.clone()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum CellValue {
     Number(f64),
     Text(String),
@@ -118,13 +160,24 @@ impl CellUpdate {
     }
 }
 
-pub fn setup_reports(unit_folder: &Path) -> ReportResult<ReportSetup> {
-    setup_reports_with_serial_number(unit_folder, None)
+pub fn setup_reports_with_template_root_and_config(
+    unit_folder: &Path,
+    template_root: &Path,
+    config: &ReportFileConfig,
+) -> ReportResult<ReportSetup> {
+    setup_reports_with_serial_number_template_root_and_config(
+        unit_folder,
+        None,
+        template_root,
+        config,
+    )
 }
 
-pub fn setup_reports_with_serial_number(
+pub fn setup_reports_with_serial_number_template_root_and_config(
     unit_folder: &Path,
     serial_number_override: Option<&str>,
+    template_root: &Path,
+    config: &ReportFileConfig,
 ) -> ReportResult<ReportSetup> {
     if !unit_folder.is_dir() {
         return Err(ReportError::UnitFolderMissing(
@@ -138,27 +191,31 @@ pub fn setup_reports_with_serial_number(
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .or_else(|| extract_serial_number(unit_folder));
-    let template_root = Path::new(TEMPLATE_DIR);
-    let mut reports = discover_reports(unit_folder);
+    let mut reports = discover_reports(unit_folder, config);
     let mut touched_reports = Vec::<PathBuf>::new();
 
     if !template_root.is_dir() {
-        warnings.push(format!("template folder not found: {TEMPLATE_DIR}"));
+        warnings.push(format!(
+            "template folder not found: {}",
+            template_root.display()
+        ));
     } else {
         touched_reports.extend(copy_templates(
             unit_folder,
             template_root,
             &reports,
             serial_number.as_deref(),
+            config,
             &mut warnings,
         )?);
-        reports = discover_reports(unit_folder);
+        reports = discover_reports(unit_folder, config);
     }
 
     if let Some(touched_report) = ensure_report_named_correctly(
         unit_folder,
         &reports,
         serial_number.as_deref(),
+        config,
         &mut warnings,
     )? {
         touched_reports.push(touched_report);
@@ -171,7 +228,7 @@ pub fn setup_reports_with_serial_number(
         }
     }
 
-    reports = discover_reports(unit_folder);
+    reports = discover_reports(unit_folder, config);
 
     Ok(ReportSetup {
         serial_number,
@@ -181,11 +238,12 @@ pub fn setup_reports_with_serial_number(
     })
 }
 
-pub fn write_transformer_serial_number(
+pub fn write_transformer_serial_number_with_config(
     unit_folder: &Path,
     transformer_serial_number: &str,
+    config: &ReportFileConfig,
 ) -> ReportResult<PathBuf> {
-    let report_path = require_main_report(unit_folder)?;
+    let report_path = require_main_report_with_config(unit_folder, config)?;
 
     patch_workbook(
         &report_path,
@@ -199,8 +257,11 @@ pub fn write_transformer_serial_number(
     Ok(report_path)
 }
 
-pub fn read_transformer_serial_number(unit_folder: &Path) -> ReportResult<Option<String>> {
-    let report_path = require_main_report(unit_folder)?;
+pub fn read_transformer_serial_number_with_config(
+    unit_folder: &Path,
+    config: &ReportFileConfig,
+) -> ReportResult<Option<String>> {
+    let report_path = require_main_report_with_config(unit_folder, config)?;
     let value = read_cell_text(&report_path, "Test Summary", "D1")?
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
@@ -208,14 +269,18 @@ pub fn read_transformer_serial_number(unit_folder: &Path) -> ReportResult<Option
     Ok(value)
 }
 
-pub fn write_final_operator_name(unit_folder: &Path, operator_name: &str) -> ReportResult<PathBuf> {
+pub fn write_final_operator_name_with_config(
+    unit_folder: &Path,
+    operator_name: &str,
+    config: &ReportFileConfig,
+) -> ReportResult<PathBuf> {
     if !unit_folder.is_dir() {
         return Err(ReportError::UnitFolderMissing(
             unit_folder.display().to_string(),
         ));
     }
 
-    let report_path = require_print_report(unit_folder)?;
+    let report_path = require_print_report_with_config(unit_folder, config)?;
 
     patch_workbook(
         &report_path,
@@ -229,14 +294,17 @@ pub fn write_final_operator_name(unit_folder: &Path, operator_name: &str) -> Rep
     Ok(report_path)
 }
 
-pub fn inspect_reports(unit_folder: &Path) -> ReportResult<ReportSetup> {
+pub fn inspect_reports_with_config(
+    unit_folder: &Path,
+    config: &ReportFileConfig,
+) -> ReportResult<ReportSetup> {
     if !unit_folder.is_dir() {
         return Err(ReportError::UnitFolderMissing(
             unit_folder.display().to_string(),
         ));
     }
 
-    let reports = discover_reports(unit_folder);
+    let reports = discover_reports(unit_folder, config);
 
     Ok(ReportSetup {
         serial_number: extract_serial_number(unit_folder),
@@ -246,13 +314,19 @@ pub fn inspect_reports(unit_folder: &Path) -> ReportResult<ReportSetup> {
     })
 }
 
-pub fn require_main_report(unit_folder: &Path) -> ReportResult<PathBuf> {
-    find_main_report(unit_folder)
+pub fn require_main_report_with_config(
+    unit_folder: &Path,
+    config: &ReportFileConfig,
+) -> ReportResult<PathBuf> {
+    find_main_report(unit_folder, config)
         .ok_or_else(|| ReportError::MainReportMissing(unit_folder.display().to_string()))
 }
 
-pub fn require_print_report(unit_folder: &Path) -> ReportResult<PathBuf> {
-    find_print_report(unit_folder)
+pub fn require_print_report_with_config(
+    unit_folder: &Path,
+    config: &ReportFileConfig,
+) -> ReportResult<PathBuf> {
+    find_print_report(unit_folder, config)
         .ok_or_else(|| ReportError::PrintReportMissing(unit_folder.display().to_string()))
 }
 
@@ -485,11 +559,12 @@ fn copy_templates(
     template_root: &Path,
     reports: &ReportDiscovery,
     serial_number: Option<&str>,
+    config: &ReportFileConfig,
     warnings: &mut Vec<String>,
 ) -> ReportResult<Vec<PathBuf>> {
     let mut touched_reports = Vec::new();
-    let main_template = template_root.join(MAIN_TEMPLATE_NAME);
-    let print_template = template_root.join(PRINT_TEMPLATE_NAME);
+    let main_template = template_root.join(&config.main_template_name);
+    let print_template = template_root.join(&config.print_template_name);
 
     if !main_template.is_file() {
         warnings.push(format!(
@@ -497,9 +572,7 @@ fn copy_templates(
             main_template.display()
         ));
     } else if reports.main_report.is_none() {
-        let target_name = serial_number
-            .map(|serial| format!("{MAIN_REPORT_PREFIX}SN{serial}.xlsx"))
-            .unwrap_or_else(|| MAIN_TEMPLATE_NAME.to_string());
+        let target_name = config.main_report_name(serial_number);
         let target_path = unit_folder.join(target_name);
 
         fs::copy(&main_template, &target_path)?;
@@ -520,7 +593,7 @@ fn copy_templates(
             print_template.display()
         ));
     } else if reports.print_report.is_none() {
-        let target_path = unit_folder.join(PRINT_TEMPLATE_NAME);
+        let target_path = unit_folder.join(config.print_report_name());
         fs::copy(&print_template, &target_path)?;
         touched_reports.push(target_path);
     }
@@ -532,20 +605,21 @@ fn ensure_report_named_correctly(
     unit_folder: &Path,
     reports: &ReportDiscovery,
     serial_number: Option<&str>,
+    config: &ReportFileConfig,
     warnings: &mut Vec<String>,
 ) -> ReportResult<Option<PathBuf>> {
     let Some(serial_number) = serial_number else {
         return Ok(None);
     };
 
-    let target = unit_folder.join(format!("{MAIN_REPORT_PREFIX}SN{serial_number}.xlsx"));
+    let target = unit_folder.join(config.main_report_name(Some(serial_number)));
 
     if target.exists() {
         return Ok(None);
     }
 
     let Some(source) = reports.main_report.clone().or_else(|| {
-        let template_copy = unit_folder.join(MAIN_TEMPLATE_NAME);
+        let template_copy = unit_folder.join(&config.main_template_name);
         template_copy.exists().then_some(template_copy)
     }) else {
         warnings.push(format!(
@@ -571,18 +645,23 @@ fn ensure_report_named_correctly(
     Ok(Some(target))
 }
 
-fn find_main_report(unit_folder: &Path) -> Option<PathBuf> {
-    discover_reports(unit_folder).main_report
+fn find_main_report(unit_folder: &Path, config: &ReportFileConfig) -> Option<PathBuf> {
+    discover_reports(unit_folder, config).main_report
 }
 
-fn find_print_report(unit_folder: &Path) -> Option<PathBuf> {
-    discover_reports(unit_folder).print_report
+fn find_print_report(unit_folder: &Path, config: &ReportFileConfig) -> Option<PathBuf> {
+    discover_reports(unit_folder, config).print_report
 }
 
-fn discover_reports(root: &Path) -> ReportDiscovery {
-    let mut main_sn = None;
-    let mut main_prefixed = None;
-    let mut main_any = None;
+fn discover_reports(root: &Path, config: &ReportFileConfig) -> ReportDiscovery {
+    let Some(main_pattern) = wildcard_pattern_to_regex(&config.main_report_pattern) else {
+        return ReportDiscovery::default();
+    };
+    let Some(print_pattern) = wildcard_pattern_to_regex(&config.print_report_pattern) else {
+        return ReportDiscovery::default();
+    };
+
+    let mut main_report = None;
     let mut print_report = None;
 
     for entry in WalkDir::new(root)
@@ -596,31 +675,42 @@ fn discover_reports(root: &Path) -> ReportDiscovery {
             continue;
         };
 
-        if !file_name.ends_with(".xlsx") {
-            continue;
-        }
-
         let Ok(modified) = path.metadata().and_then(|metadata| metadata.modified()) else {
             continue;
         };
 
-        if file_name.starts_with(MAIN_REPORT_SN_PREFIX) {
-            retain_latest(&mut main_sn, path.clone(), modified);
-        } else if file_name.starts_with(MAIN_REPORT_PREFIX) {
-            retain_latest(&mut main_prefixed, path.clone(), modified);
-        } else if file_name.starts_with("PDUD500442AM088") {
-            retain_latest(&mut main_any, path.clone(), modified);
+        if main_pattern.is_match(file_name) {
+            retain_latest(&mut main_report, path.clone(), modified);
         }
 
-        if file_name.starts_with(PRINT_REPORT_PREFIX) {
+        if print_pattern.is_match(file_name) {
             retain_latest(&mut print_report, path, modified);
         }
     }
 
     ReportDiscovery {
-        main_report: main_sn.or(main_prefixed).or(main_any).map(|(path, _)| path),
+        main_report: main_report.map(|(path, _)| path),
         print_report: print_report.map(|(path, _)| path),
     }
+}
+
+fn wildcard_pattern_to_regex(pattern: &str) -> Option<Regex> {
+    if pattern.trim().is_empty() {
+        return None;
+    }
+
+    let mut regex = String::from("(?i)^");
+
+    for ch in pattern.chars() {
+        match ch {
+            '*' => regex.push_str(".*"),
+            '?' => regex.push('.'),
+            _ => regex.push_str(&regex::escape(&ch.to_string())),
+        }
+    }
+
+    regex.push('$');
+    Regex::new(&regex).ok()
 }
 
 fn retain_latest(current: &mut Option<(PathBuf, SystemTime)>, path: PathBuf, modified: SystemTime) {
@@ -1503,7 +1593,7 @@ fn escape_xml_text(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
+    use std::fs::{self, File};
     use std::io::{Read, Write};
 
     use super::*;
@@ -1557,8 +1647,12 @@ mod tests {
         let workbook = unit_folder.join(format!("{MAIN_REPORT_SN_PREFIX}262343000072.xlsx"));
         write_minimal_test_summary_workbook(&workbook);
 
-        let report_path =
-            write_transformer_serial_number(&unit_folder, "000123").expect("write D1");
+        let report_path = write_transformer_serial_number_with_config(
+            &unit_folder,
+            "000123",
+            &ReportFileConfig::legacy_defaults(),
+        )
+        .expect("write D1");
 
         assert_eq!(report_path, workbook);
 
@@ -1583,7 +1677,12 @@ mod tests {
         let workbook = unit_folder.join(PRINT_TEMPLATE_NAME);
         write_minimal_sheet_workbook(&workbook, FINAL_OPERATOR_SHEET);
 
-        let report_path = write_final_operator_name(&unit_folder, "Sean").expect("write E39");
+        let report_path = write_final_operator_name_with_config(
+            &unit_folder,
+            "Sean",
+            &ReportFileConfig::legacy_defaults(),
+        )
+        .expect("write E39");
 
         assert_eq!(report_path, workbook);
 
@@ -1598,6 +1697,84 @@ mod tests {
 
         assert!(sheet_xml.contains(r#"<c r="E39" t="inlineStr"><is><t>Sean</t></is></c>"#));
         assert!(!sheet_xml.contains("<v>Sean</v>"));
+    }
+
+    #[test]
+    fn setup_reports_uses_supplied_template_root() {
+        let temp = TempDir::new().expect("temp dir");
+        let template_root = temp.path().join("Configured_Template");
+        let unit_folder = temp.path().join("262343000072");
+        let config = ReportFileConfig::new(
+            "Custom Main Report SN##.xlsx",
+            "Custom Print Report.xlsx",
+            "Custom Main Report SN*.xlsx",
+            "Custom Print Report.xlsx",
+        );
+        fs::create_dir_all(&template_root).expect("template root");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        write_minimal_test_summary_workbook(&template_root.join(&config.main_template_name));
+        write_minimal_sheet_workbook(
+            &template_root.join(&config.print_template_name),
+            FINAL_OPERATOR_SHEET,
+        );
+
+        let setup = setup_reports_with_serial_number_template_root_and_config(
+            &unit_folder,
+            Some("262343000072"),
+            &template_root,
+            &config,
+        )
+        .expect("setup reports");
+
+        let expected_main = unit_folder.join("Custom Main Report SN262343000072.xlsx");
+        let expected_print = unit_folder.join("Custom Print Report.xlsx");
+
+        assert_eq!(
+            setup.report_path.as_deref(),
+            Some(expected_main.to_str().unwrap())
+        );
+        assert_eq!(
+            setup.print_report_path.as_deref(),
+            Some(expected_print.to_str().unwrap())
+        );
+        assert!(expected_main.is_file());
+        assert!(expected_print.is_file());
+        assert_eq!(setup.warnings, Vec::<String>::new());
+    }
+
+    #[test]
+    fn report_discovery_uses_configured_workbook_patterns() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        let config = ReportFileConfig::new(
+            "Custom Main Report SN##.xlsx",
+            "Custom Print Report.xlsx",
+            "Custom Main Report SN*.xlsx",
+            "Custom Print Report*.xlsx",
+        );
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        fs::write(
+            unit_folder.join(format!("{MAIN_REPORT_SN_PREFIX}262343000072.xlsx")),
+            b"legacy main",
+        )
+        .expect("write legacy main");
+        fs::write(unit_folder.join(PRINT_TEMPLATE_NAME), b"legacy print")
+            .expect("write legacy print");
+        let expected_main = unit_folder.join("Custom Main Report SN262343000072.xlsx");
+        let expected_print = unit_folder.join("Custom Print Report.xlsx");
+        fs::write(&expected_main, b"custom main").expect("write custom main");
+        fs::write(&expected_print, b"custom print").expect("write custom print");
+
+        let setup = inspect_reports_with_config(&unit_folder, &config).expect("inspect reports");
+
+        assert_eq!(
+            setup.report_path.as_deref(),
+            Some(expected_main.to_str().unwrap())
+        );
+        assert_eq!(
+            setup.print_report_path.as_deref(),
+            Some(expected_print.to_str().unwrap())
+        );
     }
 
     #[test]

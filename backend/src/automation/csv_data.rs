@@ -398,6 +398,7 @@ fn is_transient_file_access_error(error: &std::io::Error) -> bool {
 mod tests {
     use super::*;
     use std::io::ErrorKind;
+    use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
 
@@ -461,18 +462,24 @@ mod tests {
         let csv_path = temp.path().join("changing.csv");
         fs::write(&csv_path, "a,b\n1,2\n").expect("write csv");
         let writer_path = csv_path.clone();
+        let (writer_started_tx, writer_started_rx) = mpsc::channel();
 
         let writer = thread::spawn(move || {
-            for index in 0..5 {
-                thread::sleep(Duration::from_millis(25));
-                fs::write(&writer_path, format!("a,b\n{index},2\n")).expect("rewrite csv");
+            fs::write(&writer_path, "a,b\n1,2\n").expect("initial rewrite");
+            writer_started_tx.send(()).expect("signal writer started");
+
+            for index in 1..20 {
+                thread::sleep(Duration::from_millis(20));
+                fs::write(&writer_path, format!("a,b\n{},2\n", "1".repeat(index + 1)))
+                    .expect("rewrite csv");
             }
         });
 
+        writer_started_rx.recv().expect("writer should start");
         let error = wait_for_stable_csv(
             &csv_path,
-            Duration::from_millis(80),
             Duration::from_millis(120),
+            Duration::from_millis(180),
         )
         .expect_err("changing csv should not become stable before max wait");
 

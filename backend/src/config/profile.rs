@@ -329,6 +329,14 @@ fn validate_workbooks(
             .push("workbooks must define at least one workbook".to_string());
     }
 
+    for required in ["main", "print"] {
+        if !workbooks.contains_key(required) {
+            result
+                .errors
+                .push(format!("workbooks must define '{required}'"));
+        }
+    }
+
     for (key, workbook) in workbooks {
         if key.trim().is_empty() {
             result
@@ -736,6 +744,20 @@ mod tests {
             .errors
             .iter()
             .any(|error| error.contains("unknown workbook")));
+    }
+
+    #[test]
+    fn main_and_print_workbooks_are_required() {
+        let mut profile = parse_example_profile_fixture().expect("example profile should parse");
+        profile.workbooks.remove("print");
+
+        let validation = profile.validate();
+
+        assert!(!validation.is_valid());
+        assert!(validation
+            .errors
+            .iter()
+            .any(|error| error.contains("workbooks must define 'print'")));
     }
 
     #[test]

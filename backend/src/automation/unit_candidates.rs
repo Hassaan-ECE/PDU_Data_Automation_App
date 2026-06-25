@@ -8,8 +8,6 @@ use serde::Serialize;
 
 use crate::config::{load_layout_profile, ReportLayoutProfile};
 
-use super::reports::TEMPLATE_DIR;
-
 #[derive(Debug, Clone, Serialize)]
 pub struct LatestUnitCandidateResult {
     pub candidate: Option<UnitCandidate>,
@@ -47,20 +45,22 @@ struct CandidateWithTime {
 }
 
 pub fn latest_unit_candidate() -> LatestUnitCandidateResult {
-    let mut warnings = Vec::new();
     let profile = match load_layout_profile() {
-        Ok(profile) => Some(profile),
+        Ok(profile) => profile,
         Err(error) => {
-            warnings.push(format!(
-                "layout profile could not be loaded for unit suggestion: {error}"
-            ));
-            None
+            return LatestUnitCandidateResult {
+                candidate: None,
+                searched_roots: Vec::new(),
+                warnings: vec![format!(
+                    "layout profile could not be loaded for unit suggestion: {error}"
+                )],
+            };
         }
     };
-    let roots = candidate_roots(profile.as_ref());
-    let rules = SerialDetectionRules::from_profile(profile.as_ref());
+    let roots = candidate_roots(&profile);
+    let rules = SerialDetectionRules::from_profile(Some(&profile));
 
-    latest_unit_candidate_in_roots(&roots, &rules, warnings)
+    latest_unit_candidate_in_roots(&roots, &rules, Vec::new())
 }
 
 fn latest_unit_candidate_in_roots(
@@ -135,16 +135,10 @@ fn latest_unit_candidate_in_roots(
     }
 }
 
-fn candidate_roots(profile: Option<&ReportLayoutProfile>) -> Vec<PathBuf> {
+fn candidate_roots(profile: &ReportLayoutProfile) -> Vec<PathBuf> {
     let mut roots = Vec::<PathBuf>::new();
 
-    if let Some(profile) = profile {
-        if let Some(root) = Path::new(&profile.templates.default_template_root).parent() {
-            roots.push(root.to_path_buf());
-        }
-    }
-
-    if let Some(root) = Path::new(TEMPLATE_DIR).parent() {
+    if let Some(root) = Path::new(&profile.templates.default_template_root).parent() {
         roots.push(root.to_path_buf());
     }
 
@@ -354,5 +348,35 @@ mod tests {
             result.searched_roots,
             vec![temp.path().display().to_string()]
         );
+    }
+
+    #[test]
+    fn candidate_roots_follow_profile_template_root_parent() {
+        let temp = TempDir::new().expect("temp dir");
+        let template_root = temp.path().join("Configured_Template");
+        let profile = profile_with_template_root(&template_root);
+
+        assert_eq!(candidate_roots(&profile), vec![temp.path().to_path_buf()]);
+    }
+
+    fn profile_with_template_root(template_root: &Path) -> ReportLayoutProfile {
+        ReportLayoutProfile::from_json(&format!(
+            r#"{{
+  "schema_version": 1,
+  "profile_id": "test",
+  "display_name": "Test",
+  "templates": {{
+    "default_template_root": "{}",
+    "main_report_template": "main.xlsx",
+    "print_report_template": "print.xlsx"
+  }},
+  "workbooks": {{
+    "main": {{ "file_pattern": "main*.xlsx" }},
+    "print": {{ "file_pattern": "print*.xlsx" }}
+  }}
+}}"#,
+            template_root.display().to_string().replace('\\', "\\\\")
+        ))
+        .expect("test profile")
     }
 }

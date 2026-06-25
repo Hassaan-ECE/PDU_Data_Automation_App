@@ -14,10 +14,7 @@ use super::csv_data::{
     csv_fingerprint, required_number, round_to, wait_for_stable_csv, CsvDataError, CsvTable,
 };
 use super::processors::{FailureDetail, ProcessorResult};
-use super::reports::{
-    patch_workbooks_transactional, require_main_report, require_print_report, CellUpdate,
-    ReportError, WorkbookPatch,
-};
+use super::reports::{patch_workbooks_transactional, CellUpdate, ReportError, WorkbookPatch};
 
 #[derive(Debug, Error)]
 enum MappedProcessorError {
@@ -287,12 +284,6 @@ fn resolve_workbook_path(
         .workbooks
         .get(workbook)
         .ok_or_else(|| MappedProcessorError::Config(format!("unknown workbook '{workbook}'")))?;
-
-    match workbook {
-        "main" => return require_main_report(unit_folder).map_err(MappedProcessorError::Report),
-        "print" => return require_print_report(unit_folder).map_err(MappedProcessorError::Report),
-        _ => {}
-    }
 
     find_latest_file_by_pattern(unit_folder, &definition.file_pattern).ok_or_else(|| {
         MappedProcessorError::Config(format!(
