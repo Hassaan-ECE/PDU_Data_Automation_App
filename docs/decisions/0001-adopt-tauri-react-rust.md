@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed.
+Accepted.
 
 ## Context
 
@@ -21,17 +21,17 @@ The newer `TE_Component_Inventory` project uses a stack that is better suited fo
 - signed Tauri updater
 - GitHub Releases
 
-The user wants the PDU replacement to follow that style, keep a GitHub repo, stage releases on the S-drive, and ship as a single installer.
+The goal is to follow that style, keep a GitHub repo, stage releases on the S-drive, and ship as a single installer.
 
 ## Decision
 
 Use the `TE_Component_Inventory` stack pattern for the PDU rebuild.
 
-The app should use:
+The app uses:
 
 - React/TypeScript frontend for the operator panel.
 - Rust/Tauri backend for file scanning, CSV parsing, report writing, and native commands.
-- Bun for frontend/package scripts.
+- Bun for frontend/package scripts (invoke via `bun run ...` directly).
 - Tauri NSIS for the Windows installer.
 - Signed Tauri updater with GitHub Release `latest.json`.
 
@@ -39,19 +39,19 @@ The app should use:
 
 Benefits:
 
-- cleaner UI structure than the PyQt script
-- native installer and updater path
-- better testability for frontend and backend logic
-- easier future UI refinement
-- source-control-friendly release flow
+- Cleaner UI structure than the PyQt script
+- Native installer and updater path
+- Better testability for frontend and backend logic
+- Easier future UI refinement
+- Source-control-friendly release flow
 
 Costs and risks:
 
-- initial rebuild is larger than refactoring the Python scripts
-- Rust Excel template editing must be validated early
-- the team must maintain frontend and backend dependencies
-- report mapping config needs careful validation to avoid moving errors from code to config
+- Initial rebuild is larger than refactoring the Python scripts
+- Rust Excel template editing must be validated on template changes
+- Frontend and backend dependencies must be maintained
+- Report mapping config needs careful validation (JSON Schema + tests)
 
 ## Follow-Up
 
-Create a technical spike for Excel template preservation before implementing full report writing.
+Excel template preservation (styles, merged cells, formulas, no repair prompts) is validated on every relevant change via unit tests and manual review of generated workbooks.

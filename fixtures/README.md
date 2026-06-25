@@ -96,4 +96,4 @@ Current fixture files:
 - `workbooks/Unrelated_Report.xlsx`
   - Minimal synthetic unrelated workbook fixture used to assert discovery ignores non-matching workbooks.
 
-Add future subfolders and fixture files together in small, validated steps per `docs/STRUCTURE_CLEANUP_PLAN.md` Phase 5.
+Add future subfolders and fixture files together in small, validated steps. See docs/PROJECT_STRUCTURE.md for current layout expectations.

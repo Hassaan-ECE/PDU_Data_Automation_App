@@ -1,151 +1,73 @@
-# Legacy Behavior To Preserve Or Correct
+# Legacy Behavior and Constraints
 
-The original legacy app is the working Python/PyQt bundle in:
+This document records behavior from the original Python/PyQt application that the replacement must **preserve** or **intentionally correct**.
 
-```text
-C:\Projects\Active\PDU_Data_Automation
-```
+Reference legacy locations (for historical comparison only):
 
-There is also a newer legacy/reference folder:
-
-```text
-C:\Projects\Active\Data Automation Upgraded
-```
-
-Use `Data Automation Upgraded` as the preferred reference for 208V/415V system and breaker behavior. Its newer scripts add Python-side accuracy calculations and pass/fail verification. The transformer and burn-in scripts are the same as the older folder. Ignore `NOTHING.py`; it is not valid Python and appears to be a scratch HTML/CSS/JS prototype.
-
-This document records behavior the replacement must either preserve or intentionally correct.
+- `C:\Projects\Active\PDU_Data_Automation`
+- `C:\Projects\Active\Data Automation Upgraded` (preferred reference for system/breaker verification logic)
 
 ## Preserve
 
 ### Operator Workflow
+- Select unit test folder.
+- Automatic or explicit report template handling + renaming by SN.
+- Scan for existing STEP CSVs.
+- Prompt for previously detected CSVs on start (backlog).
+- Process steps as data arrives, show progress.
+- Allow manual rerun of individual tasks when idle/paused.
+- Open main report and print report workbooks.
+- Final step: capture operator name, write it to the print report, then open Excel print dialog.
 
-- User selects a unit test folder.
-- App copies or locates report templates.
-- App scans existing CSV files for completed STEP data.
-- App prompts whether to process previous detected tests.
-- App starts the sequence and waits for source files.
-- App processes each step through the matching report writer.
-- App logs per-step output.
-- App allows manual rerun of individual tests when the runner is idle or paused.
-- App can open the main report.
+### Visual / Mental Model
+Keep the familiar test panel layout:
+- Large remaining time + current step/status at top.
+- Unit folder selection.
+- 208V and 415V sections (Transformer, System, expandable Breakers).
+- System Burn-In and Breaker Burn-In sections.
+- Color-coded states: off, detected, waiting, processing, pass, warning, fail.
+- Manual rerun, follow-step controls, report open actions.
 
-### Visual Layout
-
-The replacement should keep the same mental model:
-
-- large total time display at the top
-- current step/status label
-- unit folder selector
-- scrollable test sections
-- 208V transformer, system, and breaker sections
-- 415V transformer, system, and breaker sections
-- system burn-in section
-- breaker burn-in section
-- expandable breaker rows
-- state colors for off, detected, running, pass, and fail
-- start/pause/resume and reset controls at the bottom
-
-The new UI can be cleaner, but it should not force operators to relearn the workflow.
-
-### File Expectations
-
-The current file conventions should remain supported:
-
-- CSV filenames contain `_STEP##_`.
-- Main report pattern: `PDUD500442AM088_Test Report_0.2CT_Rev02_SN*.xlsx`.
-- Main report template: `PDUD500442AM088_Test Report_0.2CT_Rev02_SN##.xlsx`.
+### File Conventions
+- CSV files contain `_STEP##_` in the name.
+- Main report filename pattern: `PDUD500442AM088_Test Report_0.2CT_Rev02_SN*.xlsx`.
+- Main report template pattern ends with `SN##.xlsx`.
 - Print report template: `PDUD500442AA088_0.2CT Test Report Print.xlsx`.
-- Template directory default: `C:/PDU500/00_Template`.
-- Unit folders may contain metadata files such as `SN.txt`, `serial_number.txt`, `info.txt`, or `metadata.txt`.
+- Default template root: `C:/PDU500/00_Template`.
+- Unit folders may contain `SN.txt`, `serial_number.txt`, etc.
 
-### Manual Excel Steps Targeted For Automation
+### Important Semantics
+- **Transformer SN**: Written as text to `Test Summary!D1` (must preserve leading zeros and exact value).
+- **Final operator name**: Written to `Test Report #2!E39` in the print report.
+- **STEP71 vs STEP72 (system burn-in)**:
+  - STEP71 = long soak / burn-in period.
+  - STEP72 = the short data-capture step used for report values.
+- **Verification thresholds** (from upgraded legacy):
+  - Voltage / Current: ±0.3%
+  - Active/Apparent Power: ±0.6%
+  - Power Factor: ±2.0%
+  - Missing data or out-of-tolerance → fail (do not write or mark pass).
 
-These are current manual operator steps that the replacement should automate carefully without changing the report layout:
+## Must Not Copy (Correct)
 
-- During setup, collect the Transformer SN inline and write it to the main report workbook at `Test Summary!D1`. Backend and frontend support are implemented in the working tree; the latest inline UX revision is pending release and operator-machine validation.
-- Late Transformer SN edits should save back to `Test Summary!D1` as text and preserve numeric-looking values such as `000123`.
-- The main report workbook is the `PDUD500442AM088_Test Report_0.2CT_Rev02` family.
-- After the full test passes, prompt for the final operator name and write it to the print report workbook at `Test Report #2!E39`.
-- The print report workbook is `PDUD500442AA088_0.2CT Test Report Print.xlsx`.
-- The final operator-name prompt may allow typed entry or a local dropdown of known operator names.
-- After writing the final operator name, open the print dialog for operator confirmation. Do not silently print without confirmation.
-- When a step fails, the app should try to open Excel at the relevant workbook context. Exact sheet/cell navigation is preferred when reliable; opening the correct workbook with a clear error message is the fallback.
+- Exit code `2` from processors was mapped to `detected` → `pass`. Missing or bad data **must never** become pass.
+- Silent conversion of missing, blank, or unparsable CSV values to `0.0`. The replacement distinguishes real zero from parse/missing failures.
+- Duplicated hardcoded cell maps, column names, and step numbers across scripts. These belong in versioned config.
 
-### Logical Test Coverage
+## Key Risks Carried Forward (AGENTS.md)
 
-The replacement must cover:
+- Never treat processor exit code 2 as "detected then pass".
+- Respect STEP71 (long) vs STEP72 (report capture).
+- Use Data Automation Upgraded as stronger reference for accuracy logic.
+- Missing/unparsable values must not silently become valid-looking zeroes.
+- Always re-validate Excel template preservation (formatting, formulas, merged cells, no repair prompts) after any change to patching logic or templates.
 
-- 208V transformer check
-- 208V system 100%, 50%, and 20% load tests
-- 208V breaker 1-8 100%, 50%, and 20% load tests
-- 415V transformer check
-- 415V system 100%, 50%, and 20% load tests
-- 415V breaker 1-8 100%, 50%, and 20% load tests
-- system burn-in
-- breaker burn-in 1-8
+## Current Status in Replacement (v0.2.9+)
 
-### Accuracy Verification
-
-The upgraded 208V/415V system and breaker scripts calculate accuracy values in Python, write those accuracy cells, and return failure when thresholds are exceeded.
-
-The replacement should preserve this behavior:
-
-- voltage and current threshold: +/-0.3%
-- active and apparent power threshold: +/-0.6%
-- power factor threshold: +/-2.0%
-- missing accuracy data fails verification
-- verification failures stop the automated sequence and surface a clear operator warning
-
-## Correct
-
-### Exit Code 2 Handling
-
-The legacy GUI maps processor exit code `2` to `detected`, then later converts `detected` to `pass`. The processor scripts use exit code `2` for missing data or no data written.
-
-The replacement must not mark missing data as pass.
-
-### STEP71 / STEP72 Burn-In Workflow
-
-This is intentional:
-
-- STEP71 is the long system burn-in/soak period.
-- STEP72 is the quick burn-in data capture used for report values.
-
-The replacement should model both concepts internally. The UI should not force operators to think in terms of STEP71 and STEP72, but it may show one burn-in workflow with the long burn-in countdown followed by the short STEP72 capture countdown. The report writer should use STEP72 data for the system burn-in report values.
-
-### Silent Zeroes
-
-The legacy processors sometimes convert missing, invalid, or unparsable values to `0.0`.
-
-The replacement must distinguish:
-
-- real numeric zero
-- missing source column
-- missing source row
-- blank source value
-- nonnumeric source value
-- optional skipped value
-
-### Duplicated Mappings
-
-The legacy app duplicates report filenames, sheet names, cell maps, source columns, and step numbers across several scripts.
-
-The replacement should keep these in versioned layout config files and validate them at startup.
-
-### Burn-In CLI Parsing
-
-The legacy burn-in scripts parse `--unit=<path>` manually and do not consistently honor `--unit <path>`.
-
-The replacement should have one backend path resolution flow.
-
-## Open Questions
-
-- What is the final production S-drive root for PDU releases?
-- What should the app identifier be? Proposed: `com.te.pdu.data.automation`.
-- Should the template directory remain hardcoded by default or be user-configurable in settings?
-- Which Rust Excel writer safely preserves the current templates?
-- Where should the final operator-name dropdown list be stored?
-- What ATS-created file, folder, or metadata signal is reliable enough to detect a newly started SN without switching away from an active test by mistake?
-- Can Excel sheet/cell selection and print-dialog opening be made reliable on the operator PC without making normal report writes depend on Excel automation?
-- Should the app keep local session history and manual override notes later, after the core workflow is stable?
+- Strict CSV parsing with no silent zero fallback (tests cover blank/malformed/missing column cases).
+- `validate_ready_for_print` gate before writing operator name or opening print dialog.
+- Verification runs before any Excel patch for system/breaker tasks.
+- CSV stability wait before processing.
+- `unit_state.json` sidecar for restart resilience and idempotency.
+- Transformer tasks are now driven from `config/report-layouts/pdu500.rev02.layout.json`.
+- System, breaker, and burn-in tasks still use built-in processors (progressively moving to mappings).

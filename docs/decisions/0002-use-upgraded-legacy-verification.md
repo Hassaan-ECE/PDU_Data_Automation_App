@@ -13,36 +13,33 @@ C:\Projects\Active\PDU_Data_Automation
 C:\Projects\Active\Data Automation Upgraded
 ```
 
-The older folder is documented and runnable. The upgraded folder has newer 208V/415V system and breaker scripts. Those scripts add Python-side accuracy calculations, write computed accuracy cells, and return failure when threshold checks fail.
+The older folder is documented and runnable. The upgraded folder has newer 208V/415V system and breaker scripts that add Python-side accuracy calculations, write computed accuracy cells, and return failure when threshold checks fail.
 
-The upgraded folder also contains `NOTHING.py`, which is not valid Python and appears to be a scratch HTML/CSS/JS prototype.
+The upgraded folder also contains `NOTHING.py`, which is not valid Python (appears to be a scratch prototype).
 
 ## Decision
 
 Use `C:\Projects\Active\Data Automation Upgraded` as the primary reference for 208V/415V system and breaker report-writing verification behavior.
 
-Use the older `C:\Projects\Active\PDU_Data_Automation` docs and scripts as supporting context.
+Use the older `C:\Projects\Active\PDU_Data_Automation` as supporting context for other areas.
 
 Do not treat `NOTHING.py` as production source.
 
 ## Preserved Verification Behavior
 
-The rebuild should preserve these threshold checks unless a later requirement changes them:
+Preserve these threshold checks unless a later requirement changes them:
 
-- voltage: +/-0.3%
-- current: +/-0.3%
-- active/apparent power: +/-0.6%
-- power factor: +/-2.0%
-- missing accuracy data fails verification
-- failed verification stops or pauses the automated run and shows an obvious operator warning
+- Voltage / Current: +/- 0.3%
+- Active / Apparent Power: +/- 0.6%
+- Power Factor: +/- 2.0%
+- Missing accuracy data fails verification
+- Failed verification stops or pauses the run and surfaces a clear operator warning
 
-The rebuild should keep the logs and UI text clean ASCII or valid UTF-8. The upgraded scripts currently display a garbled threshold symbol in console output on this machine.
+Logs and UI text must remain clean ASCII / valid UTF-8.
 
-## Burn-In Clarification
+## Burn-In Clarification (Preserved)
 
-System burn-in uses two related steps:
+- STEP71 = long system burn-in / soak period
+- STEP72 = quick burn-in data capture used for report values
 
-- STEP71 is the long system burn-in/soak period.
-- STEP72 is the quick burn-in data capture used for report values.
-
-The report writer should read STEP72 for system burn-in values. The UI should make the relationship clear instead of representing it as an unresolved mismatch.
+The report writer uses STEP72 data. The UI presents burn-in as one operator workflow.

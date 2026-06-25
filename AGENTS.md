@@ -30,7 +30,7 @@ Treat it as pilot-ready, not fully cut over. Keep the legacy Python app availabl
 - Frontend: React, TypeScript, Vite, Tailwind CSS, lucide-react.
 - Desktop shell: Tauri 2.
 - Backend: Rust commands invoked from Tauri.
-- Package manager: Bun via the `scripts/run-bun.mjs` helper pattern from `TE_Component_Inventory`.
+- Package manager: Bun (use `bun run desktop`, `bun run dev:frontend`, `bun run build`, etc. directly).
 - Installer: Tauri NSIS current-user installer.
 - Updates: signed Tauri updater with `latest.json` hosted through GitHub Releases.
 
@@ -41,7 +41,7 @@ The replacement app should separate these concerns:
 - UI state and operator workflow in the frontend.
 - File scanning, CSV parsing, report writing, and release/runtime path logic in the Rust backend.
 - Test definitions, CSV source columns, Excel sheet names, and target cells in versioned layout config files.
-- Legacy behavior notes and migration decisions in `docs/`.
+- Legacy behavior notes and migration decisions in `docs/LEGACY_BEHAVIOR.md` and `docs/decisions/`.
 
 ## Validation Expectations
 

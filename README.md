@@ -27,7 +27,7 @@ Current release:
 Implemented in the pilot:
 
 - Tauri 2/Rust backend and React/TypeScript/Vite/Tailwind frontend
-- Bun package workflow through `scripts/run-bun.mjs`
+- Bun package workflow (`bun run desktop`, etc.)
 - operator-panel workflow with unit folder selection, timer/status area, expandable breaker groups, rerun controls, and report opening
 - active production layout profile at `config/report-layouts/pdu500.rev02.layout.json`
 - unit-folder setup, template copying/renaming, report discovery, CSV detection/parsing, and Excel workbook patching
@@ -91,21 +91,28 @@ The backend patches the Excel Open XML package directly. Any workbook/template c
 ```text
 backend/                 Tauri/Rust backend source, report engine, file scanning, native commands
 config/report-layouts/   Versioned data-driven Excel/CSV mapping files
-docs/                    Architecture, migration, release, and legacy behavior notes
+docs/                    Current documentation (overview, architecture, legacy constraints, config model)
+old-docs/                Historical plans, detailed audit notes, and superseded documents (archive)
 fixtures/                Synthetic CSV/workbook fixtures for tests
 frontend/                React/Vite UI source
 release/                 Local staging notes only; generated release files stay untracked
-scripts/                 Build, release, smoke-test, and helper scripts
+scripts/                 Validation, release helpers, and checks (use `bun` directly)
 ```
 
-## Documentation Index
+## Documentation
 
-- `docs/ARCHITECTURE.md` - current architecture, responsibilities, and remaining target direction
-- `docs/MIGRATION_PLAN.md` - phased plan from legacy scripts to the new app
-- `docs/LEGACY_BEHAVIOR.md` - behavior that must be preserved or intentionally corrected
-- `docs/CONFIGURATION_MODEL.md` - data-driven report layout design
-- `docs/RELEASE_AND_DEPLOYMENT.md` - GitHub, updater, S-drive, and installer plan
-- `docs/decisions/0001-adopt-tauri-react-rust.md` - stack decision record
+Current authoritative documentation lives in `docs/`:
+
+- `docs/README.md` — Documentation index
+- `docs/OVERVIEW.md` — Current status, pilot features, stack, and remaining work
+- `docs/ARCHITECTURE.md` — Runtime shape, responsibilities, data flow, Excel approach
+- `docs/LEGACY_BEHAVIOR.md` — Constraints to preserve and behaviors to correct (read this)
+- `docs/CONFIGURATION_MODEL.md` — How to work with report layout profiles and mappings
+- `docs/PROJECT_STRUCTURE.md` — Repository layout and ownership
+- `docs/RELEASE_AND_DEPLOYMENT.md` — Release, signing, S-drive, and GitHub practice
+- `docs/decisions/` — Key architectural decisions
+
+Historical and superseded detailed planning material remains in `old-docs/` for reference. Prefer the documents under `docs/`.
 
 ## Remaining Work Before Broad Cutover
 
@@ -130,22 +137,20 @@ scripts/                 Build, release, smoke-test, and helper scripts
 
 ## Current Development Commands
 
-Use the Bun helper so this repo does not depend on a broken global shim:
-
 ```powershell
-node scripts/run-bun.mjs install
-node scripts/run-bun.mjs run dev:frontend
-node scripts/run-bun.mjs run build
-node scripts/run-bun.mjs run test
-node scripts/run-bun.mjs run lint
+bun install
+bun run desktop          # start full Tauri desktop dev (frontend + backend)
+bun run dev:frontend     # frontend dev server only
+bun run build
+bun run test
+bun run lint
 ```
 
 Backend checks:
 
 ```powershell
-cd backend
-cargo test
-cargo fmt --check
+cargo test --manifest-path backend\Cargo.toml
+cargo fmt --manifest-path backend\Cargo.toml --check
 ```
 
 ## Legacy Source Reference

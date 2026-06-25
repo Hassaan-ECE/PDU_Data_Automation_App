@@ -1,128 +1,47 @@
 # Project Structure
 
-The repository is intentionally split by responsibility.
+The repository is split by clear responsibility.
 
-For planned structure cleanup and migration guardrails, see
-[`STRUCTURE_CLEANUP_PLAN.md`](STRUCTURE_CLEANUP_PLAN.md).
-
-```text
+```
 PDU_Data_Automation_App/
-  .github/
-    workflows/
-  backend/
-  config/
-    report-layouts/
-  docs/
-    decisions/
-  fixtures/
-  frontend/
-  release/
-  scripts/
-  shared/
+├── .github/workflows/          # CI (source validation only on windows-latest)
+├── backend/                    # Tauri 2 + Rust crate (the real backend)
+│   ├── src/
+│   │   ├── automation/         # CSV, processors, mapped writes, reports, state
+│   │   ├── config/             # layout profile + accuracy loading
+│   │   ├── commands.rs         # thin Tauri command boundary
+│   │   └── lib.rs / main.rs
+│   ├── tests/                  # integration-style tests (fixtures, Excel fidelity)
+│   └── tauri.conf.json
+├── config/report-layouts/      # Versioned data-driven profiles (source of truth for mappings)
+├── docs/                       # Current project documentation (this folder)
+├── fixtures/                   # Safe synthetic CSVs + minimal workbooks for tests
+├── frontend/                   # React + TS + Vite + Tailwind
+│   └── src/features/test-panel/  # The operator panel (main UI surface)
+├── release/                    # Local release notes only (generated artifacts ignored)
+├── scripts/                    # Validation, release helpers, and checks
+├── shared/                     # Cross-cutting contracts
+│   └── schemas/                # report-layout.schema.json
+├── AGENTS.md
+├── package.json                # Root task runner (Bun)
+└── README.md
 ```
 
-## `backend/`
+## Key Areas
 
-Tauri/Rust backend.
+- `backend/` — owns file system work, CSV parsing, verification, Excel patching, and all report logic. Commands in `commands.rs` are intentionally thin.
+- `frontend/` — owns operator interaction only. Currently the majority of the UI lives in `OperatorPanel.tsx` (will be split as complexity grows).
+- `config/report-layouts/` — the production `pdu500.rev02.layout.json` and accuracy thresholds. Prefer editing here over code.
+- `fixtures/` — deliberately small, safe data. Tests copy them to temp dirs.
+- `docs/` — living documentation. Historical plans and old detailed notes live in `old-docs/`.
+- `scripts/` — validation scripts, version checks, and local release helpers. Use `bun run validate` (and other `bun run` commands) directly. See `scripts/README.md` for details.
 
-Current responsibilities:
+## What Belongs Where
 
-- Tauri command handlers
-- unit-folder scanning
-- CSV parsing
-- report-layout config loading
-- Excel report writing
-- native file dialogs and open-report behavior
-- updater/release integration
+- New report mappings or threshold changes → `config/report-layouts/`
+- New tasks or panel layout changes → update layout profile + frontend task model (eventually profile-driven)
+- New backend behavior → Rust under `automation/` + tests
+- Operator UX or state changes → frontend
+- Release/installer behavior → validate with `build:desktop` locally; keep generated artifacts out of git
 
-`backend/src/commands.rs` is the thin Tauri command boundary. Domain behavior stays under
-`backend/src/automation/` and config/profile loading stays under `backend/src/config/`.
-
-## `frontend/`
-
-React/Vite frontend.
-
-Current responsibilities:
-
-- operator test panel
-- status and timer display
-- task state rendering
-- log/error display
-- updater status display
-
-Possible future responsibilities:
-
-- settings screens for template path, active layout profile, and release/update controls
-
-## `config/report-layouts/`
-
-Versioned report layout profiles.
-
-These files describe the production task/profile shape. The current profile uses `processor` fields for tasks whose cell/source logic still lives in Rust processors.
-
-## `fixtures/`
-
-Synthetic or sanitized test data.
-
-Current and expected contents:
-
-- sample unit folder structures
-- small CSV files for each test type
-- safe workbook templates
-- expected output snapshots where useful
-
-Do not store confidential production data here.
-
-## `scripts/`
-
-Build, smoke-test, and release helper scripts.
-
-Current scripts:
-
-- Bun runner helper
-- version consistency check
-- fixture smoke script
-- full local validation runner
-
-Possible future scripts:
-
-- release staging script
-- S-drive publishing helper
-
-## `shared/`
-
-Cross-cutting contracts that have an explicit source-of-truth rule.
-
-Current contents:
-
-- JSON Schema for report-layout config validation
-
-Do not add duplicated handwritten Rust/TypeScript IPC types here without a generation or schema
-strategy.
-
-## `.github/workflows/`
-
-Source validation CI.
-
-Current workflow:
-
-- installs Bun and Rust on Windows
-- runs the local validation script
-- does not build signed installers, publish releases, touch S-drive paths, or require updater keys
-
-## `release/`
-
-Release staging notes only.
-
-Generated installers and updater artifacts should stay ignored by Git and be copied to GitHub/S-drive during release.
-
-## `docs/`
-
-Durable project documentation:
-
-- architecture
-- migration plan
-- release plan
-- legacy behavior
-- configuration model
-- decision records
+Do not add large new top-level folders without a clear ownership reason.

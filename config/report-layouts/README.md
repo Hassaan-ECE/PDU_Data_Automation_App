@@ -17,4 +17,4 @@ Rules:
 - Validate profiles in backend tests before using them with real reports.
 - Do not store generated reports here.
 
-See `docs/CONFIGURATION_MODEL.md`.
+See [docs/CONFIGURATION_MODEL.md](../../docs/CONFIGURATION_MODEL.md).

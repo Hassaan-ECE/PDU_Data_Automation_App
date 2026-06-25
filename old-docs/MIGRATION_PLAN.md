@@ -142,7 +142,7 @@ Tasks:
 
 - Keep testing workbook patching against safe template copies.
 - Compare before/after workbook structure when templates change.
-- Document the final workbook patching decision under `docs/decisions/`.
+- Document the final workbook patching decision under `old-docs/decisions/`.
 
 Current status:
 
