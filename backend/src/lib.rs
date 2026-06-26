@@ -2,6 +2,8 @@ pub mod automation;
 pub mod commands;
 pub mod config;
 
+use tauri::Manager;
+
 pub fn run() {
     let process_start = commands::process_start();
 
@@ -9,7 +11,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .setup(move |_app| {
+        .setup(move |app| {
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                config::set_runtime_resource_dir(resource_dir);
+            }
             commands::mark_window_setup_elapsed(process_start.elapsed());
             Ok(())
         })

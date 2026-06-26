@@ -67,6 +67,18 @@ Accuracy thresholds live in a separate file (or can be embedded later) and are u
 
 Never edit production reports directly — always work against safe copies during development.
 
+## Runtime Loading Order
+
+The app resolves layout configuration in this order:
+
+1. Explicit environment override (`PDU_LAYOUT_PROFILE_PATH` for the layout profile, `PDU_ACCURACY_THRESHOLDS_PATH` for thresholds).
+2. Bundled Tauri resources registered from the app resource directory. Current release output stores these under `_up_/config/report-layouts/`.
+3. Development/source-tree paths such as `config/report-layouts/` and `../config/report-layouts/`.
+4. External pilot path `C:/PDU500/config/report-layouts/`.
+5. Compile-time built-in defaults via `include_str!` as the last safety fallback.
+
+Use the environment override when testing an edited profile or threshold file without rebuilding the app.
+
 ## Why JSON
 
 - Strict, diff-friendly, no extra parser dependency.

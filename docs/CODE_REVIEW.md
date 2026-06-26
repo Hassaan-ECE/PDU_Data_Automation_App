@@ -11,7 +11,7 @@
 
 The v0.2.10 pilot is a solid, well-engineered replacement that largely succeeds at preserving the legacy operator workflow and visual model while moving toward the intended architecture. Strengths include strict no-silent-zero CSV handling, high-fidelity Excel patching with extensive fidelity tests, unit_state-driven restart resilience and idempotency, batched previous-test report writes, a working mapped data-driven path for at least transformer writes, and clear error surfacing. The separation of concerns (frontend UI/workflow, Rust file/CSV/Excel logic, config-driven mappings) is mostly respected.
 
-Main remaining risk areas: runtime config discovery ships Tauri resources but does not resolve them at runtime; OperatorPanel.tsx is still monolithic (~2500 LOC); task definitions are duplicated across taskModel.ts / tasks.rs / layout JSONs; profile/config loading is repeated frequently; and the report-write Windows replace path is still delete+rename rather than an atomic replace. The app is pilot-ready for limited production comparison but carries maintenance and deployment risks if not addressed before full cut-over.
+Main remaining risk areas: OperatorPanel.tsx is still monolithic (~2500 LOC); task definitions are duplicated across taskModel.ts / tasks.rs / layout JSONs; profile/config loading is repeated frequently; and the report-write Windows replace path is still delete+rename rather than an atomic replace. The app is pilot-ready for limited production comparison but carries maintenance and deployment risks if not addressed before full cut-over.
 
 ## Architecture & Structure
 
@@ -31,6 +31,7 @@ Main remaining risk areas: runtime config discovery ships Tauri resources but do
 ### Positive observations
 - `automation/mod.rs` cleanly dispatches to mapped vs processor; `build_summary`, `task_csv_match`, and readiness checks centralize state merging.
 - Layout profile loading now fails loudly for unreadable, invalid JSON, or semantically invalid profiles. Scan/build-summary and task processing use a validated profile instead of silently falling back to built-in processors.
+- Tauri app setup now registers the runtime resource directory, and profile/accuracy loaders resolve bundled `config/report-layouts` resources (including the current `_up_/config/report-layouts` release shape) before falling back to dev/external paths and compile-time defaults.
 - Report setup and latest-unit suggestion now use `profile.templates.default_template_root` instead of the old hardcoded `C:/PDU500/00_Template` directory.
 - Report setup, report discovery, built-in processor report lookup, and mapped workbook lookup now use profile-derived template names and `workbooks.*.file_pattern` for main/print reports.
 - `reports.rs` Excel path is strong overall (WorkbookLock file mutex, temporary `.bak` during replacement/rollback, transactional multi-patch rollback, same-workbook patch aggregation, force recalc, style preservation), with the Windows replace caveat called out below.
@@ -63,9 +64,9 @@ Main remaining risk areas: runtime config discovery ships Tauri resources but do
 
 ### Issue 4 -- Severity: bug
 - File: backend/src/config/profile.rs:220 (load_layout_profile and candidate_profile_paths)
-- Description: Runtime discovery only searches relative to cwd ("config/...", "../config/...") and hard `C:/PDU500/config/...`. The `resources` entry in `backend/tauri.conf.json:35` ("../config/report-layouts/*.json") ships the files, but the Rust loaders do not resolve the bundled resource location. The built-in `include_str!` fallback prevents a hard failure, but it also means installed builds do not actually exercise the packaged JSON resource unless an external `C:/PDU500/config/...` file exists.
-- Suggestion: Thread an app/resource path into the profile and accuracy loaders, or add Tauri-aware loader variants that resolve the bundled `config/report-layouts` resource directory before falling back to dev paths and built-in defaults. Add an integration test that simulates a bundled layout and distinguishes "loaded from resource" from "loaded from include_str".
-- Status: open
+- Description: Originally, runtime discovery only searched relative to cwd ("config/...", "../config/...") and hard `C:/PDU500/config/...`. The `resources` entry in `backend/tauri.conf.json` shipped layout files, but Rust loaders did not resolve the bundled resource location, so installed builds could bypass packaged JSON and use compile-time `include_str!` defaults. This has been fixed: Tauri setup registers `app.path().resource_dir()`, a shared resource-path helper resolves the current `_up_/config/report-layouts` bundle shape plus tolerant fallback shapes, and both profile and accuracy threshold loaders use those candidates before dev/external paths and built-in defaults.
+- Suggestion: Treat the original resource-resolution bug as resolved. Remaining hardening: run a real installed-build smoke test on a clean machine/profile with no cwd or `C:/PDU500/config` override to confirm the packaged resource path matches production packaging.
+- Status: resolved on 2026-06-26, with clean-machine installed-build smoke as future release validation
 
 ### Issue 5 -- Severity: bug
 - File: backend/src/automation/unit_state.rs and backend/src/automation/mod.rs
@@ -150,15 +151,15 @@ Main remaining risk areas: runtime config discovery ships Tauri resources but do
 - New template-root tests cover setup using a supplied template root and unit-candidate roots following the profile template root parent.
 - New report file config tests cover custom template filenames and custom workbook discovery patterns; profile tests now require `main` and `print` workbook definitions.
 - New batch-processing tests cover multiple passing tasks recorded after commit, idempotent/same-workbook patch aggregation behavior, commit failure without tentative pass recording, and partial commit before a later verification failure. Frontend setup coverage now verifies that "Run Previous Tests" calls the batch command instead of the single-task command.
-- Gaps: no automated test that a freshly bundled installer can load its packaged layout JSON without C:/PDU500 or cwd layout. Limited frontend coverage of the full runner + state machine beyond setup/scroll/updater and the batch command hook-in. No stress test for concurrent process + scan + print at the command/UI orchestration level.
+- Gaps: resource-loader unit tests simulate the bundled `_up_/config/report-layouts` path, but there is not yet a true installed-build smoke test on a clean machine/profile with no cwd or `C:/PDU500/config` override. Limited frontend coverage of the full runner + state machine beyond setup/scroll/updater and the batch command hook-in. No stress test for concurrent process + scan + print at the command/UI orchestration level.
 
 ## Packaging, Bundling, Updater, Installer Notes
 
-- Resources declaration is present but unused by the current Rust loaders at runtime (see Issue 4). Built-in `include_str!` defaults reduce install-time failure risk but bypass the packaged resource files.
+- Resources declaration is now used by the Rust loaders at runtime: Tauri setup registers the resource directory and config loaders check bundled layout resources before dev/external paths and built-in defaults.
 - Updater is readiness-based and uses GitHub latest.json (correct per AGENTS).
 - NSIS currentUser installer is the right choice.
 - Version consistency script exists (`scripts/release/check-version-consistency.mjs`).
-- Risk: if packaged layout JSONs are not resolved after install, the app uses compile-time include defaults unless an external `C:/PDU500/config/...` file exists. Invalid external layout profiles now fail visibly instead of silently falling back.
+- Built-in `include_str!` defaults remain as a final safety fallback. Invalid external layout profiles continue to fail visibly instead of silently falling back.
 
 ## Other Positive Details
 
@@ -169,14 +170,13 @@ Main remaining risk areas: runtime config discovery ships Tauri resources but do
 - Docs are accurate and useful (LEGACY_BEHAVIOR.md, ARCHITECTURE.md, CONFIGURATION_MODEL.md).
 
 ## Recommendations (priority order)
-1. Implement proper Tauri resource resolution for layouts (Issue 4) and test in a packaged build.
-2. Split OperatorPanel.tsx and drive more of the panel from the profile (Issues 6, 7).
-3. Continue migrating remaining tasks to mappings + remove duplication.
-4. Decide and implement the acceptance override policy (Issue 15).
-5. Add a "packaged layout load" test.
-6. Later hardening: cache profile/config loads (Issue 8), stale-lock recovery for `unit_state.lock` and workbook locks, explicit serial placeholder config, shared wildcard matching helper, and an end-to-end invalid-profile command test.
+1. Split OperatorPanel.tsx and drive more of the panel from the profile (Issues 6, 7).
+2. Continue migrating remaining tasks to mappings + remove duplication.
+3. Decide and implement the acceptance override policy (Issue 15).
+4. Add a clean-machine installed-build packaged-resource smoke test.
+5. Later hardening: cache profile/config loads (Issue 8), stale-lock recovery for `unit_state.lock` and workbook locks, explicit serial placeholder config, shared wildcard matching helper, and an end-to-end invalid-profile command test.
 
-This review has been updated after the `unit_state` error-handling/locking fixes, layout-profile failure-handling fixes, profile-driven template-root fix, profile-driven report filename/discovery fix, and previous-test batch report-write optimization landed.
+This review has been updated after the `unit_state` error-handling/locking fixes, layout-profile failure-handling fixes, profile-driven template-root fix, profile-driven report filename/discovery fix, previous-test batch report-write optimization, and packaged resource-resolution fix landed.
 
 ## Files Referenced (selected)
 - backend/src/automation/{mod.rs, reports.rs, processors.rs, mapped.rs, csv_data.rs, tasks.rs, unit_state.rs, unit_candidates.rs}

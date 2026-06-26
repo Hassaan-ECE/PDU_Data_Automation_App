@@ -1,9 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+#[cfg(test)]
+use std::path::Path;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use super::resource_paths;
 
 const PROFILE_FILE_NAME: &str = "pdu500.rev02.layout.json";
 const DEFAULT_PROFILE_JSON: &str =
@@ -225,7 +229,13 @@ pub fn load_layout_profile() -> Result<ReportLayoutProfile, LayoutProfileError> 
         return load_from_path(path);
     }
 
-    for path in candidate_profile_paths() {
+    load_layout_profile_from_candidates(candidate_profile_paths())
+}
+
+fn load_layout_profile_from_candidates(
+    candidate_paths: Vec<PathBuf>,
+) -> Result<ReportLayoutProfile, LayoutProfileError> {
+    for path in candidate_paths {
         if path.is_file() {
             return load_from_path(path);
         }
@@ -239,32 +249,17 @@ fn configured_profile_path() -> Option<PathBuf> {
 }
 
 fn candidate_profile_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+    resource_paths::report_layout_candidate_paths(PROFILE_FILE_NAME)
+}
 
-    if let Ok(current_dir) = std::env::current_dir() {
-        paths.push(
-            current_dir
-                .join("config")
-                .join("report-layouts")
-                .join(PROFILE_FILE_NAME),
-        );
-        paths.push(
-            current_dir
-                .join("..")
-                .join("config")
-                .join("report-layouts")
-                .join(PROFILE_FILE_NAME),
-        );
-    }
-
-    paths.push(
-        PathBuf::from("C:/PDU500")
-            .join("config")
-            .join("report-layouts")
-            .join(PROFILE_FILE_NAME),
-    );
-
-    paths
+#[cfg(test)]
+fn load_layout_profile_with_resource_dir(
+    resource_dir: &Path,
+) -> Result<ReportLayoutProfile, LayoutProfileError> {
+    load_layout_profile_from_candidates(resource_paths::report_layout_candidate_paths_for(
+        PROFILE_FILE_NAME,
+        Some(resource_dir),
+    ))
 }
 
 fn load_from_path(path: PathBuf) -> Result<ReportLayoutProfile, LayoutProfileError> {
@@ -783,6 +778,34 @@ mod tests {
         let error = load_from_path(profile_path).expect_err("invalid JSON should fail");
 
         assert!(matches!(error, LayoutProfileError::InvalidJson { .. }));
+    }
+
+    #[test]
+    fn load_with_resource_dir_uses_bundled_profile_before_builtin() {
+        let temp = TempDir::new().expect("temp dir");
+        let resource_profile_dir = temp
+            .path()
+            .join("_up_")
+            .join("config")
+            .join("report-layouts");
+        fs::create_dir_all(&resource_profile_dir).expect("create resource layout dir");
+        let resource_json = DEFAULT_PROFILE_JSON
+            .replace(
+                r#""profile_id": "pdu500.rev02""#,
+                r#""profile_id": "pdu500.rev02.resource-test""#,
+            )
+            .replace(
+                r#""display_name": "PDU500 0.2CT Rev02""#,
+                r#""display_name": "Resource Loaded Layout""#,
+            );
+        fs::write(resource_profile_dir.join(PROFILE_FILE_NAME), resource_json)
+            .expect("write resource profile");
+
+        let profile =
+            load_layout_profile_with_resource_dir(temp.path()).expect("resource profile loads");
+
+        assert_eq!(profile.profile_id, "pdu500.rev02.resource-test");
+        assert_eq!(profile.display_name, "Resource Loaded Layout");
     }
 
     #[test]

@@ -1,8 +1,12 @@
 use std::fs;
+#[cfg(test)]
+use std::path::Path;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer};
 use thiserror::Error;
+
+use super::resource_paths;
 
 const ACCURACY_THRESHOLDS_FILE_NAME: &str = "pdu500.accuracy-thresholds.json";
 const DEFAULT_ACCURACY_THRESHOLDS_JSON: &str =
@@ -157,7 +161,13 @@ pub fn load_accuracy_thresholds() -> Result<AccuracyThresholdConfig, AccuracyThr
         return load_from_path(path);
     }
 
-    for path in candidate_threshold_paths() {
+    load_accuracy_thresholds_from_candidates(candidate_threshold_paths())
+}
+
+fn load_accuracy_thresholds_from_candidates(
+    candidate_paths: Vec<PathBuf>,
+) -> Result<AccuracyThresholdConfig, AccuracyThresholdError> {
+    for path in candidate_paths {
         if path.is_file() {
             return load_from_path(path);
         }
@@ -174,32 +184,17 @@ fn configured_threshold_path() -> Option<PathBuf> {
 }
 
 fn candidate_threshold_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+    resource_paths::report_layout_candidate_paths(ACCURACY_THRESHOLDS_FILE_NAME)
+}
 
-    if let Ok(current_dir) = std::env::current_dir() {
-        paths.push(
-            current_dir
-                .join("config")
-                .join("report-layouts")
-                .join(ACCURACY_THRESHOLDS_FILE_NAME),
-        );
-        paths.push(
-            current_dir
-                .join("..")
-                .join("config")
-                .join("report-layouts")
-                .join(ACCURACY_THRESHOLDS_FILE_NAME),
-        );
-    }
-
-    paths.push(
-        PathBuf::from("C:/PDU500")
-            .join("config")
-            .join("report-layouts")
-            .join(ACCURACY_THRESHOLDS_FILE_NAME),
-    );
-
-    paths
+#[cfg(test)]
+fn load_accuracy_thresholds_with_resource_dir(
+    resource_dir: &Path,
+) -> Result<AccuracyThresholdConfig, AccuracyThresholdError> {
+    load_accuracy_thresholds_from_candidates(resource_paths::report_layout_candidate_paths_for(
+        ACCURACY_THRESHOLDS_FILE_NAME,
+        Some(resource_dir),
+    ))
 }
 
 fn load_from_path(path: PathBuf) -> Result<AccuracyThresholdConfig, AccuracyThresholdError> {
@@ -275,6 +270,10 @@ fn invalid_value(path: &str, message: &str) -> AccuracyThresholdError {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
     use super::*;
 
     #[test]
@@ -313,6 +312,34 @@ mod tests {
         assert_eq!(config.breaker.full_load.current, 0.3);
         assert_eq!(config.breaker.half_load.current, 0.3);
         assert_eq!(config.breaker.low_load.active_power, 0.6);
+    }
+
+    #[test]
+    fn load_with_resource_dir_uses_bundled_thresholds_before_builtin() {
+        let temp = TempDir::new().expect("temp dir");
+        let resource_threshold_dir = temp
+            .path()
+            .join("_up_")
+            .join("config")
+            .join("report-layouts");
+        fs::create_dir_all(&resource_threshold_dir).expect("create resource layout dir");
+        let resource_json = DEFAULT_ACCURACY_THRESHOLDS_JSON
+            .replace(
+                r#""profile_id": "pdu500.rev02.accuracy-thresholds""#,
+                r#""profile_id": "pdu500.rev02.accuracy-resource-test""#,
+            )
+            .replace(r#""current": 0.3"#, r#""current": 9.99"#);
+        fs::write(
+            resource_threshold_dir.join(ACCURACY_THRESHOLDS_FILE_NAME),
+            resource_json,
+        )
+        .expect("write resource thresholds");
+
+        let config = load_accuracy_thresholds_with_resource_dir(temp.path())
+            .expect("resource thresholds load");
+
+        assert_eq!(config.profile_id, "pdu500.rev02.accuracy-resource-test");
+        assert_eq!(config.system.full_load.current, 9.99);
     }
 
     #[test]
