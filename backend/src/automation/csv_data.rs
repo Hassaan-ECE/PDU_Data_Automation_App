@@ -328,46 +328,6 @@ pub fn find_latest_csv(root: &Path, step: u16, required_fragments: &[String]) ->
         .map(|(path, _)| path)
 }
 
-pub fn detected_steps(root: &Path) -> Vec<(u16, PathBuf)> {
-    let step_re = regex::Regex::new(r"_STEP(\d+)_").expect("step regex is valid");
-    let mut found = Vec::new();
-
-    for entry in WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-    {
-        let path = entry.path();
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-
-        if !path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"))
-        {
-            continue;
-        }
-
-        let Some(captures) = step_re.captures(file_name) else {
-            continue;
-        };
-
-        let Some(step) = captures
-            .get(1)
-            .and_then(|match_| match_.as_str().parse::<u16>().ok())
-        else {
-            continue;
-        };
-
-        found.push((step, path.to_path_buf()));
-    }
-
-    found
-}
-
 pub fn round_to(value: f64, digits: u32) -> f64 {
     let factor = 10_f64.powi(digits as i32);
     (value * factor).round() / factor

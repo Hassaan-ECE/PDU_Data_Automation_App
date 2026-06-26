@@ -126,13 +126,20 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     window.localStorage.clear();
   });
 
-  async function selectUnit(unitFolder = "C:\\PDU500\\262343000072", serialNumber = "262343000072") {
+  async function selectUnit(
+    unitFolder = "C:\\PDU500\\262343000072",
+    serialNumber = "262343000072",
+    summary = unitSummary(unitFolder, serialNumber),
+  ) {
     mocks.chooseUnitFolder.mockResolvedValue(unitFolder);
-    mocks.scanUnitFolder.mockResolvedValue(unitSummary(unitFolder, serialNumber));
+    mocks.setupUnitFolder.mockResolvedValue(summary);
     fireEvent.click(screen.getByRole("button", { name: "Browse unit folder" }));
 
     await waitFor(() => {
       expect(screen.getByLabelText("Selected test unit")).toHaveValue(serialNumber);
+    });
+    await waitFor(() => {
+      expect(mocks.setupUnitFolder).toHaveBeenCalledWith(unitFolder, "", serialNumber);
     });
   }
 
@@ -142,18 +149,9 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     fireEvent.change(screen.getByLabelText("Transformer SN"), {
       target: { value: "TX-PRINT" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
-
+    fireEvent.click(screen.getByRole("button", { name: "Save Transformer SN" }));
     await waitFor(() => {
-      expect(mocks.setupUnitFolder).toHaveBeenCalledWith(
-        "C:\\PDU500\\262343000072",
-        "TX-PRINT",
-        "262343000072",
-      );
-    });
-    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
+      expect(mocks.saveTransformerSn).toHaveBeenCalledWith("C:\\PDU500\\262343000072", "TX-PRINT");
     });
   }
 
@@ -178,9 +176,8 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     expect(within(reportActions).getByRole("button", { name: "Print Report" })).toBeInTheDocument();
   });
 
-  it("uses a browsed folder and Transformer SN for setup before starting", async () => {
+  it("sets up reports when a folder is selected and saves Transformer SN before starting", async () => {
     mocks.chooseUnitFolder.mockResolvedValue("C:\\PDU500\\11111111");
-    mocks.scanUnitFolder.mockResolvedValue(unitSummary("C:\\PDU500\\11111111", "11111111"));
     mocks.setupUnitFolder.mockResolvedValue(unitSummary("C:\\PDU500\\11111111", "11111111"));
 
     render(<App />);
@@ -190,10 +187,13 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     fireEvent.change(screen.getByLabelText("Transformer SN"), {
       target: { value: "TX-999" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save Transformer SN" }));
 
     await waitFor(() => {
-      expect(mocks.setupUnitFolder).toHaveBeenCalledWith("C:\\PDU500\\11111111", "TX-999", "11111111");
+      expect(mocks.setupUnitFolder).toHaveBeenCalledWith("C:\\PDU500\\11111111", "", "11111111");
+    });
+    await waitFor(() => {
+      expect(mocks.saveTransformerSn).toHaveBeenCalledWith("C:\\PDU500\\11111111", "TX-999");
     });
     expect(screen.queryByText("Unit Setup")).not.toBeInTheDocument();
   });
@@ -203,12 +203,15 @@ describe("OperatorPanel inline Transformer SN setup", () => {
 
     render(<App />);
 
-    await selectUnit();
+    mocks.chooseUnitFolder.mockResolvedValue("C:\\PDU500\\262343000072");
+    fireEvent.click(screen.getByRole("button", { name: "Browse unit folder" }));
+
+    await screen.findByText("main report workbook is locked");
 
     fireEvent.change(screen.getByLabelText("Transformer SN"), {
       target: { value: "TX-LOCKED" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save Transformer SN" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("main report workbook is locked");
     expect(screen.queryByText("Unit Setup")).not.toBeInTheDocument();
@@ -240,7 +243,7 @@ describe("OperatorPanel inline Transformer SN setup", () => {
 
     render(<App />);
 
-    await selectUnit();
+    await selectUnit("C:\\PDU500\\262343000072", "262343000072", unitSummary("C:\\PDU500\\262343000072", "262343000072", [detectedTransformerTask()]));
 
     fireEvent.change(screen.getByLabelText("Transformer SN"), {
       target: { value: "TX-DETECTED" },
@@ -255,6 +258,27 @@ describe("OperatorPanel inline Transformer SN setup", () => {
         "208v-transformer",
       ]);
     });
+    expect(mocks.processAutomationTask).not.toHaveBeenCalled();
+  });
+
+  it("can cancel the previous-tests prompt without starting", async () => {
+    render(<App />);
+
+    await selectUnit(
+      "C:\\PDU500\\262343000072",
+      "262343000072",
+      unitSummary("C:\\PDU500\\262343000072", "262343000072", [detectedTransformerTask()]),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    expect(await screen.findByText("Previous Tests Detected")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Previous Tests Detected")).not.toBeInTheDocument();
+    });
+    expect(mocks.processAutomationTasks).not.toHaveBeenCalled();
     expect(mocks.processAutomationTask).not.toHaveBeenCalled();
   });
 
@@ -427,15 +451,6 @@ describe("OperatorPanel inline Transformer SN setup", () => {
 
     await selectUnit();
 
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
-    await waitFor(() => {
-      expect(mocks.setupUnitFolder).toHaveBeenCalled();
-    });
-    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
-    });
-
     fireEvent.click(screen.getByRole("button", { name: "Print Report" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Transformer SN is missing.");
     expect(screen.queryByLabelText("Operator name")).not.toBeInTheDocument();
@@ -454,16 +469,6 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     render(<App />);
 
     await selectUnit();
-
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
-    await waitFor(() => {
-      expect(mocks.setupUnitFolder).toHaveBeenCalled();
-    });
-
-    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
-    });
 
     fireEvent.click(screen.getByRole("button", { name: "Open Report" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Transformer SN is missing.");
@@ -495,15 +500,6 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     render(<App />);
 
     await selectUnit();
-
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
-    await waitFor(() => {
-      expect(mocks.setupUnitFolder).toHaveBeenCalled();
-    });
-    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
-    });
 
     fireEvent.click(screen.getByText("208V Transformer Check"));
     expect(await screen.findByText("Step Failed")).toBeInTheDocument();

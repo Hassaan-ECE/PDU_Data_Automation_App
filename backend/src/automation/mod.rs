@@ -8,7 +8,7 @@ mod unit_state;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -19,9 +19,7 @@ use thiserror::Error;
 
 use crate::config::{load_layout_profile, LayoutProfileError, ReportLayoutProfile, TaskDefinition};
 
-use self::csv_data::{
-    csv_fingerprint, csv_metadata_matches_fingerprint, detected_steps, find_latest_csv,
-};
+use self::csv_data::{csv_fingerprint, csv_metadata_matches_fingerprint};
 use self::processors::{FailureDetail, ProcessorResult, ProcessorTaskOutput};
 use self::reports::{
     inspect_reports_with_config, patch_workbooks_transactional,
@@ -1000,25 +998,20 @@ fn build_summary_with_profile(
     report_setup: ReportSetup,
     profile: &ReportLayoutProfile,
 ) -> Result<UnitFolderSummary, AutomationError> {
-    let detected = detected_steps(unit_folder);
-    let mut steps_to_paths = HashMap::<u16, Vec<PathBuf>>::new();
-
-    for (step, path) in detected {
-        steps_to_paths.entry(step).or_default().push(path);
-    }
-
     let mut detected_task_ids = HashSet::<String>::new();
+    let csv_index = CsvScanIndex::scan(unit_folder);
     let automation_tasks = automation_tasks();
+    let csv_matches = automation_tasks
+        .iter()
+        .map(|task| (task.id.clone(), task_csv_match(task, profile, &csv_index)))
+        .collect::<HashMap<_, _>>();
     let seeds = automation_tasks
         .iter()
         .map(|task| {
-            let detected_for_task = task
-                .detection_steps
-                .iter()
-                .copied()
-                .filter(|step| steps_to_paths.contains_key(step))
-                .collect::<Vec<_>>();
-            let csv_match = task_csv_match(unit_folder, task, profile);
+            let detected_for_task = csv_index.detected_steps_for_task(&task.detection_steps);
+            let csv_match = csv_matches
+                .get(&task.id)
+                .expect("csv match should exist for task");
 
             TaskStateSeed {
                 task_id: task.id.clone(),
@@ -1042,28 +1035,25 @@ fn build_summary_with_profile(
     let tasks = automation_tasks
         .into_iter()
         .map(|task| {
-            let detected_for_task = task
-                .detection_steps
-                .iter()
-                .copied()
-                .filter(|step| steps_to_paths.contains_key(step))
-                .collect::<Vec<_>>();
-            let latest_csv_info = latest_csv_for_steps(&task.detection_steps, &steps_to_paths);
+            let detected_for_task = csv_index.detected_steps_for_task(&task.detection_steps);
+            let latest_csv_info = csv_index.latest_for_steps(&task.detection_steps);
             let latest_csv = latest_csv_info
                 .as_ref()
                 .map(|info| info.path.display().to_string());
             let latest_csv_created_ms = latest_csv_info.as_ref().and_then(|info| info.created_ms);
             let latest_csv_readable = latest_csv_info.as_ref().map(|info| info.readable);
-            let timer_start_ms =
-                timer_start_millis_for_steps(&task.detection_steps, &steps_to_paths)
-                    .or(latest_csv_created_ms);
+            let timer_start_ms = csv_index
+                .timer_start_millis_for_steps(&task.detection_steps)
+                .or(latest_csv_created_ms);
             let detected_state = if detected_for_task.is_empty() {
                 "off"
             } else {
                 detected_task_ids.insert(task.id.clone());
                 "detected"
             };
-            let csv_match = task_csv_match(unit_folder, &task, profile);
+            let csv_match = csv_matches
+                .get(&task.id)
+                .expect("csv match should exist for task");
             let persisted = state.tasks.get(&task.id);
             let state = persisted
                 .map(|entry| merged_summary_state(entry, detected_state))
@@ -1080,7 +1070,7 @@ fn build_summary_with_profile(
                 latest_csv_readable,
                 timer_start_ms,
                 processable: csv_match.processable,
-                match_reason: csv_match.reason,
+                match_reason: csv_match.reason.clone(),
                 source_csv_path: persisted.and_then(|entry| entry.source_csv_path.clone()),
                 csv_fingerprint: persisted.and_then(|entry| entry.csv_fingerprint.clone()),
                 processed_at: persisted.and_then(|entry| entry.processed_at.clone()),
@@ -1133,6 +1123,138 @@ struct TaskCsvMatch {
     reason: String,
 }
 
+#[derive(Debug, Clone)]
+struct CsvScanEntry {
+    path: PathBuf,
+    step: Option<u16>,
+    file_name_upper: String,
+    modified: SystemTime,
+    created_ms: Option<u64>,
+    readable: bool,
+}
+
+#[derive(Debug, Clone)]
+struct CsvScanIndex {
+    entries: Vec<CsvScanEntry>,
+}
+
+impl CsvScanIndex {
+    fn scan(root: &Path) -> Self {
+        let step_re = Regex::new(r"_STEP(\d+)_").expect("step regex is valid");
+        let entries = walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .filter_map(|entry| {
+                let path = entry.into_path();
+
+                if !path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"))
+                {
+                    return None;
+                }
+
+                let file_name = path.file_name()?.to_str()?;
+                let file_name_upper = file_name.to_ascii_uppercase();
+                let step = step_re
+                    .captures(file_name)
+                    .and_then(|captures| captures.get(1))
+                    .and_then(|match_| match_.as_str().parse::<u16>().ok());
+                let metadata = path.metadata().ok();
+                let modified = metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.modified().ok())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                let created_ms = metadata.as_ref().and_then(csv_start_time_millis);
+                let readable = csv_file_is_readable(&path);
+
+                Some(CsvScanEntry {
+                    path,
+                    step,
+                    file_name_upper,
+                    modified,
+                    created_ms,
+                    readable,
+                })
+            })
+            .collect();
+
+        Self { entries }
+    }
+
+    fn detected_steps_for_task(&self, steps: &[u16]) -> Vec<u16> {
+        steps
+            .iter()
+            .copied()
+            .filter(|step| self.has_step(*step))
+            .collect()
+    }
+
+    fn has_step(&self, step: u16) -> bool {
+        self.entries.iter().any(|entry| entry.step == Some(step))
+    }
+
+    fn latest_for_steps(&self, steps: &[u16]) -> Option<&CsvScanEntry> {
+        steps
+            .iter()
+            .filter_map(|step| self.latest_for_step(*step))
+            .max_by_key(|entry| entry.modified)
+    }
+
+    fn timer_start_millis_for_steps(&self, steps: &[u16]) -> Option<u64> {
+        steps.iter().find_map(|step| {
+            self.latest_for_step(*step)
+                .and_then(|entry| entry.created_ms)
+        })
+    }
+
+    fn latest_for_step(&self, step: u16) -> Option<&CsvScanEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.step == Some(step))
+            .max_by_key(|entry| entry.modified)
+    }
+
+    fn latest_for_step_fragments(
+        &self,
+        step: u16,
+        required_fragments: &[String],
+    ) -> Option<&CsvScanEntry> {
+        let required_fragments = required_fragments
+            .iter()
+            .map(|fragment| fragment.to_ascii_uppercase())
+            .collect::<Vec<_>>();
+
+        self.entries
+            .iter()
+            .filter(|entry| entry.step == Some(step))
+            .filter(|entry| {
+                required_fragments
+                    .iter()
+                    .all(|fragment| entry.file_name_upper.contains(fragment))
+            })
+            .max_by_key(|entry| entry.modified)
+    }
+
+    fn latest_by_pattern(&self, pattern: &str) -> Option<&CsvScanEntry> {
+        let pattern = wildcard_pattern_to_regex(pattern)?;
+
+        self.entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| pattern.is_match(name))
+            })
+            .max_by_key(|entry| entry.modified)
+    }
+}
+
 fn merged_summary_state(entry: &unit_state::UnitTaskState, detected_state: &str) -> String {
     if entry.accepted.accepted {
         return "pass".to_string();
@@ -1145,23 +1267,25 @@ fn merged_summary_state(entry: &unit_state::UnitTaskState, detected_state: &str)
 }
 
 fn task_csv_match(
-    unit_folder: &Path,
     task: &tasks::AutomationTask,
     profile: &ReportLayoutProfile,
+    csv_index: &CsvScanIndex,
 ) -> TaskCsvMatch {
-    if let Some(mapped_path) = mapped_csv_match(profile, unit_folder, &task.id) {
-        let readable = csv_file_is_readable(&mapped_path);
+    if let Some(mapped_csv) = mapped_csv_match(profile, csv_index, &task.id) {
         return TaskCsvMatch {
-            reason: if readable {
-                format!("matched configured CSV pattern: {}", mapped_path.display())
+            reason: if mapped_csv.readable {
+                format!(
+                    "matched configured CSV pattern: {}",
+                    mapped_csv.path.display()
+                )
             } else {
                 format!(
                     "configured CSV is not readable yet: {}",
-                    mapped_path.display()
+                    mapped_csv.path.display()
                 )
             },
-            processable: readable,
-            path: Some(mapped_path),
+            processable: mapped_csv.readable,
+            path: Some(mapped_csv.path.clone()),
         };
     }
 
@@ -1173,22 +1297,19 @@ fn task_csv_match(
         };
     };
 
-    match find_latest_csv(unit_folder, step, &fragments) {
-        Some(path) => {
-            let readable = csv_file_is_readable(&path);
-            TaskCsvMatch {
-                reason: if readable {
-                    format!("matched required STEP{step} CSV: {}", path.display())
-                } else {
-                    format!(
-                        "required STEP{step} CSV is not readable yet: {}",
-                        path.display()
-                    )
-                },
-                processable: readable,
-                path: Some(path),
-            }
-        }
+    match csv_index.latest_for_step_fragments(step, &fragments) {
+        Some(csv) => TaskCsvMatch {
+            reason: if csv.readable {
+                format!("matched required STEP{step} CSV: {}", csv.path.display())
+            } else {
+                format!(
+                    "required STEP{step} CSV is not readable yet: {}",
+                    csv.path.display()
+                )
+            },
+            processable: csv.readable,
+            path: Some(csv.path.clone()),
+        },
         None => TaskCsvMatch {
             path: None,
             processable: false,
@@ -1202,12 +1323,12 @@ fn task_csv_match(
 
 fn mapped_csv_match(
     profile: &ReportLayoutProfile,
-    unit_folder: &Path,
+    csv_index: &CsvScanIndex,
     task_id: &str,
-) -> Option<PathBuf> {
+) -> Option<CsvScanEntry> {
     let task = profile_task(profile, task_id).filter(|task| !task.mappings.is_empty())?;
 
-    mapped::find_latest_file_by_pattern(unit_folder, &task.csv_pattern)
+    csv_index.latest_by_pattern(&task.csv_pattern).cloned()
 }
 
 fn built_in_csv_requirement(task: &tasks::AutomationTask) -> Option<(u16, Vec<String>)> {
@@ -1241,63 +1362,27 @@ fn built_in_csv_requirement(task: &tasks::AutomationTask) -> Option<(u16, Vec<St
     }
 }
 
-#[derive(Debug, Clone)]
-struct CsvFileInfo {
-    path: PathBuf,
-    modified: SystemTime,
-    created_ms: Option<u64>,
-    readable: bool,
-}
-
-fn latest_csv_for_steps(
-    steps: &[u16],
-    steps_to_paths: &HashMap<u16, Vec<PathBuf>>,
-) -> Option<CsvFileInfo> {
-    steps
-        .iter()
-        .filter_map(|step| steps_to_paths.get(step))
-        .filter_map(|paths| latest_csv_for_paths(paths))
-        .max_by_key(|info| info.modified)
-}
-
-fn timer_start_millis_for_steps(
-    steps: &[u16],
-    steps_to_paths: &HashMap<u16, Vec<PathBuf>>,
-) -> Option<u64> {
-    steps.iter().find_map(|step| {
-        steps_to_paths
-            .get(step)
-            .and_then(|paths| latest_csv_for_paths(paths))
-            .and_then(|info| info.created_ms)
-    })
-}
-
-fn latest_csv_for_paths(paths: &[PathBuf]) -> Option<CsvFileInfo> {
-    paths
-        .iter()
-        .filter_map(|path| {
-            let metadata = path.metadata().ok()?;
-            let modified = metadata.modified().ok()?;
-            let created_ms = csv_start_time_millis(&metadata);
-            let readable = csv_file_is_readable(path);
-
-            Some(CsvFileInfo {
-                path: path.clone(),
-                modified,
-                created_ms,
-                readable,
-            })
-        })
-        .max_by_key(|info| info.modified)
-}
-
 fn csv_file_is_readable(path: &Path) -> bool {
-    let Ok(mut file) = fs::File::open(path) else {
-        return false;
-    };
-    let mut buffer = [0_u8; 1];
+    fs::File::open(path).is_ok()
+}
 
-    file.read(&mut buffer).is_ok()
+fn wildcard_pattern_to_regex(pattern: &str) -> Option<Regex> {
+    if pattern.trim().is_empty() {
+        return None;
+    }
+
+    let mut regex = String::from("(?i)^");
+
+    for ch in pattern.chars() {
+        match ch {
+            '*' => regex.push_str(".*"),
+            '?' => regex.push('.'),
+            _ => regex.push_str(&regex::escape(&ch.to_string())),
+        }
+    }
+
+    regex.push('$');
+    Regex::new(&regex).ok()
 }
 
 fn is_locked_file_error(error: &std::io::Error) -> bool {
@@ -1804,24 +1889,77 @@ mod smoke_tests {
     #[test]
     fn timer_start_prefers_first_detection_step_for_multistep_tasks() {
         let temp = TempDir::new().expect("temp dir");
-        let step71 = temp.path().join("unit_STEP71_system.csv");
-        let step72 = temp.path().join("unit_STEP72_system.csv");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let step71 = unit_folder.join("unit_STEP71_system.csv");
+        let step72 = unit_folder.join("unit_STEP72_system.csv");
 
         fs::write(&step71, "a,b\n1,2\n").expect("write step71");
         fs::write(&step72, "a,b\n3,4\n").expect("write step72");
 
-        let mut steps_to_paths = HashMap::<u16, Vec<PathBuf>>::new();
-        steps_to_paths.insert(71, vec![step71.clone()]);
-        steps_to_paths.insert(72, vec![step72]);
-
-        let expected = latest_csv_for_paths(&[step71])
+        let csv_index = CsvScanIndex::scan(&unit_folder);
+        let expected = csv_index
+            .latest_for_step(71)
             .and_then(|info| info.created_ms)
             .expect("step71 should have a start time");
 
         assert_eq!(
-            timer_start_millis_for_steps(&[71, 72], &steps_to_paths),
+            csv_index.timer_start_millis_for_steps(&[71, 72]),
             Some(expected)
         );
+    }
+
+    #[test]
+    fn csv_scan_index_matches_configured_patterns_without_rescanning() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let older = unit_folder.join("unit_STEP14_TRANSFORMER_TEST_DATA_AVG_old.csv");
+        let newer = unit_folder.join("unit_STEP14_TRANSFORMER_TEST_DATA_AVG_new.csv");
+        let unrelated = unit_folder.join("unit_STEP14_OTHER.csv");
+
+        fs::write(&older, "a,b\n1,2\n").expect("write older");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        fs::write(&newer, "a,b\n3,4\n").expect("write newer");
+        fs::write(&unrelated, "a,b\n5,6\n").expect("write unrelated");
+
+        let csv_index = CsvScanIndex::scan(&unit_folder);
+        let pattern_match = csv_index
+            .latest_by_pattern("*STEP14*TRANSFORMER_TEST_DATA_AVG*.csv")
+            .expect("pattern should match latest transformer CSV");
+        let built_in_match = csv_index
+            .latest_for_step_fragments(14, &["TRANSFORMER_TEST_DATA_AVG".to_string()])
+            .expect("built-in fragments should match latest transformer CSV");
+
+        assert_eq!(pattern_match.path, newer);
+        assert_eq!(built_in_match.path, newer);
+        assert_eq!(csv_index.detected_steps_for_task(&[14]), vec![14]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn csv_scan_index_marks_exclusively_locked_csv_unreadable() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let csv_path = unit_folder.join("unit_STEP14_TRANSFORMER_TEST_DATA_AVG.csv");
+        fs::write(&csv_path, "a,b\n1,2\n").expect("write csv");
+        let _locked_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(&csv_path)
+            .expect("open CSV with exclusive sharing");
+
+        let csv_index = CsvScanIndex::scan(&unit_folder);
+        let csv = csv_index
+            .latest_by_pattern("*STEP14*TRANSFORMER_TEST_DATA_AVG*.csv")
+            .expect("locked CSV should still be detected by name");
+
+        assert!(!csv.readable);
+        assert_eq!(csv_index.detected_steps_for_task(&[14]), vec![14]);
     }
 
     #[test]

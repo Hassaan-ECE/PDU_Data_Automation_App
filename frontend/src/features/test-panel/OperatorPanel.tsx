@@ -48,7 +48,7 @@ const SYSTEM_BURN_IN_DURATION_SECONDS = 2 * 60 * 60;
 
 type BacklogPromptState = {
   count: number;
-  resolve: (processBacklog: boolean) => void;
+  resolve: (processBacklog: boolean | null) => void;
 } | null;
 
 type TransformerSnSaveStatus = "idle" | "dirty" | "saving" | "saved" | "error";
@@ -866,12 +866,12 @@ export function OperatorPanel() {
   }, []);
 
   const requestBacklogChoice = useCallback((count: number) => {
-    return new Promise<boolean>((resolve) => {
+    return new Promise<boolean | null>((resolve) => {
       setBacklogPrompt({ count, resolve });
     });
   }, []);
 
-  const resolveBacklogPrompt = useCallback((processBacklog: boolean) => {
+  const resolveBacklogPrompt = useCallback((processBacklog: boolean | null) => {
     setBacklogPrompt((current) => {
       current?.resolve(processBacklog);
       return null;
@@ -1244,10 +1244,33 @@ export function OperatorPanel() {
     }
 
     if (setupConfirmedFolderRef.current !== selected) {
-      setTransformerSnSaveStatus("dirty");
+      const setupPromise = setupPromiseRef.current;
+
+      if (!setupPromise) {
+        const message = setupErrorRef.current ?? "Report setup is not ready yet.";
+        setTransformerSnSaveStatus("error");
+        setTransformerSnError(message);
+        setLastMessage(message);
+        return false;
+      }
+
+      setTransformerSnSaveStatus("saving");
       setTransformerSnError("");
-      setLastMessage("Transformer SN will be saved during setup.");
-      return true;
+      setLastMessage("Finishing report setup");
+
+      const setupOk = await setupPromise;
+
+      if (selectedFolderRef.current !== selected) {
+        return false;
+      }
+
+      if (!setupOk || setupErrorRef.current || setupConfirmedFolderRef.current !== selected) {
+        const message = setupErrorRef.current ?? "Report setup is not ready yet.";
+        setTransformerSnSaveStatus("error");
+        setTransformerSnError(message);
+        setLastMessage(message);
+        return false;
+      }
     }
 
     if (transformerSn === savedTransformerSnRef.current) {
@@ -1294,7 +1317,7 @@ export function OperatorPanel() {
       }
 
       if (expectedFolder && setupConfirmedFolderRef.current !== expectedFolder) {
-        setLastMessage("Press Start to set up reports before running steps.");
+        setLastMessage("Report setup is not ready yet.");
         return false;
       }
 
@@ -1597,7 +1620,7 @@ export function OperatorPanel() {
       }
 
       if (setupConfirmedFolderRef.current !== unitFolder) {
-        setLastMessage("Press Start to set up reports before opening the report.");
+        setLastMessage("Report setup must finish before opening the report.");
         return;
       }
 
@@ -1811,7 +1834,14 @@ export function OperatorPanel() {
       }
 
       if (shouldProcessBacklog === null && promptDetectedCount > 0) {
-        shouldProcessBacklog = await requestBacklogChoice(promptDetectedCount);
+        const backlogChoice = await requestBacklogChoice(promptDetectedCount);
+
+        if (backlogChoice === null) {
+          setLastMessage("Start canceled");
+          return;
+        }
+
+        shouldProcessBacklog = backlogChoice;
         processDetectedBacklogRef.current = shouldProcessBacklog;
         setProcessDetectedBacklog(shouldProcessBacklog);
       }
@@ -1875,40 +1905,15 @@ export function OperatorPanel() {
     setupPromiseRef.current = null;
     setupErrorRef.current = null;
     setConfirmedSetupFolder("");
-    folderScanPendingRef.current = true;
-    setIsScanningFolder(true);
-    setIsSettingUpReports(false);
-    setLastMessage("Scanning unit folder");
+    folderScanPendingRef.current = false;
+    setIsScanningFolder(false);
+    setLastMessage("Setting up reports");
 
-    try {
-      const summary = await scanUnitFolder(selected);
+    const setupOk = await beginReportSetup(selected, "", serialNumberFromFolder(selected), true);
 
-      if (selectedFolderRef.current !== selected) {
-        return;
-      }
-
-      folderScanPendingRef.current = false;
-      setIsScanningFolder(false);
-
-      if (!summary) {
-        const folderName = selected.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
-        setSerialNumber(folderName.match(/\d{6,}/)?.[0] ?? "");
-        setLastMessage("Ready to start");
-        return;
-      }
-
-      applyFolderSummary(summary, true);
-      setLastMessage(detectedReadyMessage(summary.detected_count));
-    } catch (error) {
-      if (selectedFolderRef.current !== selected) {
-        return;
-      }
-
-      folderScanPendingRef.current = false;
-      setIsScanningFolder(false);
+    if (!setupOk && selectedFolderRef.current === selected) {
       setTaskStates({});
       setFailureNotices({});
-      setLastMessage(messageFromUnknownError(error));
     }
   }
 
@@ -1936,18 +1941,11 @@ export function OperatorPanel() {
       return;
     }
 
-    if (setupConfirmedFolderRef.current !== unitFolder) {
-      const setupOk = await beginReportSetup(
-        unitFolder,
-        transformerSnDraft.trim(),
-        serialNumber || serialNumberFromFolder(unitFolder),
-        true,
-      );
+    if (!(await ensureReportSetupReady(unitFolder))) {
+      return;
+    }
 
-      if (!setupOk) {
-        return;
-      }
-    } else if (transformerSnDraft.trim() && transformerSnDraft.trim() !== savedTransformerSnRef.current) {
+    if (transformerSnDraft.trim() && transformerSnDraft.trim() !== savedTransformerSnRef.current) {
       const saved = await saveTransformerSnDraft();
 
       if (!saved) {
@@ -1987,7 +1985,7 @@ export function OperatorPanel() {
     const actionText = action === "printing" ? "printing the report" : "opening the report";
 
     if (!unitFolder || setupConfirmedFolderRef.current !== unitFolder) {
-      setLastMessage(`Press Start to set up reports before ${actionText}.`);
+      setLastMessage(`Report setup must finish before ${actionText}.`);
       return false;
     }
 
@@ -2124,7 +2122,7 @@ export function OperatorPanel() {
     }
 
     if (setupConfirmedFolderRef.current !== unitFolder) {
-      setLastMessage("Press Start to set up reports before printing the report.");
+      setLastMessage("Report setup must finish before printing the report.");
       return;
     }
 
@@ -2195,7 +2193,7 @@ export function OperatorPanel() {
     }
 
     if (!unitFolder || setupConfirmedFolderRef.current !== unitFolder) {
-      const message = "Press Start to set up reports before printing the report.";
+      const message = "Report setup must finish before printing the report.";
       setOperatorNameError(message);
       setLastMessage(message);
       return;
@@ -2281,7 +2279,7 @@ export function OperatorPanel() {
       : transformerSnSaveStatus === "dirty"
           ? setupConfirmedFolder === unitFolder
             ? "Unsaved"
-            : "Saves on Start"
+            : "Waiting for setup"
           : "");
   const transformerSnStatusTone =
     transformerSnSaveStatus === "error"
@@ -2706,6 +2704,13 @@ export function OperatorPanel() {
                 className="inline-flex min-h-9 items-center justify-center rounded-md bg-[#3a3a38] px-3 py-2 text-[9pt] font-semibold text-white shadow-sm transition hover:bg-[#454542]"
               >
                 Skip to Current Test
+              </button>
+              <button
+                type="button"
+                onClick={() => resolveBacklogPrompt(null)}
+                className="inline-flex min-h-9 items-center justify-center rounded-md bg-[#2f2f2e] px-3 py-2 text-[9pt] font-semibold text-white shadow-sm transition hover:bg-[#3a3a38]"
+              >
+                Cancel
               </button>
             </div>
           </section>
