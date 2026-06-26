@@ -41,7 +41,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEzQTFBRjE0MUIwQzdFMjcKUldRbmZnd2JGSytobytkRHlHU1lBYWFFQS9aRzRrOCs1eG1MT082eHF2Rlp0TUd2UysvajJwelgK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk1NkRBNzhEOUQ3RUU0MDQKUldRRTVINmRqYWR0bFI1dnR5VHJKV1gzNjJEU09FRzNLR21QZk0zRVZEMGVmRzNFN0xxOVRTVm8K",
       "endpoints": [
         "https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/latest/download/latest.json"
       ],
