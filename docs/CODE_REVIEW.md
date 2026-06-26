@@ -1,14 +1,15 @@
-# Code Review: PDU_Data_Automation_App (v0.2.9 pilot)
+# Code Review: PDU_Data_Automation_App (v0.2.10 pilot)
 
 **Scope**: Full codebase review (not a PR diff). Covers architecture, critical paths (unit detection, CSV, processors/mapped, Excel patching, unit_state, print readiness, transformer/operator writes), error handling, duplication, frontend complexity, testing, packaging, and alignment with AGENTS.md + LEGACY_BEHAVIOR.md + docs/.
 
 **Process**: Listed root + subdirs (backend/src, frontend/src, config/, shared/, docs/, fixtures/, scripts/); read AGENTS.md, all core *.rs (mod.rs, commands.rs, automation/*, config/*), key *.tsx/*.ts, tauri.conf.json, Cargo.toml, package.json, layout JSONs + schema, tests, docs (LEGACY, ARCHITECTURE, etc.); grepped for unwrap/expect, TODO/legacy, hardcoded paths, clones/locks, task definitions; analyzed dispatch, patching, persistence, state flows.
 
 **Date of review**: 2026-06-25
+**Last updated**: 2026-06-26
 
 ## Summary
 
-The v0.2.9 pilot is a solid, well-engineered replacement that largely succeeds at preserving the legacy operator workflow and visual model while moving toward the intended architecture. Strengths include strict no-silent-zero CSV handling, high-fidelity Excel patching with extensive fidelity tests, unit_state-driven restart resilience and idempotency, a working mapped data-driven path for at least transformer writes, and clear error surfacing. The separation of concerns (frontend UI/workflow, Rust file/CSV/Excel logic, config-driven mappings) is mostly respected.
+The v0.2.10 pilot is a solid, well-engineered replacement that largely succeeds at preserving the legacy operator workflow and visual model while moving toward the intended architecture. Strengths include strict no-silent-zero CSV handling, high-fidelity Excel patching with extensive fidelity tests, unit_state-driven restart resilience and idempotency, batched previous-test report writes, a working mapped data-driven path for at least transformer writes, and clear error surfacing. The separation of concerns (frontend UI/workflow, Rust file/CSV/Excel logic, config-driven mappings) is mostly respected.
 
 Main remaining risk areas: runtime config discovery ships Tauri resources but does not resolve them at runtime; OperatorPanel.tsx is still monolithic (~2500 LOC); task definitions are duplicated across taskModel.ts / tasks.rs / layout JSONs; profile/config loading is repeated frequently; and the report-write Windows replace path is still delete+rename rather than an atomic replace. The app is pilot-ready for limited production comparison but carries maintenance and deployment risks if not addressed before full cut-over.
 
@@ -32,10 +33,11 @@ Main remaining risk areas: runtime config discovery ships Tauri resources but do
 - Layout profile loading now fails loudly for unreadable, invalid JSON, or semantically invalid profiles. Scan/build-summary and task processing use a validated profile instead of silently falling back to built-in processors.
 - Report setup and latest-unit suggestion now use `profile.templates.default_template_root` instead of the old hardcoded `C:/PDU500/00_Template` directory.
 - Report setup, report discovery, built-in processor report lookup, and mapped workbook lookup now use profile-derived template names and `workbooks.*.file_pattern` for main/print reports.
-- `reports.rs` Excel path is strong overall (WorkbookLock file mutex, .bak, transactional multi-patch rollback, force recalc, style preservation), with the Windows replace caveat called out below.
+- `reports.rs` Excel path is strong overall (WorkbookLock file mutex, temporary `.bak` during replacement/rollback, transactional multi-patch rollback, same-workbook patch aggregation, force recalc, style preservation), with the Windows replace caveat called out below.
 - `csv_data.rs`: stability polling, fingerprinting (fnv1a64 + size + mtime), strict `required_number` + typed errors for blank/missing/non-numeric.
 - `unit_state.rs`: audit log, an acceptance data shape, fingerprint idempotency, temp+rename+backup save, explicit corrupt-state errors, and a `unit_state.lock` around read-modify-write paths. `is_print_ready` and `already_processed_fingerprint` are directionally correct, but acceptance is not exposed through a command/UI yet (see Issue 15).
 - Frontend preserves exact legacy panel layout, color states, timers, follow controls, backlog prompts, operator name capture.
+- Previous-test backlog processing now has a backend batch command (`process_automation_tasks`) that computes multiple ready tasks, aggregates workbook patches by path, commits Excel updates once per workbook at batch boundaries, and records task state only after commit success.
 - Tests exist for risky areas (csv failures without zero fallback, report writes fidelity, discovery, unit candidates).
 - Schema + validation script (`scripts/fixtures/validate-report-layout-schema.mjs`) + `bun run validate:report-layouts`.
 
@@ -84,15 +86,15 @@ Main remaining risk areas: runtime config discovery ships Tauri resources but do
 - Status: open
 
 ### Issue 8 -- Severity: suggestion
-- File: backend/src/automation/reports.rs:141 (setup), backend/src/automation/mod.rs:760 (mapped_csv_match), and profile loading
-- Description: `load_layout_profile()` is called repeatedly (inside `process_task_with_profile_mapping`, `mapped_csv_match`, unit_candidates, etc.) with no caching. Each time it may walk candidate paths + serde. Accuracy thresholds are reloaded every process step (documented as intentional). For a desktop app this is minor but adds unnecessary FS/alloc pressure during a running test.
-- Suggestion: Cache the validated profile (and thresholds) in a `OnceLock` or `Mutex` after first successful load (or use Tauri's state management). Reload only on explicit command or file watcher (future). Keep the per-process reload behavior only if the JSONs are expected to change mid-run.
+- File: backend/src/automation/reports.rs (setup), backend/src/automation/mod.rs (scan/single-task paths), and profile loading
+- Description: `load_layout_profile()` is still called repeatedly in scan/setup/live single-task paths. The previous-test batch command now loads the profile/report config/state once for a batch, which removes the worst repeated-load behavior during backlog processing. Accuracy thresholds are still reloaded in individual processor paths (documented as intentional), and live single-step processing still favors immediate consistency over caching.
+- Suggestion: Cache the validated profile (and possibly thresholds) in a `OnceLock` or Tauri state after first successful load, with an explicit reload path if config edits during runtime need to be supported. This is now a secondary optimization behind deployment/resource loading and UI/data-model cleanup.
 - Status: open
 
 ### Issue 9 -- Severity: suggestion
 - File: backend/src/automation/reports.rs:350 (patch_workbooks_transactional) and callers
-- Description: `rewrite_workbook` does write a sibling temp zip and keeps a `.bak`, which is good. The weak point is `replace_file` on Windows: it removes the existing workbook and then renames the temp file. A process crash or power loss between those two operations can leave the report path missing, with recovery dependent on the sidecar `.bak`. Multi-workbook rollback also only runs when Rust receives an error from a later patch, not on a crash.
-- Suggestion: Use an atomic Windows replace primitive (`ReplaceFileW` or `MoveFileExW` with replace semantics) or a small well-tested crate that wraps it. Keep the backup as defense in depth. Add tests around failed replacement and startup/report discovery behavior when `.bak` exists but the primary workbook is missing.
+- Description: `rewrite_workbook` writes a sibling temp zip and creates a `.bak` while replacement/transaction rollback is in progress, then removes successful-write backups to keep unit folders clean. The weak point is still `replace_file` on Windows: it removes the existing workbook and then renames the temp file. A process crash or power loss between those two operations can leave the report path missing. Multi-workbook rollback also only runs when Rust receives an error from a later patch, not on a crash.
+- Suggestion: Use an atomic Windows replace primitive (`ReplaceFileW` or `MoveFileExW` with replace semantics) or a small well-tested crate that wraps it. Keep temporary backups during replacement as defense in depth. Add tests around failed replacement and startup/report discovery behavior when a backup exists but the primary workbook is missing.
 - Status: open
 
 ### Issue 10 -- Severity: suggestion
@@ -147,7 +149,8 @@ Main remaining risk areas: runtime config discovery ships Tauri resources but do
 - New layout-profile tests cover invalid JSON, validation failures, stable error-code mapping, and preservation of built-in processor fallback when a valid profile task intentionally has no mappings.
 - New template-root tests cover setup using a supplied template root and unit-candidate roots following the profile template root parent.
 - New report file config tests cover custom template filenames and custom workbook discovery patterns; profile tests now require `main` and `print` workbook definitions.
-- Gaps: no automated test that a freshly bundled installer can load its packaged layout JSON without C:/PDU500 or cwd layout. Limited frontend coverage of the full runner + state machine (mostly setup/scroll/updater tests). No stress test for concurrent process + scan + print at the command/UI orchestration level.
+- New batch-processing tests cover multiple passing tasks recorded after commit, idempotent/same-workbook patch aggregation behavior, commit failure without tentative pass recording, and partial commit before a later verification failure. Frontend setup coverage now verifies that "Run Previous Tests" calls the batch command instead of the single-task command.
+- Gaps: no automated test that a freshly bundled installer can load its packaged layout JSON without C:/PDU500 or cwd layout. Limited frontend coverage of the full runner + state machine beyond setup/scroll/updater and the batch command hook-in. No stress test for concurrent process + scan + print at the command/UI orchestration level.
 
 ## Packaging, Bundling, Updater, Installer Notes
 
@@ -173,7 +176,7 @@ Main remaining risk areas: runtime config discovery ships Tauri resources but do
 5. Add a "packaged layout load" test.
 6. Later hardening: cache profile/config loads (Issue 8), stale-lock recovery for `unit_state.lock` and workbook locks, explicit serial placeholder config, shared wildcard matching helper, and an end-to-end invalid-profile command test.
 
-This review has been updated after the `unit_state` error-handling/locking fixes, layout-profile failure-handling fixes, profile-driven template-root fix, and profile-driven report filename/discovery fix landed.
+This review has been updated after the `unit_state` error-handling/locking fixes, layout-profile failure-handling fixes, profile-driven template-root fix, profile-driven report filename/discovery fix, and previous-test batch report-write optimization landed.
 
 ## Files Referenced (selected)
 - backend/src/automation/{mod.rs, reports.rs, processors.rs, mapped.rs, csv_data.rs, tasks.rs, unit_state.rs, unit_candidates.rs}

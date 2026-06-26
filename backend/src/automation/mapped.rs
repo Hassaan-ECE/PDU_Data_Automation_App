@@ -13,7 +13,7 @@ use crate::config::{
 use super::csv_data::{
     csv_fingerprint, required_number, round_to, wait_for_stable_csv, CsvDataError, CsvTable,
 };
-use super::processors::{FailureDetail, ProcessorResult};
+use super::processors::{FailureDetail, ProcessorResult, ProcessorTaskOutput};
 use super::reports::{patch_workbooks_transactional, CellUpdate, ReportError, WorkbookPatch};
 
 #[derive(Debug, Error)]
@@ -59,9 +59,32 @@ pub fn process_task(
     unit_folder: &Path,
     already_processed_fingerprint: Option<&str>,
 ) -> ProcessorResult {
+    let output = compute_task(profile, task, unit_folder, already_processed_fingerprint);
+
+    if output.result.state == "pass" && !output.patches.is_empty() {
+        if let Err(error) = patch_workbooks_transactional(&output.patches) {
+            return mapped_error_result(MappedProcessorError::Report(error));
+        }
+    }
+
+    output.result
+}
+
+pub fn compute_task(
+    profile: &ReportLayoutProfile,
+    task: &TaskDefinition,
+    unit_folder: &Path,
+    already_processed_fingerprint: Option<&str>,
+) -> ProcessorTaskOutput {
     match process_task_inner(profile, task, unit_folder, already_processed_fingerprint) {
-        Ok(result) => result,
-        Err(MappedProcessorError::CsvNotReady(message)) => ProcessorResult {
+        Ok(output) => output,
+        Err(error) => ProcessorTaskOutput::result_only(mapped_error_result(error)),
+    }
+}
+
+fn mapped_error_result(error: MappedProcessorError) -> ProcessorResult {
+    match error {
+        MappedProcessorError::CsvNotReady(message) => ProcessorResult {
             state: "waiting".to_string(),
             code: 2,
             failure: None,
@@ -72,7 +95,7 @@ pub fn process_task(
             source_csv_path: None,
             csv_fingerprint: None,
         },
-        Err(MappedProcessorError::MissingCsv(message)) => ProcessorResult {
+        MappedProcessorError::MissingCsv(message) => ProcessorResult {
             state: "warning".to_string(),
             code: 3,
             failure: Some(FailureDetail {
@@ -87,7 +110,7 @@ pub fn process_task(
             source_csv_path: None,
             csv_fingerprint: None,
         },
-        Err(error) => {
+        error => {
             let message = error.to_string();
             ProcessorResult {
                 state: "fail".to_string(),
@@ -113,7 +136,7 @@ fn process_task_inner(
     task: &TaskDefinition,
     unit_folder: &Path,
     already_processed_fingerprint: Option<&str>,
-) -> MappedAttempt<ProcessorResult> {
+) -> MappedAttempt<ProcessorTaskOutput> {
     if task.mappings.is_empty() {
         return Err(MappedProcessorError::Config(format!(
             "task '{}' has no mappings to execute",
@@ -123,7 +146,7 @@ fn process_task_inner(
 
     let csv_source = require_csv_by_pattern(unit_folder, &task.csv_pattern, &task.label)?;
     if let Some(result) = idempotent_success(task, &csv_source, already_processed_fingerprint) {
-        return Ok(result);
+        return Ok(ProcessorTaskOutput::result_only(result));
     }
 
     let table = CsvTable::read(&csv_source.path)?;
@@ -177,13 +200,14 @@ fn process_task_inner(
         paths_by_workbook.insert(workbook, workbook_path);
     }
 
-    patch_workbooks_transactional(&workbook_patches)?;
-
-    Ok(success(
-        format!("{} processed successfully", task.label),
-        log,
-        paths_by_workbook,
-        Some(csv_source),
+    Ok(ProcessorTaskOutput::new(
+        success(
+            format!("{} processed successfully", task.label),
+            log,
+            paths_by_workbook,
+            Some(csv_source),
+        ),
+        workbook_patches,
     ))
 }
 

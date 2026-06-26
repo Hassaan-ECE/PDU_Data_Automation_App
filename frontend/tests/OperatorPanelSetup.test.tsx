@@ -5,10 +5,12 @@ const mocks = vi.hoisted(() => ({
   chooseUnitFolder: vi.fn(),
   getBackendStatus: vi.fn(),
   getSuggestedUnitFolder: vi.fn(),
+  listenAutomationTaskBatchProgress: vi.fn(),
   loadLayoutProfile: vi.fn(),
   openPrintReportDialog: vi.fn(),
   openReportLocation: vi.fn(),
   openReportPath: vi.fn(),
+  processAutomationTasks: vi.fn(),
   processAutomationTask: vi.fn(),
   saveFinalOperatorName: vi.fn(),
   saveTransformerSn: vi.fn(),
@@ -22,10 +24,12 @@ vi.mock("@/integrations/tauri/backend", () => ({
   getBackendStatus: mocks.getBackendStatus,
   getSuggestedUnitFolder: mocks.getSuggestedUnitFolder,
   isTauriRuntime: () => false,
+  listenAutomationTaskBatchProgress: mocks.listenAutomationTaskBatchProgress,
   loadLayoutProfile: mocks.loadLayoutProfile,
   openPrintReportDialog: mocks.openPrintReportDialog,
   openReportLocation: mocks.openReportLocation,
   openReportPath: mocks.openReportPath,
+  processAutomationTasks: mocks.processAutomationTasks,
   processAutomationTask: mocks.processAutomationTask,
   saveFinalOperatorName: mocks.saveFinalOperatorName,
   saveTransformerSn: mocks.saveTransformerSn,
@@ -103,9 +107,11 @@ describe("OperatorPanel inline Transformer SN setup", () => {
       serial_number: "262343000072",
       unit_folder: "C:\\PDU500\\262343000072",
     });
+    mocks.listenAutomationTaskBatchProgress.mockResolvedValue(() => {});
     mocks.scanUnitFolder.mockResolvedValue(unitSummary("C:\\PDU500\\262343000072", "262343000072"));
     mocks.setupUnitFolder.mockResolvedValue(unitSummary("C:\\PDU500\\262343000072", "262343000072"));
     mocks.saveFinalOperatorName.mockResolvedValue("C:\\PDU500\\262343000072\\print.xlsx");
+    mocks.processAutomationTasks.mockResolvedValue(null);
     mocks.saveTransformerSn.mockResolvedValue(undefined);
     mocks.openPrintReportDialog.mockResolvedValue(undefined);
     mocks.validateReadyForPrint.mockResolvedValue({
@@ -209,10 +215,28 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument();
   });
 
-  it("continues into the previous-tests prompt after inline setup succeeds", async () => {
+  it("uses the batch command when running detected previous tests", async () => {
     mocks.setupUnitFolder.mockResolvedValue(
       unitSummary("C:\\PDU500\\262343000072", "262343000072", [detectedTransformerTask()]),
     );
+    mocks.processAutomationTasks.mockResolvedValue({
+      committed: true,
+      committed_count: 1,
+      message: "Batch processed 1 task",
+      results: [
+        {
+          code: 0,
+          failure: null,
+          log: [],
+          message: "208V Transformer Check processed",
+          print_report_path: null,
+          report_path: "C:\\PDU500\\262343000072\\main.xlsx",
+          state: "pass",
+          task_id: "208v-transformer",
+        },
+      ],
+      stopped_task_id: null,
+    });
 
     render(<App />);
 
@@ -224,7 +248,14 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
 
     expect(await screen.findByText("Previous Tests Detected")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Run Previous Tests" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Batch Run Previous Tests" }));
+
+    await waitFor(() => {
+      expect(mocks.processAutomationTasks).toHaveBeenCalledWith("C:\\PDU500\\262343000072", [
+        "208v-transformer",
+      ]);
+    });
+    expect(mocks.processAutomationTask).not.toHaveBeenCalled();
   });
 
   it("opens the Print Report operator modal with default names", async () => {

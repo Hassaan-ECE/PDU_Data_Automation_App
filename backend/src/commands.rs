@@ -1,11 +1,13 @@
 use serde::Serialize;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+use tauri::Emitter;
 
 use crate::{automation, config};
 
 static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 static WINDOW_SETUP_UPTIME_MS: OnceLock<u128> = OnceLock::new();
+pub const AUTOMATION_TASK_BATCH_PROGRESS_EVENT: &str = "automation-task-batch-progress";
 
 #[derive(Debug, Serialize)]
 pub struct BackendStatus {
@@ -108,6 +110,18 @@ pub fn process_automation_task(
     task_id: String,
 ) -> Result<automation::TaskProcessResult, String> {
     automation::process_task(unit_folder, task_id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn process_automation_tasks(
+    app: tauri::AppHandle,
+    unit_folder: String,
+    task_ids: Vec<String>,
+) -> Result<automation::TaskBatchProcessResult, String> {
+    automation::process_tasks_with_progress(unit_folder, task_ids, |progress| {
+        let _ = app.emit(AUTOMATION_TASK_BATCH_PROGRESS_EVENT, progress);
+    })
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

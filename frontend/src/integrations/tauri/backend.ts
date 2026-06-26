@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 export interface BackendStatus {
@@ -22,6 +23,7 @@ export interface LayoutLoadResponse {
 }
 
 export type BackendTaskState = "off" | "detected" | "waiting" | "processing" | "pass" | "warning" | "fail";
+const AUTOMATION_TASK_BATCH_PROGRESS_EVENT = "automation-task-batch-progress";
 
 export interface BackendTaskStatus {
   task_id: string;
@@ -90,6 +92,23 @@ export interface TaskProcessResult {
   failure: FailureDetail | null;
   source_csv_path: string | null;
   csv_fingerprint: string | null;
+}
+
+export interface TaskBatchProcessResult {
+  results: TaskProcessResult[];
+  committed: boolean;
+  committed_count: number;
+  stopped_task_id: string | null;
+  message: string;
+}
+
+export interface TaskBatchProgress {
+  unit_folder: string;
+  task_id: string;
+  state: BackendTaskState;
+  message: string;
+  index: number;
+  total: number;
 }
 
 export interface PrintReadinessBlocker {
@@ -240,6 +259,48 @@ export async function processAutomationTask(
   }
 
   return invoke<TaskProcessResult>("process_automation_task", { unitFolder, taskId });
+}
+
+export async function processAutomationTasks(
+  unitFolder: string,
+  taskIds: string[],
+): Promise<TaskBatchProcessResult | null> {
+  if (!isTauriRuntime()) {
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+
+    return {
+      committed: true,
+      committed_count: taskIds.length,
+      message: `Mock batch processed ${taskIds.length} task${taskIds.length === 1 ? "" : "s"}`,
+      results: taskIds.map((taskId) => ({
+        task_id: taskId,
+        state: "pass",
+        code: 0,
+        message: "Mock task processed",
+        log: [],
+        report_path: null,
+        print_report_path: null,
+        failure: null,
+        source_csv_path: null,
+        csv_fingerprint: null,
+      })),
+      stopped_task_id: null,
+    };
+  }
+
+  return invoke<TaskBatchProcessResult>("process_automation_tasks", { unitFolder, taskIds });
+}
+
+export async function listenAutomationTaskBatchProgress(
+  handler: (progress: TaskBatchProgress) => void,
+): Promise<() => void> {
+  if (!isTauriRuntime()) {
+    return () => {};
+  }
+
+  return listen<TaskBatchProgress>(AUTOMATION_TASK_BATCH_PROGRESS_EVENT, (event) => {
+    handler(event.payload);
+  });
 }
 
 export async function openReportPath(unitFolder: string, path: string) {

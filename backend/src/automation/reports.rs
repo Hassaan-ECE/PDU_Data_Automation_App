@@ -420,19 +420,24 @@ pub fn extract_serial_number(unit_folder: &Path) -> Option<String> {
 }
 
 pub fn patch_workbook(path: &Path, updates: &[CellUpdate]) -> ReportResult<()> {
+    patch_workbook_with_backup_retention(path, updates, false)
+}
+
+fn patch_workbook_with_backup_retention(
+    path: &Path,
+    updates: &[CellUpdate],
+    keep_backup: bool,
+) -> ReportResult<()> {
     if updates.is_empty() {
         return Ok(());
     }
 
     let _lock = WorkbookLock::acquire(path)?;
-    rewrite_workbook(path, updates, false)
+    rewrite_workbook(path, updates, false, keep_backup)
 }
 
 pub fn patch_workbooks_transactional(patches: &[WorkbookPatch]) -> ReportResult<()> {
-    let patches = patches
-        .iter()
-        .filter(|patch| !patch.updates.is_empty())
-        .collect::<Vec<_>>();
+    let patches = aggregate_workbook_patches(patches);
 
     if patches.is_empty() {
         return Ok(());
@@ -444,8 +449,9 @@ pub fn patch_workbooks_transactional(patches: &[WorkbookPatch]) -> ReportResult<
 
     let mut patched = Vec::<PathBuf>::new();
 
-    for patch in patches {
-        if let Err(error) = patch_workbook(&patch.path, &patch.updates) {
+    for patch in &patches {
+        if let Err(error) = patch_workbook_with_backup_retention(&patch.path, &patch.updates, true)
+        {
             for patched_path in patched.iter().rev() {
                 let backup = backup_path_for(patched_path);
                 if backup.is_file() {
@@ -459,17 +465,42 @@ pub fn patch_workbooks_transactional(patches: &[WorkbookPatch]) -> ReportResult<
         patched.push(patch.path.clone());
     }
 
+    for patched_path in patched {
+        let _ = fs::remove_file(backup_path_for(&patched_path));
+    }
+
     Ok(())
 }
 
+pub fn aggregate_workbook_patches(patches: &[WorkbookPatch]) -> Vec<WorkbookPatch> {
+    let mut merged = Vec::<WorkbookPatch>::new();
+
+    for patch in patches.iter().filter(|patch| !patch.updates.is_empty()) {
+        if let Some(existing) = merged
+            .iter_mut()
+            .find(|existing| existing.path == patch.path)
+        {
+            existing.updates.extend(patch.updates.clone());
+        } else {
+            merged.push(WorkbookPatch::new(
+                patch.path.clone(),
+                patch.updates.clone(),
+            ));
+        }
+    }
+
+    merged
+}
+
 pub fn repair_workbook(path: &Path) -> ReportResult<()> {
-    rewrite_workbook(path, &[], true)
+    rewrite_workbook(path, &[], true, false)
 }
 
 fn rewrite_workbook(
     path: &Path,
     updates: &[CellUpdate],
     repair_all_sheets: bool,
+    keep_backup: bool,
 ) -> ReportResult<()> {
     let mut archive = ZipArchive::new(File::open(path)?)?;
     let mut entries = Vec::new();
@@ -549,7 +580,7 @@ fn rewrite_workbook(
 
     let temp_path = temp_path_for(path);
     write_repacked_zip(&entries, &replacements, &removed_entries, &temp_path)?;
-    replace_with_backup(path, &temp_path)?;
+    replace_with_backup(path, &temp_path, keep_backup)?;
 
     Ok(())
 }
@@ -804,7 +835,7 @@ impl Drop for WorkbookLock {
     }
 }
 
-fn replace_with_backup(path: &Path, temp_path: &Path) -> ReportResult<()> {
+fn replace_with_backup(path: &Path, temp_path: &Path, keep_backup: bool) -> ReportResult<()> {
     let backup_path = backup_path_for(path);
 
     if path.is_file() {
@@ -812,7 +843,12 @@ fn replace_with_backup(path: &Path, temp_path: &Path) -> ReportResult<()> {
     }
 
     match replace_file(temp_path, path) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            if !keep_backup {
+                let _ = fs::remove_file(&backup_path);
+            }
+            Ok(())
+        }
         Err(error) => {
             if backup_path.is_file() {
                 let _ = fs::copy(&backup_path, path);
@@ -1700,6 +1736,26 @@ mod tests {
     }
 
     #[test]
+    fn successful_report_patch_removes_backup_file() {
+        let temp = TempDir::new().expect("temp dir");
+        let workbook = temp.path().join("report.xlsx");
+        write_minimal_sheet_workbook(&workbook, "Sheet1");
+        let backup = backup_path_for(&workbook);
+
+        patch_workbook(
+            &workbook,
+            &[CellUpdate::text("Sheet1", "A1", "clean backup")],
+        )
+        .expect("patch workbook");
+
+        assert!(workbook.is_file());
+        assert!(
+            !backup.exists(),
+            "backup workbook should be removed after a successful patch"
+        );
+    }
+
+    #[test]
     fn setup_reports_uses_supplied_template_root() {
         let temp = TempDir::new().expect("temp dir");
         let template_root = temp.path().join("Configured_Template");
@@ -1775,6 +1831,28 @@ mod tests {
             setup.print_report_path.as_deref(),
             Some(expected_print.to_str().unwrap())
         );
+    }
+
+    #[test]
+    fn aggregate_workbook_patches_merges_same_path_updates() {
+        let path = PathBuf::from("C:/PDU500/unit/report.xlsx");
+        let other_path = PathBuf::from("C:/PDU500/unit/print.xlsx");
+        let patches = vec![
+            WorkbookPatch::new(path.clone(), vec![CellUpdate::number("Sheet1", "A1", 1.0)]),
+            WorkbookPatch::new(
+                other_path.clone(),
+                vec![CellUpdate::number("Sheet1", "B1", 2.0)],
+            ),
+            WorkbookPatch::new(path.clone(), vec![CellUpdate::number("Sheet1", "C1", 3.0)]),
+        ];
+
+        let merged = aggregate_workbook_patches(&patches);
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].path, path);
+        assert_eq!(merged[0].updates.len(), 2);
+        assert_eq!(merged[1].path, other_path);
+        assert_eq!(merged[1].updates.len(), 1);
     }
 
     #[test]

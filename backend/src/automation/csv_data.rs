@@ -60,7 +60,14 @@ pub fn wait_for_stable_csv(path: &Path, stable_for: Duration, max_wait: Duration
 
     let started = Instant::now();
     let mut previous = csv_file_snapshot(path)?;
-    let mut stable_since = Instant::now();
+    let initial_age = csv_snapshot_age(&previous);
+    if initial_age.is_some_and(|age| age >= stable_for) {
+        return Ok(());
+    }
+
+    let mut stable_since = initial_age
+        .and_then(|age| Instant::now().checked_sub(age))
+        .unwrap_or_else(Instant::now);
     let poll_interval = Duration::from_millis(100).min(stable_for);
 
     loop {
@@ -103,6 +110,17 @@ pub fn csv_fingerprint(path: &Path) -> CsvResult<String> {
         "fnv1a64:{hash:016x}:size:{}:mtime_ms:{modified_ms}",
         metadata.len()
     ))
+}
+
+pub fn csv_metadata_matches_fingerprint(path: &Path, fingerprint: &str) -> CsvResult<bool> {
+    let Some((expected_len, expected_modified_ms)) = fingerprint_metadata(fingerprint) else {
+        return Ok(false);
+    };
+
+    let snapshot = csv_file_snapshot(path)?;
+
+    Ok(snapshot.len == expected_len
+        && snapshot.modified_ms.unwrap_or_default() == expected_modified_ms)
 }
 
 impl CsvDataError {
@@ -382,6 +400,43 @@ fn csv_file_snapshot(path: &Path) -> CsvResult<CsvFileSnapshot> {
     })
 }
 
+fn csv_snapshot_age(snapshot: &CsvFileSnapshot) -> Option<Duration> {
+    let modified_ms = snapshot.modified_ms?;
+    let now_ms = system_time_millis(SystemTime::now())?;
+    let age_ms = now_ms.checked_sub(modified_ms)?;
+    let age_ms = u64::try_from(age_ms).unwrap_or(u64::MAX);
+
+    Some(Duration::from_millis(age_ms))
+}
+
+fn fingerprint_metadata(fingerprint: &str) -> Option<(u64, u128)> {
+    let mut parts = fingerprint.split(':');
+
+    if parts.next()? != "fnv1a64" {
+        return None;
+    }
+
+    parts.next()?;
+
+    if parts.next()? != "size" {
+        return None;
+    }
+
+    let len = parts.next()?.parse::<u64>().ok()?;
+
+    if parts.next()? != "mtime_ms" {
+        return None;
+    }
+
+    let modified_ms = parts.next()?.parse::<u128>().ok()?;
+
+    if parts.next().is_some() {
+        return None;
+    }
+
+    Some((len, modified_ms))
+}
+
 fn system_time_millis(time: SystemTime) -> Option<u128> {
     Some(time.duration_since(UNIX_EPOCH).ok()?.as_millis())
 }
@@ -457,6 +512,43 @@ mod tests {
     }
 
     #[test]
+    fn stable_csv_wait_skips_sleep_for_already_stable_csv() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let csv_path = temp.path().join("stable.csv");
+        fs::write(&csv_path, "a,b\n1,2\n").expect("write csv");
+        thread::sleep(Duration::from_millis(160));
+
+        let started = Instant::now();
+        wait_for_stable_csv(
+            &csv_path,
+            Duration::from_millis(120),
+            Duration::from_millis(500),
+        )
+        .expect("already stable csv should pass");
+
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "already stable CSV should not wait for a fresh stability window"
+        );
+    }
+
+    #[test]
+    fn metadata_match_recognizes_existing_csv_fingerprint() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let csv_path = temp.path().join("fingerprint.csv");
+        fs::write(&csv_path, "a,b\n1,2\n").expect("write csv");
+        let fingerprint = csv_fingerprint(&csv_path).expect("fingerprint");
+
+        assert!(csv_metadata_matches_fingerprint(&csv_path, &fingerprint)
+            .expect("metadata check should work"));
+
+        fs::write(&csv_path, "a,b\n1,2\n3,4\n").expect("rewrite csv");
+
+        assert!(!csv_metadata_matches_fingerprint(&csv_path, &fingerprint)
+            .expect("metadata check should work"));
+    }
+
+    #[test]
     fn changing_csv_wait_returns_unstable_transient_error() {
         let temp = tempfile::tempdir().expect("temp dir");
         let csv_path = temp.path().join("changing.csv");
@@ -478,7 +570,7 @@ mod tests {
         writer_started_rx.recv().expect("writer should start");
         let error = wait_for_stable_csv(
             &csv_path,
-            Duration::from_millis(120),
+            Duration::from_millis(500),
             Duration::from_millis(180),
         )
         .expect_err("changing csv should not become stable before max wait");

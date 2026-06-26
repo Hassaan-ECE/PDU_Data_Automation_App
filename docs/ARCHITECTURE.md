@@ -81,7 +81,7 @@ The backend edits `.xlsx` files by direct manipulation of the OpenXML zip packag
 
 Safety measures:
 - Per-workbook lock file.
-- `.bak` backup before write.
+- Temporary `.bak` backup during write/rollback; removed after successful writes.
 - Transactional multi-workbook updates with rollback on any failure.
 - Remove calc chain + force recalc on save.
 - Use `inlineStr` for text values (Transformer SN, operator name) to avoid scientific notation / number conversion.

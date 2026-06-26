@@ -1,6 +1,6 @@
 # PDU Data Automation App — Overview
 
-**Current release**: v0.2.9 (pilot)  
+**Current release**: v0.2.10 (pilot)  
 **Repository**: https://github.com/Hassaan-ECE/PDU_Data_Automation_App  
 **Status**: Suitable for continued production pilot use alongside the legacy app.
 

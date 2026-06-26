@@ -5,9 +5,11 @@ const backendMocks = vi.hoisted(() => ({
   chooseUnitFolder: vi.fn(),
   getBackendStatus: vi.fn(),
   getSuggestedUnitFolder: vi.fn(),
+  listenAutomationTaskBatchProgress: vi.fn(),
   loadLayoutProfile: vi.fn(),
   openReportLocation: vi.fn(),
   openReportPath: vi.fn(),
+  processAutomationTasks: vi.fn(),
   processAutomationTask: vi.fn(),
   saveTransformerSn: vi.fn(),
   scanUnitFolder: vi.fn(),
@@ -24,9 +26,11 @@ vi.mock("@/integrations/tauri/backend", () => ({
   getBackendStatus: backendMocks.getBackendStatus,
   getSuggestedUnitFolder: backendMocks.getSuggestedUnitFolder,
   isTauriRuntime: () => true,
+  listenAutomationTaskBatchProgress: backendMocks.listenAutomationTaskBatchProgress,
   loadLayoutProfile: backendMocks.loadLayoutProfile,
   openReportLocation: backendMocks.openReportLocation,
   openReportPath: backendMocks.openReportPath,
+  processAutomationTasks: backendMocks.processAutomationTasks,
   processAutomationTask: backendMocks.processAutomationTask,
   saveTransformerSn: backendMocks.saveTransformerSn,
   scanUnitFolder: backendMocks.scanUnitFolder,
@@ -58,8 +62,10 @@ describe("OperatorPanel updater timing", () => {
     updaterMocks.check.mockResolvedValue(null);
     backendMocks.chooseUnitFolder.mockResolvedValue(null);
     backendMocks.getSuggestedUnitFolder.mockResolvedValue(null);
+    backendMocks.listenAutomationTaskBatchProgress.mockResolvedValue(() => {});
     backendMocks.openReportLocation.mockResolvedValue(undefined);
     backendMocks.openReportPath.mockResolvedValue(undefined);
+    backendMocks.processAutomationTasks.mockResolvedValue(null);
     backendMocks.processAutomationTask.mockResolvedValue(null);
     backendMocks.saveTransformerSn.mockResolvedValue(undefined);
     backendMocks.scanUnitFolder.mockResolvedValue(null);

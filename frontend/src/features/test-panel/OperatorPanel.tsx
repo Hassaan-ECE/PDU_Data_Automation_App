@@ -5,10 +5,12 @@ import { ChevronDown, ExternalLink, RotateCcw, Save, SkipForward, Trash2 } from 
 import {
   chooseUnitFolder,
   getBackendStatus,
+  listenAutomationTaskBatchProgress,
   loadLayoutProfile,
   openPrintReportDialog,
   openReportLocation,
   openReportPath,
+  processAutomationTasks,
   processAutomationTask,
   saveFinalOperatorName,
   saveTransformerSn,
@@ -230,6 +232,20 @@ function detectedCsvStillInProgress(taskId: string, task: BackendTaskStatus | un
 
 function shouldProcessDetectedCsv(taskId: string, task: BackendTaskStatus | undefined) {
   return csvWaitSecondsRemaining(taskId, task) <= 0 && task?.latest_csv_readable !== false;
+}
+
+function readyDetectedBacklogTaskIds(
+  tasks: TaskItem[],
+  states: Record<string, TaskState>,
+  backendTasks: BackendTaskStatusMap,
+) {
+  return tasks
+    .filter((task) => {
+      const state = states[task.id] ?? task.state;
+
+      return state === "detected" && shouldProcessDetectedCsv(task.id, backendTasks[task.id]);
+    })
+    .map((task) => task.id);
 }
 
 function backendTaskStatusMap(tasks: BackendTaskStatus[]) {
@@ -1313,6 +1329,34 @@ export function OperatorPanel() {
     return "Sequence complete";
   }, []);
 
+  const applyTaskProcessResult = useCallback(
+    (result: TaskProcessResult, fromRunner: boolean): TaskState => {
+      const taskId = result.task_id;
+
+      updateTaskState(taskId, result.state);
+      setLastMessage(result.message);
+
+      if (result.report_path) {
+        setReportPath(result.report_path);
+      }
+
+      if (result.print_report_path) {
+        setPrintReportPath(result.print_report_path);
+      }
+
+      if (result.state !== "pass" && result.state !== "waiting") {
+        setFailureNotices((current) => ({
+          ...current,
+          [taskId]: failureNoticeFromResult(taskId, result, fromRunner),
+        }));
+        setRunnerActive(false);
+      }
+
+      return result.state;
+    },
+    [setRunnerActive, updateTaskState],
+  );
+
   const runTask = useCallback(
     async (taskId: string, fromRunner = false): Promise<TaskState | null> => {
       if (!unitFolder || processingTaskRef.current) {
@@ -1351,30 +1395,7 @@ export function OperatorPanel() {
           return "pass";
         }
 
-        updateTaskState(taskId, result.state);
-        setLastMessage(result.message);
-
-        if (result.report_path) {
-          setReportPath(result.report_path);
-        }
-
-        if (result.print_report_path) {
-          setPrintReportPath(result.print_report_path);
-        }
-
-        if (result.state === "waiting") {
-          return "waiting";
-        }
-
-        if (result.state !== "pass") {
-          setFailureNotices((current) => ({
-            ...current,
-            [taskId]: failureNoticeFromResult(taskId, result, fromRunner),
-          }));
-          setRunnerActive(false);
-        }
-
-        return result.state;
+        return applyTaskProcessResult(result, fromRunner);
       } catch (error) {
         const message = messageFromUnknownError(error);
 
@@ -1397,7 +1418,135 @@ export function OperatorPanel() {
         processingTaskRef.current = false;
       }
     },
-    [activateTask, ensureReportSetupReady, reportPath, setRunnerActive, unitFolder, updateTaskState],
+    [
+      activateTask,
+      applyTaskProcessResult,
+      ensureReportSetupReady,
+      reportPath,
+      setRunnerActive,
+      unitFolder,
+      updateTaskState,
+    ],
+  );
+
+  const runTaskBatch = useCallback(
+    async (taskIds: string[]): Promise<TaskState | null> => {
+      if (!unitFolder || processingTaskRef.current || taskIds.length === 0) {
+        return null;
+      }
+
+      if (!(await ensureReportSetupReady(unitFolder))) {
+        return null;
+      }
+
+      processingTaskRef.current = true;
+      const firstTaskId = taskIds[0];
+      const taskIdSet = new Set(taskIds);
+      const previousStates = Object.fromEntries(
+        taskIds.map((taskId) => [taskId, taskStatesRef.current[taskId] ?? "detected"]),
+      ) as Record<string, TaskState>;
+      let unlistenBatchProgress: (() => void) | null = null;
+
+      setFailureNotices((current) => {
+        let changed = false;
+        const next = { ...current };
+
+        for (const taskId of taskIds) {
+          if (next[taskId]) {
+            delete next[taskId];
+            changed = true;
+          }
+        }
+
+        return changed ? next : current;
+      });
+      for (const taskId of taskIds) {
+        updateTaskState(taskId, "processing");
+      }
+      setLastMessage(`Batch processing ${taskIds.length} previous test${taskIds.length === 1 ? "" : "s"}`);
+
+      try {
+        try {
+          unlistenBatchProgress = await listenAutomationTaskBatchProgress((progress) => {
+            if (progress.unit_folder !== unitFolder || !taskIdSet.has(progress.task_id)) {
+              return;
+            }
+
+            updateTaskState(progress.task_id, progress.state);
+            setLastMessage(`${progress.index}/${progress.total} committed: ${progress.message}`);
+          });
+        } catch {
+          unlistenBatchProgress = null;
+        }
+
+        const batch = await processAutomationTasks(unitFolder, taskIds);
+
+        if (!batch) {
+          for (const taskId of taskIds) {
+            updateTaskState(taskId, "pass");
+          }
+          setLastMessage(`Mock batch processed ${taskIds.length} task${taskIds.length === 1 ? "" : "s"}`);
+          return "pass";
+        }
+
+        let lastState: TaskState = "pass";
+        const returnedTaskIds = new Set(batch.results.map((result) => result.task_id));
+
+        for (const result of batch.results) {
+          lastState = applyTaskProcessResult(result, true);
+        }
+
+        for (const taskId of taskIds) {
+          if (!returnedTaskIds.has(taskId)) {
+            updateTaskState(taskId, previousStates[taskId] ?? "detected");
+          }
+        }
+
+        const lastResult = batch.results.at(-1);
+
+        if (batch.stopped_task_id) {
+          if (lastResult) {
+            setLastMessage(lastResult.message);
+          }
+          return lastState;
+        }
+
+        setLastMessage(batch.message);
+        return "pass";
+      } catch (error) {
+        const message = messageFromUnknownError(error);
+
+        updateTaskState(firstTaskId, "fail");
+        for (const taskId of taskIds.slice(1)) {
+          updateTaskState(taskId, previousStates[taskId] ?? "detected");
+        }
+        setFailureNotices((current) => ({
+          ...current,
+          [firstTaskId]: {
+            taskId: firstTaskId,
+            title: "Processing Error",
+            message,
+            reportPath: reportPath || null,
+            location: null,
+            fromRunner: true,
+          },
+        }));
+        setLastMessage(message);
+        setRunnerActive(false);
+        return "fail";
+      } finally {
+        unlistenBatchProgress?.();
+        processingTaskRef.current = false;
+      }
+    },
+    [
+      applyTaskProcessResult,
+      ensureReportSetupReady,
+      reportPath,
+      setRunnerActive,
+      unitFolder,
+      updateTaskState,
+    ],
   );
 
   const handleSkipTask = useCallback(
@@ -1508,6 +1657,41 @@ export function OperatorPanel() {
       }
 
       while (!cancelled && isRunningRef.current) {
+        if (processDetectedBacklogRef.current === true) {
+          const backlogTaskIds = readyDetectedBacklogTaskIds(
+            allTaskOrder,
+            taskStatesRef.current,
+            latestTaskStatusesRef.current,
+          );
+
+          if (backlogTaskIds.length > 0) {
+            const resultState = await runTaskBatch(backlogTaskIds);
+
+            if (resultState === "pass" && !stopAfterCurrentTaskRef.current) {
+              const hasDetectedBacklogRemaining = allTaskOrder.some((task) => {
+                const state = taskStatesRef.current[task.id] ?? task.state;
+
+                return state === "detected";
+              });
+
+              if (!hasDetectedBacklogRemaining) {
+                processDetectedBacklogRef.current = false;
+                setProcessDetectedBacklog(false);
+              }
+
+              continue;
+            }
+
+            if (stopAfterCurrentTaskRef.current) {
+              stopAfterCurrentTaskRef.current = false;
+              setRunnerActive(false);
+              setLastMessage("Paused");
+            }
+
+            return;
+          }
+        }
+
         const nextTask = findNextTaskForRunner(
           allTaskOrder,
           taskStatesRef.current,
@@ -1605,6 +1789,7 @@ export function OperatorPanel() {
     allTaskOrder,
     applyFolderSummary,
     isRunning,
+    runTaskBatch,
     runTask,
     sequenceCompleteMessage,
     setRunnerActive,
@@ -1637,12 +1822,19 @@ export function OperatorPanel() {
         shouldProcessBacklog === true,
         latestTaskStatusesRef.current,
       );
+      const batchBacklogRun = shouldProcessBacklog === true;
 
-      activateTask(nextTask?.id ?? null);
-      if (nextTask) {
+      activateTask(batchBacklogRun ? null : nextTask?.id ?? null);
+      if (nextTask && !batchBacklogRun) {
         enableCurrentStepFollow();
       }
-      setLastMessage(nextTask ? "Sequence running" : sequenceCompleteMessage());
+      setLastMessage(
+        nextTask
+          ? batchBacklogRun
+            ? "Batch previous tests queued"
+            : "Sequence running"
+          : sequenceCompleteMessage(),
+      );
       setRunnerActive(Boolean(nextTask));
     },
     [
@@ -2506,7 +2698,7 @@ export function OperatorPanel() {
                 onClick={() => resolveBacklogPrompt(true)}
                 className="inline-flex min-h-9 items-center justify-center rounded-md bg-[#1d7f47] px-3 py-2 text-[9pt] font-semibold text-white shadow-sm transition hover:bg-[#1d7f46]"
               >
-                Run Previous Tests
+                Batch Run Previous Tests
               </button>
               <button
                 type="button"

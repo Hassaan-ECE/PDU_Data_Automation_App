@@ -5,9 +5,11 @@ const mocks = vi.hoisted(() => ({
   chooseUnitFolder: vi.fn(),
   getBackendStatus: vi.fn(),
   getSuggestedUnitFolder: vi.fn(),
+  listenAutomationTaskBatchProgress: vi.fn(),
   loadLayoutProfile: vi.fn(),
   openReportLocation: vi.fn(),
   openReportPath: vi.fn(),
+  processAutomationTasks: vi.fn(),
   processAutomationTask: vi.fn(),
   saveTransformerSn: vi.fn(),
   scanUnitFolder: vi.fn(),
@@ -20,9 +22,11 @@ vi.mock("@/integrations/tauri/backend", () => ({
   getBackendStatus: mocks.getBackendStatus,
   getSuggestedUnitFolder: mocks.getSuggestedUnitFolder,
   isTauriRuntime: () => false,
+  listenAutomationTaskBatchProgress: mocks.listenAutomationTaskBatchProgress,
   loadLayoutProfile: mocks.loadLayoutProfile,
   openReportLocation: mocks.openReportLocation,
   openReportPath: mocks.openReportPath,
+  processAutomationTasks: mocks.processAutomationTasks,
   processAutomationTask: mocks.processAutomationTask,
   saveTransformerSn: mocks.saveTransformerSn,
   scanUnitFolder: mocks.scanUnitFolder,
@@ -111,11 +115,13 @@ describe("OperatorPanel current-step scrolling", () => {
       serial_number: "262343000072",
       unit_folder: "C:\\PDU500\\262343000072",
     });
+    mocks.listenAutomationTaskBatchProgress.mockResolvedValue(() => {});
     const summary = unitSummary("C:\\PDU500\\262343000072", "262343000072", [
       detectedTransformerTask(),
       detectedSystemTask(),
     ]);
     mocks.chooseUnitFolder.mockResolvedValue("C:\\PDU500\\262343000072");
+    mocks.processAutomationTasks.mockResolvedValue(null);
     mocks.processAutomationTask.mockResolvedValue(null);
     mocks.saveTransformerSn.mockResolvedValue(undefined);
     mocks.setupUnitFolder.mockResolvedValue(summary);
@@ -131,7 +137,7 @@ describe("OperatorPanel current-step scrolling", () => {
     delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView;
   });
 
-  it("does not re-scroll to the focused step after the operator scrolls away and toggles sections", async () => {
+  it("does not auto-scroll when batch-running previous tests", async () => {
     render(<App />);
 
     expect(screen.getByPlaceholderText("Select Test Unit...")).toHaveValue("");
@@ -146,39 +152,13 @@ describe("OperatorPanel current-step scrolling", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
 
     expect(await screen.findByText("Previous Tests Detected")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Run Previous Tests" }));
+    fireEvent.click(screen.getByRole("button", { name: "Batch Run Previous Tests" }));
 
     await waitFor(() => {
-      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+      expect(mocks.processAutomationTasks).toHaveBeenCalled();
     });
-
-    fireEvent.wheel(screen.getByLabelText("Workflow steps"));
 
     expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Follow Step" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Follow Step" })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "208V System" }));
-    expect(scrollIntoView).toHaveBeenCalledTimes(2);
-
-    fireEvent.click(screen.getByRole("button", { name: "Follow Step" }));
-    await waitFor(() => {
-      expect(scrollIntoView).toHaveBeenCalledTimes(3);
-    });
-    expect(screen.queryByRole("button", { name: "Follow Step" })).not.toBeInTheDocument();
-
-    await new Promise((resolve) => window.setTimeout(resolve, 750));
-    fireEvent.scroll(screen.getByLabelText("Workflow steps"));
-
-    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
-    expect(await screen.findByRole("button", { name: "Current Step" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Current Step" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Collapse Tests" })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Current Step" }));
-    await waitFor(() => {
-      expect(scrollIntoView).toHaveBeenCalledTimes(4);
-    });
-    expect(await screen.findByRole("button", { name: "Resume" })).toBeInTheDocument();
+    expect(scrollIntoView).not.toHaveBeenCalled();
   });
 });

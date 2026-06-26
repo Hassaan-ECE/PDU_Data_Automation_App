@@ -19,13 +19,17 @@ use thiserror::Error;
 
 use crate::config::{load_layout_profile, LayoutProfileError, ReportLayoutProfile, TaskDefinition};
 
-use self::csv_data::{detected_steps, find_latest_csv};
-use self::processors::{FailureDetail, ProcessorResult};
+use self::csv_data::{
+    csv_fingerprint, csv_metadata_matches_fingerprint, detected_steps, find_latest_csv,
+};
+use self::processors::{FailureDetail, ProcessorResult, ProcessorTaskOutput};
 use self::reports::{
-    inspect_reports_with_config, read_transformer_serial_number_with_config,
-    require_print_report_with_config, setup_reports_with_serial_number_template_root_and_config,
+    inspect_reports_with_config, patch_workbooks_transactional,
+    read_transformer_serial_number_with_config, require_print_report_with_config,
+    setup_reports_with_serial_number_template_root_and_config,
     setup_reports_with_template_root_and_config, write_final_operator_name_with_config,
     write_transformer_serial_number_with_config, ReportError, ReportFileConfig, ReportSetup,
+    WorkbookPatch,
 };
 use self::tasks::{automation_tasks, find_task};
 pub use self::unit_candidates::{LatestUnitCandidateResult, UnitCandidate};
@@ -305,6 +309,25 @@ pub struct TaskProcessResult {
     pub failure: Option<FailureDetail>,
     pub source_csv_path: Option<String>,
     pub csv_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskBatchProcessResult {
+    pub results: Vec<TaskProcessResult>,
+    pub committed: bool,
+    pub committed_count: usize,
+    pub stopped_task_id: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskBatchProgress {
+    pub unit_folder: String,
+    pub task_id: String,
+    pub state: String,
+    pub message: String,
+    pub index: usize,
+    pub total: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -614,9 +637,15 @@ pub fn process_task(
 ) -> Result<TaskProcessResult, AutomationError> {
     let unit_folder = PathBuf::from(unit_folder);
     let task = find_task(&task_id).ok_or_else(|| AutomationError::UnknownTask(task_id.clone()))?;
+    let state = unit_state::load_or_default(&unit_folder)?;
+    if let Some(result) =
+        already_processed_result_from_state(&unit_folder, &task_id, &task.label, &state)
+    {
+        return Ok(to_task_process_result(task_id, result));
+    }
+
     let profile = load_layout_profile()?;
     let report_config = report_file_config(&profile);
-    let state = unit_state::load_or_default(&unit_folder)?;
     let already_processed_fingerprint = state
         .tasks
         .get(&task_id)
@@ -640,6 +669,311 @@ pub fn process_task(
     unit_state::record_processor_result(&unit_folder, &task_id, &result)?;
 
     Ok(to_task_process_result(task_id, result))
+}
+
+pub fn process_tasks(
+    unit_folder: String,
+    task_ids: Vec<String>,
+) -> Result<TaskBatchProcessResult, AutomationError> {
+    process_tasks_with_progress(unit_folder, task_ids, |_| {})
+}
+
+pub fn process_tasks_with_progress<F>(
+    unit_folder: String,
+    task_ids: Vec<String>,
+    mut on_progress: F,
+) -> Result<TaskBatchProcessResult, AutomationError>
+where
+    F: FnMut(TaskBatchProgress),
+{
+    let unit_folder = PathBuf::from(unit_folder);
+    let unit_folder_display = unit_folder.display().to_string();
+    let total = task_ids.len();
+    let profile = load_layout_profile()?;
+    let report_config = report_file_config(&profile);
+    let state = unit_state::load_or_default(&unit_folder)?;
+    let mut results = Vec::<TaskProcessResult>::new();
+    let mut pending = Vec::<PendingTaskOutput>::new();
+    let mut stopped_task_id = None;
+    let mut committed = true;
+
+    for task_id in task_ids {
+        let task =
+            find_task(&task_id).ok_or_else(|| AutomationError::UnknownTask(task_id.clone()))?;
+
+        let output = if let Some(result) =
+            already_processed_result_from_state(&unit_folder, &task_id, &task.label, &state)
+        {
+            ProcessorTaskOutput::result_only(result)
+        } else {
+            let already_processed_fingerprint = state
+                .tasks
+                .get(&task_id)
+                .and_then(|entry| entry.already_processed_fingerprint())
+                .map(ToOwned::to_owned);
+
+            compute_task_output(
+                &profile,
+                &task,
+                &task_id,
+                &unit_folder,
+                already_processed_fingerprint.as_deref(),
+                &report_config,
+            )
+        };
+
+        if output.result.state == "pass" {
+            pending.push(PendingTaskOutput {
+                task_id,
+                result: output.result,
+                patches: output.patches,
+            });
+            continue;
+        }
+
+        if let Some(stopped) = flush_pending_task_outputs(
+            &unit_folder,
+            &mut pending,
+            &mut results,
+            &mut on_progress,
+            &unit_folder_display,
+            total,
+        )? {
+            stopped_task_id = Some(stopped);
+            committed = false;
+            break;
+        }
+
+        unit_state::record_processor_result(&unit_folder, &task_id, &output.result)?;
+        stopped_task_id = Some(task_id.clone());
+        let result = to_task_process_result(task_id, output.result);
+        results.push(result.clone());
+        on_progress(TaskBatchProgress {
+            unit_folder: unit_folder_display.clone(),
+            task_id: result.task_id,
+            state: result.state,
+            message: result.message,
+            index: results.len(),
+            total,
+        });
+        break;
+    }
+
+    if stopped_task_id.is_none() {
+        if let Some(stopped) = flush_pending_task_outputs(
+            &unit_folder,
+            &mut pending,
+            &mut results,
+            &mut on_progress,
+            &unit_folder_display,
+            total,
+        )? {
+            stopped_task_id = Some(stopped);
+            committed = false;
+        }
+    }
+
+    let committed_count = results
+        .iter()
+        .filter(|result| result.state == "pass")
+        .count();
+    let message = if let Some(task_id) = &stopped_task_id {
+        format!(
+            "Batch stopped at {task_id} after finalizing {committed_count} task{}.",
+            if committed_count == 1 { "" } else { "s" }
+        )
+    } else {
+        format!(
+            "Batch processed {committed_count} task{}.",
+            if committed_count == 1 { "" } else { "s" }
+        )
+    };
+
+    Ok(TaskBatchProcessResult {
+        results,
+        committed,
+        committed_count,
+        stopped_task_id,
+        message,
+    })
+}
+
+struct PendingTaskOutput {
+    task_id: String,
+    result: ProcessorResult,
+    patches: Vec<WorkbookPatch>,
+}
+
+fn flush_pending_task_outputs(
+    unit_folder: &Path,
+    pending: &mut Vec<PendingTaskOutput>,
+    results: &mut Vec<TaskProcessResult>,
+    on_progress: &mut impl FnMut(TaskBatchProgress),
+    unit_folder_display: &str,
+    total: usize,
+) -> Result<Option<String>, AutomationError> {
+    if pending.is_empty() {
+        return Ok(None);
+    }
+
+    let patches = pending
+        .iter()
+        .flat_map(|output| output.patches.iter().cloned())
+        .collect::<Vec<_>>();
+
+    if let Err(error) = patch_workbooks_transactional(&patches) {
+        let failed_index = pending
+            .iter()
+            .position(|output| !output.patches.is_empty())
+            .unwrap_or(0);
+        let prior_records = pending
+            .iter()
+            .take(failed_index)
+            .map(|output| (output.task_id.clone(), output.result.clone()))
+            .collect::<Vec<_>>();
+
+        if !prior_records.is_empty() {
+            unit_state::record_processor_results(unit_folder, &prior_records)?;
+
+            for output in pending.iter().take(failed_index) {
+                let result = to_task_process_result(output.task_id.clone(), output.result.clone());
+                results.push(result.clone());
+                on_progress(TaskBatchProgress {
+                    unit_folder: unit_folder_display.to_string(),
+                    task_id: result.task_id,
+                    state: result.state,
+                    message: result.message,
+                    index: results.len(),
+                    total,
+                });
+            }
+        }
+
+        let failed = pending
+            .get(failed_index)
+            .expect("pending should contain at least one output");
+        let failed_task_id = failed.task_id.clone();
+        let result = report_commit_failure_result(&failed.result, error);
+
+        unit_state::record_processor_result(unit_folder, &failed_task_id, &result)?;
+        let result = to_task_process_result(failed_task_id.clone(), result);
+        results.push(result.clone());
+        on_progress(TaskBatchProgress {
+            unit_folder: unit_folder_display.to_string(),
+            task_id: result.task_id,
+            state: result.state,
+            message: result.message,
+            index: results.len(),
+            total,
+        });
+        pending.clear();
+
+        return Ok(Some(failed_task_id));
+    }
+
+    let records = pending
+        .iter()
+        .map(|output| (output.task_id.clone(), output.result.clone()))
+        .collect::<Vec<_>>();
+
+    unit_state::record_processor_results(unit_folder, &records)?;
+
+    for output in pending.drain(..) {
+        let result = to_task_process_result(output.task_id, output.result);
+        results.push(result.clone());
+        on_progress(TaskBatchProgress {
+            unit_folder: unit_folder_display.to_string(),
+            task_id: result.task_id,
+            state: result.state,
+            message: result.message,
+            index: results.len(),
+            total,
+        });
+    }
+
+    Ok(None)
+}
+
+fn report_commit_failure_result(
+    attempted: &ProcessorResult,
+    error: ReportError,
+) -> ProcessorResult {
+    let message = format!("Report commit failed: {error}");
+    let report_path = attempted.report_path.clone();
+    let print_report_path = attempted.print_report_path.clone();
+
+    ProcessorResult {
+        state: "fail".to_string(),
+        code: 1,
+        message: message.clone(),
+        log: vec![format!("[commit] {message}")],
+        report_path,
+        print_report_path,
+        failure: Some(FailureDetail {
+            title: "Report Commit Failed".to_string(),
+            message,
+            location: None,
+        }),
+        source_csv_path: attempted.source_csv_path.clone(),
+        csv_fingerprint: attempted.csv_fingerprint.clone(),
+    }
+}
+
+fn already_processed_result_from_state(
+    unit_folder: &Path,
+    task_id: &str,
+    task_label: &str,
+    state: &unit_state::UnitState,
+) -> Option<ProcessorResult> {
+    let entry = state.tasks.get(task_id)?;
+    let expected_fingerprint = entry.already_processed_fingerprint()?;
+    let source_path = entry.source_csv_path.as_deref()?;
+    let source_path = stored_source_csv_path(unit_folder, source_path)?;
+    let current_fingerprint =
+        if csv_metadata_matches_fingerprint(&source_path, expected_fingerprint).ok()? {
+            expected_fingerprint.to_string()
+        } else {
+            csv_fingerprint(&source_path).ok()?
+        };
+
+    if current_fingerprint != expected_fingerprint {
+        return None;
+    }
+
+    Some(ProcessorResult {
+        state: "pass".to_string(),
+        code: 0,
+        message: format!(
+            "{task_label} already processed from the same CSV; no workbook changes were applied"
+        ),
+        log: vec![format!(
+            "[idempotent] {task_label} already processed from {} ({current_fingerprint})",
+            source_path.display()
+        )],
+        report_path: None,
+        print_report_path: None,
+        failure: None,
+        source_csv_path: Some(source_path.display().to_string()),
+        csv_fingerprint: Some(current_fingerprint),
+    })
+}
+
+fn stored_source_csv_path(unit_folder: &Path, source_csv_path: &str) -> Option<PathBuf> {
+    let source_path = PathBuf::from(source_csv_path);
+    let source_path = if source_path.is_absolute() {
+        source_path
+    } else {
+        unit_folder.join(source_path)
+    };
+
+    if !source_path.is_file() {
+        return None;
+    }
+
+    let unit_folder = fs::canonicalize(unit_folder).ok()?;
+    let source_path = fs::canonicalize(source_path).ok()?;
+
+    source_path.starts_with(unit_folder).then_some(source_path)
 }
 
 pub fn open_report_path(unit_folder: String, path: String) -> Result<(), AutomationError> {
@@ -1021,6 +1355,45 @@ fn process_task_with_profile_mapping(
     }
 
     Some(mapped::process_task(
+        profile,
+        task,
+        unit_folder,
+        already_processed_fingerprint,
+    ))
+}
+
+fn compute_task_output(
+    profile: &ReportLayoutProfile,
+    task: &tasks::AutomationTask,
+    task_id: &str,
+    unit_folder: &Path,
+    already_processed_fingerprint: Option<&str>,
+    report_config: &ReportFileConfig,
+) -> ProcessorTaskOutput {
+    compute_task_with_profile_mapping(profile, task_id, unit_folder, already_processed_fingerprint)
+        .unwrap_or_else(|| {
+            processors::compute_task(
+                task,
+                unit_folder,
+                already_processed_fingerprint,
+                report_config,
+            )
+        })
+}
+
+fn compute_task_with_profile_mapping(
+    profile: &ReportLayoutProfile,
+    task_id: &str,
+    unit_folder: &Path,
+    already_processed_fingerprint: Option<&str>,
+) -> Option<ProcessorTaskOutput> {
+    let task = profile_task(profile, task_id)?;
+
+    if task.mappings.is_empty() {
+        return None;
+    }
+
+    Some(mapped::compute_task(
         profile,
         task,
         unit_folder,
@@ -1820,6 +2193,235 @@ mod smoke_tests {
     }
 
     #[test]
+    fn batch_processes_passing_tasks_and_records_after_commit() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let report = unit_folder.join(format!(
+            "{}262343000072.xlsx",
+            reports::MAIN_REPORT_SN_PREFIX
+        ));
+        write_minimal_workbook(&report, &["System Test - 480_208"]);
+        write_system_accuracy_csv(
+            &unit_folder.join("unit_STEP16_SYSTEM_ACCURACY_TEST_DATA_AVG.csv"),
+            false,
+        );
+        write_system_accuracy_csv(
+            &unit_folder.join("unit_STEP17_SYSTEM_ACCURACY_TEST_DATA_AVG.csv"),
+            false,
+        );
+
+        let batch = process_tasks(
+            unit_folder.display().to_string(),
+            vec![
+                "208v-system-50% Load".to_string(),
+                "208v-system-20% Load".to_string(),
+            ],
+        )
+        .expect("batch should process");
+
+        assert_eq!(batch.results.len(), 2, "{batch:?}");
+        assert!(batch.committed);
+        assert_eq!(batch.committed_count, 2);
+        assert_eq!(batch.stopped_task_id, None);
+        assert!(batch.results.iter().all(|result| result.state == "pass"));
+
+        let state = unit_state::load_or_default(&unit_folder).expect("state");
+        assert_eq!(
+            state
+                .tasks
+                .get("208v-system-50% Load")
+                .map(|entry| entry.state.as_str()),
+            Some("pass")
+        );
+        assert_eq!(
+            state
+                .tasks
+                .get("208v-system-20% Load")
+                .map(|entry| entry.state.as_str()),
+            Some("pass")
+        );
+        assert_workbook_package_is_valid_after_patch(&report);
+    }
+
+    #[test]
+    fn batch_commit_failure_does_not_record_tentative_passes() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let report = unit_folder.join(format!(
+            "{}262343000072.xlsx",
+            reports::MAIN_REPORT_SN_PREFIX
+        ));
+        fs::write(&report, b"not an xlsx zip").expect("write corrupt workbook");
+        write_system_accuracy_csv(
+            &unit_folder.join("unit_STEP16_SYSTEM_ACCURACY_TEST_DATA_AVG.csv"),
+            false,
+        );
+        write_system_accuracy_csv(
+            &unit_folder.join("unit_STEP17_SYSTEM_ACCURACY_TEST_DATA_AVG.csv"),
+            false,
+        );
+
+        let batch = process_tasks(
+            unit_folder.display().to_string(),
+            vec![
+                "208v-system-50% Load".to_string(),
+                "208v-system-20% Load".to_string(),
+            ],
+        )
+        .expect("batch should return commit failure result");
+
+        assert_eq!(batch.results.len(), 1);
+        assert!(!batch.committed);
+        assert_eq!(batch.committed_count, 0);
+        assert_eq!(
+            batch.stopped_task_id.as_deref(),
+            Some("208v-system-50% Load")
+        );
+        assert_eq!(batch.results[0].state, "fail");
+        assert!(batch.results[0].message.contains("Report commit failed"));
+
+        let state = unit_state::load_or_default(&unit_folder).expect("state");
+        assert_eq!(
+            state
+                .tasks
+                .get("208v-system-50% Load")
+                .map(|entry| entry.state.as_str()),
+            Some("fail")
+        );
+        assert!(!state.tasks.contains_key("208v-system-20% Load"));
+    }
+
+    #[test]
+    fn batch_commit_failure_keeps_prior_idempotent_pass() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let report = unit_folder.join(format!(
+            "{}262343000072.xlsx",
+            reports::MAIN_REPORT_SN_PREFIX
+        ));
+        fs::write(&report, b"not an xlsx zip").expect("write corrupt workbook");
+        let idempotent_csv = unit_folder.join("unit_STEP16_SYSTEM_ACCURACY_TEST_DATA_AVG.csv");
+        write_system_accuracy_csv(&idempotent_csv, false);
+        let idempotent_fingerprint =
+            csv_data::csv_fingerprint(&idempotent_csv).expect("fingerprint");
+        write_system_accuracy_csv(
+            &unit_folder.join("unit_STEP17_SYSTEM_ACCURACY_TEST_DATA_AVG.csv"),
+            false,
+        );
+        let mut state = unit_state::UnitState::default();
+        state.tasks.insert(
+            "208v-system-50% Load".to_string(),
+            unit_state::UnitTaskState {
+                task_id: "208v-system-50% Load".to_string(),
+                state: "pass".to_string(),
+                code: Some(0),
+                source_csv_path: Some(idempotent_csv.display().to_string()),
+                csv_fingerprint: Some(idempotent_fingerprint),
+                processed_at: Some(unit_state::now_string()),
+                result: Some("already processed".to_string()),
+                accepted: unit_state::TaskAcceptance::default(),
+                audit_log: Vec::new(),
+            },
+        );
+        unit_state::save_unit_state(&unit_folder, &state).expect("write state");
+
+        let batch = process_tasks(
+            unit_folder.display().to_string(),
+            vec![
+                "208v-system-50% Load".to_string(),
+                "208v-system-20% Load".to_string(),
+            ],
+        )
+        .expect("batch should return commit failure result");
+
+        assert_eq!(batch.results.len(), 2);
+        assert!(!batch.committed);
+        assert_eq!(batch.committed_count, 1);
+        assert_eq!(
+            batch.stopped_task_id.as_deref(),
+            Some("208v-system-20% Load")
+        );
+        assert_eq!(batch.results[0].task_id, "208v-system-50% Load");
+        assert_eq!(batch.results[0].state, "pass");
+        assert_eq!(batch.results[1].task_id, "208v-system-20% Load");
+        assert_eq!(batch.results[1].state, "fail");
+
+        let state = unit_state::load_or_default(&unit_folder).expect("state");
+        assert_eq!(
+            state
+                .tasks
+                .get("208v-system-50% Load")
+                .map(|entry| entry.state.as_str()),
+            Some("pass")
+        );
+        assert_eq!(
+            state
+                .tasks
+                .get("208v-system-20% Load")
+                .map(|entry| entry.state.as_str()),
+            Some("fail")
+        );
+    }
+
+    #[test]
+    fn batch_commits_prior_passes_before_stopping_on_verification_failure() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let report = unit_folder.join(format!(
+            "{}262343000072.xlsx",
+            reports::MAIN_REPORT_SN_PREFIX
+        ));
+        write_minimal_workbook(&report, &["System Test - 480_208"]);
+        write_system_accuracy_csv(
+            &unit_folder.join("unit_STEP16_SYSTEM_ACCURACY_TEST_DATA_AVG.csv"),
+            false,
+        );
+        write_system_accuracy_csv(
+            &unit_folder.join("unit_STEP17_SYSTEM_ACCURACY_TEST_DATA_AVG.csv"),
+            true,
+        );
+
+        let batch = process_tasks(
+            unit_folder.display().to_string(),
+            vec![
+                "208v-system-50% Load".to_string(),
+                "208v-system-20% Load".to_string(),
+            ],
+        )
+        .expect("batch should stop on failed verification");
+
+        assert_eq!(batch.results.len(), 2);
+        assert!(batch.committed);
+        assert_eq!(batch.committed_count, 1);
+        assert_eq!(
+            batch.stopped_task_id.as_deref(),
+            Some("208v-system-20% Load")
+        );
+        assert_eq!(batch.results[0].state, "pass");
+        assert_eq!(batch.results[1].state, "fail");
+
+        let state = unit_state::load_or_default(&unit_folder).expect("state");
+        assert_eq!(
+            state
+                .tasks
+                .get("208v-system-50% Load")
+                .map(|entry| entry.state.as_str()),
+            Some("pass")
+        );
+        assert_eq!(
+            state
+                .tasks
+                .get("208v-system-20% Load")
+                .map(|entry| entry.state.as_str()),
+            Some("fail")
+        );
+    }
+
+    #[test]
     #[ignore = "requires a real PDU sample unit folder; set PDU_SAMPLE_UNIT_FOLDER"]
     fn real_sample_processes_representative_tasks_without_touching_source() {
         let sample = std::env::var("PDU_SAMPLE_UNIT_FOLDER")
@@ -1839,7 +2441,10 @@ mod smoke_tests {
         let summary =
             setup_unit_folder(unit_copy.display().to_string()).expect("setup should work");
 
-        assert_eq!(summary.serial_number.as_deref(), Some("262343000072"));
+        assert!(
+            summary.serial_number.is_some(),
+            "sample should produce a serial number"
+        );
         assert!(summary.report_path.is_some());
         assert!(summary.detected_count >= 60);
 
@@ -1937,6 +2542,80 @@ mod smoke_tests {
         zip.finish().expect("finish workbook");
     }
 
+    fn write_minimal_workbook(path: &Path, sheet_names: &[&str]) {
+        let file = File::create(path).expect("create workbook");
+        let mut zip = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+
+        zip.start_file("[Content_Types].xml", options)
+            .expect("content types");
+        zip.write_all(minimal_content_types_xml(sheet_names.len()).as_bytes())
+            .expect("write content types");
+
+        zip.start_file("xl/workbook.xml", options)
+            .expect("workbook xml");
+        zip.write_all(minimal_workbook_xml(sheet_names).as_bytes())
+            .expect("write workbook");
+
+        zip.start_file("xl/_rels/workbook.xml.rels", options)
+            .expect("workbook rels");
+        zip.write_all(minimal_workbook_rels_xml(sheet_names.len()).as_bytes())
+            .expect("write rels");
+
+        for index in 1..=sheet_names.len() {
+            zip.start_file(format!("xl/worksheets/sheet{index}.xml"), options)
+                .expect("sheet xml");
+            zip.write_all(br#"<worksheet><sheetData></sheetData></worksheet>"#)
+                .expect("write sheet");
+        }
+
+        zip.finish().expect("finish workbook");
+    }
+
+    fn minimal_content_types_xml(sheet_count: usize) -> String {
+        let mut xml = String::from(
+            r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>"#,
+        );
+
+        for index in 1..=sheet_count {
+            xml.push_str(&format!(
+                r#"<Override PartName="/xl/worksheets/sheet{index}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>"#
+            ));
+        }
+
+        xml.push_str("</Types>");
+        xml
+    }
+
+    fn minimal_workbook_xml(sheet_names: &[&str]) -> String {
+        let mut xml = String::from(
+            r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>"#,
+        );
+
+        for (index, name) in sheet_names.iter().enumerate() {
+            let sheet_id = index + 1;
+            xml.push_str(&format!(
+                r#"<sheet name="{name}" sheetId="{sheet_id}" r:id="rId{sheet_id}"/>"#
+            ));
+        }
+
+        xml.push_str("</sheets></workbook>");
+        xml
+    }
+
+    fn minimal_workbook_rels_xml(sheet_count: usize) -> String {
+        let mut xml = String::from("<Relationships>");
+
+        for index in 1..=sheet_count {
+            xml.push_str(&format!(
+                r#"<Relationship Id="rId{index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{index}.xml"/>"#
+            ));
+        }
+
+        xml.push_str("</Relationships>");
+        xml
+    }
+
     fn write_ready_unit_state(unit_folder: &Path) {
         let mut state = unit_state::UnitState::default();
 
@@ -1967,6 +2646,11 @@ mod smoke_tests {
 
         for index in 0..column_count {
             headers.push(format!("col{index}"));
+        }
+
+        for column in ["AC", "AD", "BQ", "BR", "DE", "DF", "EL", "EM"] {
+            let index = csv_data::excel_col_to_index(column).expect("power column");
+            row[index] = "1000".to_string();
         }
 
         if force_failure {

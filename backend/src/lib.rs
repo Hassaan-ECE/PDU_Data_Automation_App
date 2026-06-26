@@ -25,6 +25,7 @@ pub fn run() {
             commands::validate_ready_for_print,
             commands::scan_unit_folder,
             commands::process_automation_task,
+            commands::process_automation_tasks,
             commands::open_report_path,
             commands::open_report_location
         ])

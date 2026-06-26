@@ -49,7 +49,7 @@ Each mapping specifies:
 
 Accuracy thresholds live in a separate file (or can be embedded later) and are used by both mapped and built-in paths.
 
-## Current State (v0.2.9)
+## Current State (v0.2.10)
 
 - 208V and 415V Transformer tasks are fully data-driven via mappings in `pdu500.rev02.layout.json`.
 - System, breaker, and burn-in tasks still declare `"processor"` and fall back to Rust code in `backend/src/automation/processors.rs` (and `mapped.rs` for the generic path).

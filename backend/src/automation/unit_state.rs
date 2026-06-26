@@ -174,7 +174,10 @@ fn save_unit_state_unlocked(unit_folder: &Path, state: &UnitState) -> io::Result
     }
 
     match fs::rename(&temp_path, &path) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            let _ = fs::remove_file(&backup_path);
+            Ok(())
+        }
         Err(error) => {
             if backup_path.is_file() {
                 let _ = fs::copy(&backup_path, &path);
@@ -246,9 +249,32 @@ pub fn record_processor_result(
     task_id: &str,
     result: &ProcessorResult,
 ) -> io::Result<UnitState> {
+    record_processor_results(unit_folder, &[(task_id.to_string(), result.clone())])
+}
+
+pub fn record_processor_results(
+    unit_folder: &Path,
+    results: &[(String, ProcessorResult)],
+) -> io::Result<UnitState> {
     let _lock = UnitStateLock::acquire(unit_folder)?;
     let mut state = load_or_default_unlocked(unit_folder)?;
     let at = now_string();
+
+    for (task_id, result) in results {
+        record_processor_result_unlocked(&mut state, task_id, result, &at);
+    }
+
+    save_unit_state_unlocked(unit_folder, &state)?;
+
+    Ok(state)
+}
+
+fn record_processor_result_unlocked(
+    state: &mut UnitState,
+    task_id: &str,
+    result: &ProcessorResult,
+    at: &str,
+) {
     let entry = state
         .tasks
         .entry(task_id.to_string())
@@ -268,10 +294,10 @@ pub fn record_processor_result(
     entry.code = Some(result.code);
     entry.source_csv_path = result.source_csv_path.clone();
     entry.csv_fingerprint = result.csv_fingerprint.clone();
-    entry.processed_at = Some(at.clone());
+    entry.processed_at = Some(at.to_string());
     entry.result = Some(result.message.clone());
     entry.audit_log.push(UnitAuditEntry {
-        at,
+        at: at.to_string(),
         event: if result
             .message
             .contains("already processed from the same CSV")
@@ -286,10 +312,6 @@ pub fn record_processor_result(
         source_csv_path: result.source_csv_path.clone(),
         csv_fingerprint: result.csv_fingerprint.clone(),
     });
-
-    save_unit_state_unlocked(unit_folder, &state)?;
-
-    Ok(state)
 }
 
 pub fn now_string() -> String {
@@ -427,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn save_unit_state_keeps_temp_and_backup_behavior() {
+    fn save_unit_state_removes_temp_and_backup_after_success() {
         let temp = TempDir::new().expect("temp dir");
         let unit_folder = temp.path().join("unit");
         fs::create_dir_all(&unit_folder).expect("unit folder");
@@ -447,13 +469,17 @@ mod tests {
             .insert("second".to_string(), task_state("second", "fail"));
         save_unit_state(&unit_folder, &state).expect("second save");
 
-        assert_eq!(
-            fs::read_to_string(&backup_path).expect("backup content"),
+        assert_ne!(
+            fs::read_to_string(&path).expect("second state content"),
             first_content
         );
         assert!(
             !temp_path.exists(),
             "temporary state file should be renamed away"
+        );
+        assert!(
+            !backup_path.exists(),
+            "backup state file should be removed after a successful save"
         );
 
         let reloaded = load_or_default(&unit_folder).expect("reloaded state");
