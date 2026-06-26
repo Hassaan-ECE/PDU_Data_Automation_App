@@ -1,4 +1,4 @@
-# Code Review: PDU_Data_Automation_App (v0.2.10 pilot)
+# Code Review: PDU_Data_Automation_App (v0.2.11 pilot)
 
 **Scope**: Full codebase review (not a PR diff). Covers architecture, critical paths (unit detection, CSV, processors/mapped, Excel patching, unit_state, print readiness, transformer/operator writes), error handling, duplication, frontend complexity, testing, packaging, and alignment with AGENTS.md + LEGACY_BEHAVIOR.md + docs/.
 
@@ -9,9 +9,9 @@
 
 ## Summary
 
-The v0.2.10 pilot is a solid, well-engineered replacement that largely succeeds at preserving the legacy operator workflow and visual model while moving toward the intended architecture. Strengths include strict no-silent-zero CSV handling, high-fidelity Excel patching with extensive fidelity tests, unit_state-driven restart resilience and idempotency, batched previous-test report writes, a working mapped data-driven path for at least transformer writes, and clear error surfacing. The separation of concerns (frontend UI/workflow, Rust file/CSV/Excel logic, config-driven mappings) is mostly respected.
+The v0.2.11 pilot is a solid, well-engineered replacement that largely succeeds at preserving the legacy operator workflow and visual model while moving toward the intended architecture. Strengths include strict no-silent-zero CSV handling, high-fidelity Excel patching with extensive fidelity tests, unit_state-driven restart resilience and idempotency, batched previous-test report writes, a working mapped data-driven path for at least transformer writes, packaged layout resource loading, setup-on-folder-selection behavior, and clear error surfacing. The separation of concerns (frontend UI/workflow, Rust file/CSV/Excel logic, config-driven mappings) is mostly respected.
 
-Main remaining risk areas: OperatorPanel.tsx is still monolithic (~2500 LOC); task definitions are duplicated across taskModel.ts / tasks.rs / layout JSONs; profile/config loading is repeated frequently; and the report-write Windows replace path is still delete+rename rather than an atomic replace. The app is pilot-ready for limited production comparison but carries maintenance and deployment risks if not addressed before full cut-over.
+Main remaining risk areas: OperatorPanel.tsx is still large (~2000 LOC) even after the first behavior-preserving extraction; task definitions are duplicated across taskModel.ts / tasks.rs / layout JSONs; profile/config loading is repeated frequently; and the report-write Windows replace path is still delete+rename rather than an atomic replace. The app is pilot-ready for limited production comparison but carries maintenance and deployment risks if not addressed before full cut-over.
 
 ## Architecture & Structure
 
@@ -37,7 +37,7 @@ Main remaining risk areas: OperatorPanel.tsx is still monolithic (~2500 LOC); ta
 - `reports.rs` Excel path is strong overall (WorkbookLock file mutex, temporary `.bak` during replacement/rollback, transactional multi-patch rollback, same-workbook patch aggregation, force recalc, style preservation), with the Windows replace caveat called out below.
 - `csv_data.rs`: stability polling, fingerprinting (fnv1a64 + size + mtime), strict `required_number` + typed errors for blank/missing/non-numeric.
 - `unit_state.rs`: audit log, an acceptance data shape, fingerprint idempotency, temp+rename+backup save, explicit corrupt-state errors, and a `unit_state.lock` around read-modify-write paths. `is_print_ready` and `already_processed_fingerprint` are directionally correct, but acceptance is not exposed through a command/UI yet (see Issue 15).
-- Frontend preserves exact legacy panel layout, color states, timers, follow controls, backlog prompts, operator name capture.
+- Frontend preserves exact legacy panel layout, color states, timers, follow controls, backlog prompts, operator name capture. A first behavior-preserving extraction moved workflow-step rendering into `WorkflowSteps.tsx` and pure panel helpers into `panelLogic.ts`.
 - Previous-test backlog processing now has a backend batch command (`process_automation_tasks`) that computes multiple ready tasks, aggregates workbook patches by path, commits Excel updates once per workbook at batch boundaries, and records task state only after commit success.
 - Tests exist for risky areas (csv failures without zero fallback, report writes fidelity, discovery, unit candidates).
 - Schema + validation script (`scripts/fixtures/validate-report-layout-schema.mjs`) + `bun run validate:report-layouts`.
@@ -65,8 +65,8 @@ Main remaining risk areas: OperatorPanel.tsx is still monolithic (~2500 LOC); ta
 ### Issue 4 -- Severity: bug
 - File: backend/src/config/profile.rs:220 (load_layout_profile and candidate_profile_paths)
 - Description: Originally, runtime discovery only searched relative to cwd ("config/...", "../config/...") and hard `C:/PDU500/config/...`. The `resources` entry in `backend/tauri.conf.json` shipped layout files, but Rust loaders did not resolve the bundled resource location, so installed builds could bypass packaged JSON and use compile-time `include_str!` defaults. This has been fixed: Tauri setup registers `app.path().resource_dir()`, a shared resource-path helper resolves the current `_up_/config/report-layouts` bundle shape plus tolerant fallback shapes, and both profile and accuracy threshold loaders use those candidates before dev/external paths and built-in defaults.
-- Suggestion: Treat the original resource-resolution bug as resolved. Remaining hardening: run a real installed-build smoke test on a clean machine/profile with no cwd or `C:/PDU500/config` override to confirm the packaged resource path matches production packaging.
-- Status: resolved on 2026-06-26, with clean-machine installed-build smoke as future release validation
+- Suggestion: Treat the original resource-resolution bug as resolved. A v0.2.11 operator-machine release smoke passed after install, including the corrected folder-selection/setup flow. Remaining hardening: run a clean-profile packaged-resource smoke with no cwd or `C:/PDU500/config` override to confirm the bundled resource path is the only source in that scenario.
+- Status: resolved on 2026-06-26, with broader clean-profile packaged-resource smoke as future release validation
 
 ### Issue 5 -- Severity: bug
 - File: backend/src/automation/unit_state.rs and backend/src/automation/mod.rs
@@ -75,10 +75,10 @@ Main remaining risk areas: OperatorPanel.tsx is still monolithic (~2500 LOC); ta
 - Status: resolved on 2026-06-25, with stale-lock cleanup as a future hardening item
 
 ### Issue 6 -- Severity: suggestion
-- File: frontend/src/features/test-panel/OperatorPanel.tsx (~2500 lines, entire file); see also taskModel.ts:1-100, types.ts
-- Description: One giant component (~2500 LOC) owns timers, runner loop, follow-mode scroll logic, 30+ useState/useRef/useEffect/useCallback, backlog prompts, failure notices, transformer SN dirty tracking, operator name capture, update UI, and panel rendering. This violates separation of concerns and makes the file hard to reason about or unit-test in isolation (frontend tests are narrow).
-- Suggestion: Extract: runner/useTaskRunner hook, usePanelScroll, TaskSection, StatusHeader, OperatorNamePrompt, useUnitStateSync, etc. Move static layout data out of component. Follow the note in PROJECT_STRUCTURE.md that "the majority of the UI lives in OperatorPanel.tsx (will be split)".
-- Status: open
+- File: frontend/src/features/test-panel/OperatorPanel.tsx (~2000 lines), WorkflowSteps.tsx, panelLogic.ts, types.ts; see also taskModel.ts:1-100
+- Description: Originally, one giant component (~2500 LOC) owned timers, runner loop, follow-mode scroll logic, 30+ useState/useRef/useEffect/useCallback, backlog prompts, failure notices, transformer SN dirty tracking, operator name capture, update UI, and panel rendering. A first behavior-preserving extraction moved workflow-step rendering into `WorkflowSteps.tsx`, shared prompt/failure/status types into `types.ts`, and pure task/state helpers into `panelLogic.ts`. The remaining risk is still concentrated in `OperatorPanel.tsx`: runner orchestration, folder setup, Transformer SN save flow, print/operator prompt logic, and many refs/states remain coupled in one file.
+- Suggestion: Continue the extraction in behavior-preserving slices: next extract the runner/backlog orchestration into a hook, then folder setup/SN save state, then print/operator prompt state. Keep static layout/data-source changes separate for Issue 7.
+- Status: partially addressed on 2026-06-26, with runner/setup/print prompt extraction still open
 
 ### Issue 7 -- Severity: suggestion
 - File: frontend/src/features/test-panel/taskModel.ts:50 (legacyPanelItems) + backend/src/automation/tasks.rs:97 (automation_tasks) + config/report-layouts/pdu500.rev02.layout.json (task_groups)
@@ -151,7 +151,7 @@ Main remaining risk areas: OperatorPanel.tsx is still monolithic (~2500 LOC); ta
 - New template-root tests cover setup using a supplied template root and unit-candidate roots following the profile template root parent.
 - New report file config tests cover custom template filenames and custom workbook discovery patterns; profile tests now require `main` and `print` workbook definitions.
 - New batch-processing tests cover multiple passing tasks recorded after commit, idempotent/same-workbook patch aggregation behavior, commit failure without tentative pass recording, and partial commit before a later verification failure. Frontend setup coverage now verifies that "Run Previous Tests" calls the batch command instead of the single-task command.
-- Gaps: resource-loader unit tests simulate the bundled `_up_/config/report-layouts` path, but there is not yet a true installed-build smoke test on a clean machine/profile with no cwd or `C:/PDU500/config` override. Limited frontend coverage of the full runner + state machine beyond setup/scroll/updater and the batch command hook-in. No stress test for concurrent process + scan + print at the command/UI orchestration level.
+- Gaps: resource-loader unit tests simulate the bundled `_up_/config/report-layouts` path, and the v0.2.11 release passed an operator-machine smoke after install, but there is not yet a clean-profile packaged-resource smoke with no cwd or `C:/PDU500/config` override. Limited frontend coverage of the full runner + state machine beyond setup/scroll/updater and the batch command hook-in. No stress test for concurrent process + scan + print at the command/UI orchestration level.
 
 ## Packaging, Bundling, Updater, Installer Notes
 
@@ -170,18 +170,19 @@ Main remaining risk areas: OperatorPanel.tsx is still monolithic (~2500 LOC); ta
 - Docs are accurate and useful (LEGACY_BEHAVIOR.md, ARCHITECTURE.md, CONFIGURATION_MODEL.md).
 
 ## Recommendations (priority order)
-1. Split OperatorPanel.tsx and drive more of the panel from the profile (Issues 6, 7).
-2. Continue migrating remaining tasks to mappings + remove duplication.
-3. Decide and implement the acceptance override policy (Issue 15).
-4. Add a clean-machine installed-build packaged-resource smoke test.
-5. Later hardening: cache profile/config loads (Issue 8), stale-lock recovery for `unit_state.lock` and workbook locks, explicit serial placeholder config, shared wildcard matching helper, and an end-to-end invalid-profile command test.
+1. Finish the Issue 6 extraction by moving runner/backlog orchestration out of OperatorPanel.tsx.
+2. Drive more of the panel from the profile and reduce task-definition duplication (Issue 7).
+3. Continue migrating remaining tasks to mappings + remove duplication.
+4. Decide and implement the acceptance override policy (Issue 15).
+5. Add a clean-profile installed-build packaged-resource smoke test.
+6. Later hardening: cache profile/config loads (Issue 8), stale-lock recovery for `unit_state.lock` and workbook locks, explicit serial placeholder config, shared wildcard matching helper, and an end-to-end invalid-profile command test.
 
-This review has been updated after the `unit_state` error-handling/locking fixes, layout-profile failure-handling fixes, profile-driven template-root fix, profile-driven report filename/discovery fix, previous-test batch report-write optimization, and packaged resource-resolution fix landed.
+This review has been updated after the `unit_state` error-handling/locking fixes, layout-profile failure-handling fixes, profile-driven template-root fix, profile-driven report filename/discovery fix, previous-test batch report-write optimization, packaged resource-resolution fix, setup-on-folder-selection fix, v0.2.11 operator-machine release smoke, and first behavior-preserving OperatorPanel extraction landed.
 
 ## Files Referenced (selected)
 - backend/src/automation/{mod.rs, reports.rs, processors.rs, mapped.rs, csv_data.rs, tasks.rs, unit_state.rs, unit_candidates.rs}
 - backend/src/{commands.rs, config/{mod.rs, profile.rs, accuracy.rs}, lib.rs}
-- frontend/src/features/test-panel/{OperatorPanel.tsx (~2500 LOC), taskModel.ts, types.ts, backend.ts}
+- frontend/src/features/test-panel/{OperatorPanel.tsx (~2000 LOC), WorkflowSteps.tsx, panelLogic.ts, taskModel.ts, types.ts, backend.ts}
 - config/report-layouts/{pdu500.rev02.layout.json, pdu500.accuracy-thresholds.json}
 - shared/schemas/report-layout.schema.json
 - backend/tauri.conf.json, backend/tests/*.rs, docs/*.md, AGENTS.md
