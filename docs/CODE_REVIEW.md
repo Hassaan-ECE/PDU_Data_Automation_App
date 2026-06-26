@@ -11,7 +11,7 @@
 
 The v0.2.11 pilot is a solid, well-engineered replacement that largely succeeds at preserving the legacy operator workflow and visual model while moving toward the intended architecture. Strengths include strict no-silent-zero CSV handling, high-fidelity Excel patching with extensive fidelity tests, unit_state-driven restart resilience and idempotency, batched previous-test report writes, a working mapped data-driven path for at least transformer writes, packaged layout resource loading, setup-on-folder-selection behavior, and clear error surfacing. The separation of concerns (frontend UI/workflow, Rust file/CSV/Excel logic, config-driven mappings) is mostly respected.
 
-Main remaining risk areas: OperatorPanel.tsx is still large (~2000 LOC) even after the first behavior-preserving extraction; task definitions are duplicated across taskModel.ts / tasks.rs / layout JSONs; profile/config loading is repeated frequently; and the report-write Windows replace path is still delete+rename rather than an atomic replace. The app is pilot-ready for limited production comparison but carries maintenance and deployment risks if not addressed before full cut-over.
+Main remaining risk areas: OperatorPanel.tsx is still large (~1600 LOC) even after behavior-preserving extractions; task definitions are duplicated across taskModel.ts / tasks.rs / layout JSONs; profile/config loading is repeated frequently; and the report-write Windows replace path is still delete+rename rather than an atomic replace. The app is pilot-ready for limited production comparison but carries maintenance and deployment risks if not addressed before full cut-over.
 
 ## Architecture & Structure
 
@@ -37,7 +37,7 @@ Main remaining risk areas: OperatorPanel.tsx is still large (~2000 LOC) even aft
 - `reports.rs` Excel path is strong overall (WorkbookLock file mutex, temporary `.bak` during replacement/rollback, transactional multi-patch rollback, same-workbook patch aggregation, force recalc, style preservation), with the Windows replace caveat called out below.
 - `csv_data.rs`: stability polling, fingerprinting (fnv1a64 + size + mtime), strict `required_number` + typed errors for blank/missing/non-numeric.
 - `unit_state.rs`: audit log, an acceptance data shape, fingerprint idempotency, temp+rename+backup save, explicit corrupt-state errors, and a `unit_state.lock` around read-modify-write paths. `is_print_ready` and `already_processed_fingerprint` are directionally correct, but acceptance is not exposed through a command/UI yet (see Issue 15).
-- Frontend preserves exact legacy panel layout, color states, timers, follow controls, backlog prompts, operator name capture. A first behavior-preserving extraction moved workflow-step rendering into `WorkflowSteps.tsx` and pure panel helpers into `panelLogic.ts`.
+- Frontend preserves exact legacy panel layout, color states, timers, follow controls, backlog prompts, operator name capture. Behavior-preserving extractions moved workflow-step rendering into `WorkflowSteps.tsx`, pure panel helpers into `panelLogic.ts`, and runner/backlog orchestration into `useTaskRunner.ts`.
 - Previous-test backlog processing now has a backend batch command (`process_automation_tasks`) that computes multiple ready tasks, aggregates workbook patches by path, commits Excel updates once per workbook at batch boundaries, and records task state only after commit success.
 - Tests exist for risky areas (csv failures without zero fallback, report writes fidelity, discovery, unit candidates).
 - Schema + validation script (`scripts/fixtures/validate-report-layout-schema.mjs`) + `bun run validate:report-layouts`.
@@ -75,10 +75,10 @@ Main remaining risk areas: OperatorPanel.tsx is still large (~2000 LOC) even aft
 - Status: resolved on 2026-06-25, with stale-lock cleanup as a future hardening item
 
 ### Issue 6 -- Severity: suggestion
-- File: frontend/src/features/test-panel/OperatorPanel.tsx (~2000 lines), WorkflowSteps.tsx, panelLogic.ts, types.ts; see also taskModel.ts:1-100
-- Description: Originally, one giant component (~2500 LOC) owned timers, runner loop, follow-mode scroll logic, 30+ useState/useRef/useEffect/useCallback, backlog prompts, failure notices, transformer SN dirty tracking, operator name capture, update UI, and panel rendering. A first behavior-preserving extraction moved workflow-step rendering into `WorkflowSteps.tsx`, shared prompt/failure/status types into `types.ts`, and pure task/state helpers into `panelLogic.ts`. The remaining risk is still concentrated in `OperatorPanel.tsx`: runner orchestration, folder setup, Transformer SN save flow, print/operator prompt logic, and many refs/states remain coupled in one file.
-- Suggestion: Continue the extraction in behavior-preserving slices: next extract the runner/backlog orchestration into a hook, then folder setup/SN save state, then print/operator prompt state. Keep static layout/data-source changes separate for Issue 7.
-- Status: partially addressed on 2026-06-26, with runner/setup/print prompt extraction still open
+- File: frontend/src/features/test-panel/OperatorPanel.tsx (~1600 lines), WorkflowSteps.tsx, panelLogic.ts, useTaskRunner.ts, types.ts; see also taskModel.ts:1-100
+- Description: Originally, one giant component (~2500 LOC) owned timers, runner loop, follow-mode scroll logic, 30+ useState/useRef/useEffect/useCallback, backlog prompts, failure notices, transformer SN dirty tracking, operator name capture, update UI, and panel rendering. Behavior-preserving extractions moved workflow-step rendering into `WorkflowSteps.tsx`, shared prompt/failure/status types into `types.ts`, pure task/state helpers into `panelLogic.ts`, and runner/backlog orchestration into `useTaskRunner.ts`. The remaining risk is still concentrated in `OperatorPanel.tsx`: folder setup, Transformer SN save flow, print/operator prompt logic, follow-mode scroll state, update UI, and many refs/states remain coupled in one file.
+- Suggestion: Continue the extraction in behavior-preserving slices: next extract folder setup/SN save state, then print/operator prompt state, then scroll/follow state if it remains noisy. Keep static layout/data-source changes separate for Issue 7.
+- Status: further addressed on 2026-06-26 with runner/backlog orchestration extracted to `useTaskRunner.ts`. Remaining: folder setup/SN save state, print/operator prompt state, scroll/follow state.
 
 ### Issue 7 -- Severity: suggestion
 - File: frontend/src/features/test-panel/taskModel.ts:50 (legacyPanelItems) + backend/src/automation/tasks.rs:97 (automation_tasks) + config/report-layouts/pdu500.rev02.layout.json (task_groups)
@@ -170,19 +170,19 @@ Main remaining risk areas: OperatorPanel.tsx is still large (~2000 LOC) even aft
 - Docs are accurate and useful (LEGACY_BEHAVIOR.md, ARCHITECTURE.md, CONFIGURATION_MODEL.md).
 
 ## Recommendations (priority order)
-1. Finish the Issue 6 extraction by moving runner/backlog orchestration out of OperatorPanel.tsx.
+1. Continue the Issue 6 extraction by moving folder setup/SN save state and print/operator prompt state out of OperatorPanel.tsx.
 2. Drive more of the panel from the profile and reduce task-definition duplication (Issue 7).
 3. Continue migrating remaining tasks to mappings + remove duplication.
 4. Decide and implement the acceptance override policy (Issue 15).
 5. Add a clean-profile installed-build packaged-resource smoke test.
 6. Later hardening: cache profile/config loads (Issue 8), stale-lock recovery for `unit_state.lock` and workbook locks, explicit serial placeholder config, shared wildcard matching helper, and an end-to-end invalid-profile command test.
 
-This review has been updated after the `unit_state` error-handling/locking fixes, layout-profile failure-handling fixes, profile-driven template-root fix, profile-driven report filename/discovery fix, previous-test batch report-write optimization, packaged resource-resolution fix, setup-on-folder-selection fix, v0.2.11 operator-machine release smoke, and first behavior-preserving OperatorPanel extraction landed.
+This review has been updated after the `unit_state` error-handling/locking fixes, layout-profile failure-handling fixes, profile-driven template-root fix, profile-driven report filename/discovery fix, previous-test batch report-write optimization, packaged resource-resolution fix, setup-on-folder-selection fix, v0.2.11 operator-machine release smoke, and the first two behavior-preserving OperatorPanel extractions landed.
 
 ## Files Referenced (selected)
 - backend/src/automation/{mod.rs, reports.rs, processors.rs, mapped.rs, csv_data.rs, tasks.rs, unit_state.rs, unit_candidates.rs}
 - backend/src/{commands.rs, config/{mod.rs, profile.rs, accuracy.rs}, lib.rs}
-- frontend/src/features/test-panel/{OperatorPanel.tsx (~2000 LOC), WorkflowSteps.tsx, panelLogic.ts, taskModel.ts, types.ts, backend.ts}
+- frontend/src/features/test-panel/{OperatorPanel.tsx (~1600 LOC), WorkflowSteps.tsx, panelLogic.ts, useTaskRunner.ts, taskModel.ts, types.ts, backend.ts}
 - config/report-layouts/{pdu500.rev02.layout.json, pdu500.accuracy-thresholds.json}
 - shared/schemas/report-layout.schema.json
 - backend/tauri.conf.json, backend/tests/*.rs, docs/*.md, AGENTS.md
