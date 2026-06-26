@@ -14,21 +14,26 @@
 - `backend/tauri.conf.json`
 
 **GitHub Release assets** (per version):
-- `PDU Data Automation_<ver>_x64-setup.exe`
-- `.sig` (updater signature)
+- `PDU.Data.Automation_<ver>_x64-setup.exe` (dot-normalized asset name used by `latest.json`)
+- `PDU.Data.Automation_<ver>_x64-setup.exe.sig` (updater signature)
 - `latest.json`
 - `SHA256SUMS.txt`
 - Release notes
 
+The S-drive operator installer keeps the space-name form:
+`PDU Data Automation_<ver>_x64-setup.exe`
+
+For manual installation the `.exe` alone is enough. For updater support, publish the installer, `.sig`, `latest.json`, and `SHA256SUMS.txt` together.
+
 Tauri updater URL resolves through:
 `https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/latest/download/latest.json`
 
-**S-drive layout** (example):
+**S-drive layout**:
 ```
 S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\
 ├── PDU Data Automation_0.2.10_x64-setup.exe
 ├── release-support\
-│   └── v0.2.9\
+│   └── v0.2.10\
 │       ├── latest.json
 │       ├── ... .sig
 │       └── SHA256SUMS.txt
@@ -75,12 +80,73 @@ try {
 
 Note: The `validate` script internally runs some `.mjs` helpers via the Node compatibility in Bun. The old `node scripts/run-bun.mjs` wrapper is no longer used.
 
+If `bun run check:versions` crashes in Bun's Node compatibility layer, run the script directly:
+
+```powershell
+bun scripts/release/check-version-consistency.mjs
+```
+
+If the NSIS bundle creates the installer but Tauri fails at the final signing step with Windows `os error 1224` ("user-mapped section open"), wait briefly and sign the produced installer directly:
+
+```powershell
+$keyPath = Join-Path $env:USERPROFILE ".tauri\pdu-data-automation-updater.key"
+$passwordPath = "$keyPath.password.dpapi"
+$installer = "backend\target\release\bundle\nsis\PDU Data Automation_<ver>_x64-setup.exe"
+$secure = Get-Content -LiteralPath $passwordPath | ConvertTo-SecureString
+$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+try {
+  $password = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+  bun tauri signer sign --private-key-path "$keyPath" --password "$password" "$installer"
+} finally {
+  if ($bstr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+}
+```
+
 After build:
 - Verify the installer launches cleanly on a test profile.
 - Smoke a real or safe unit folder end-to-end (Transformer SN, processing, print report).
 - Confirm generated workbook opens in Excel with no repair prompt.
 - Confirm `latest.json` points at the new version.
 - Copy installer + support files to S-drive.
+
+## Release Sequence
+
+1. Update the version in `package.json`, `backend/Cargo.toml`, and `backend/tauri.conf.json`.
+2. Update `release/vX.Y.Z.md`.
+3. Run validation. At minimum run version consistency, frontend tests/build, Rust tests/checks, and report-layout validation.
+4. Build the signed desktop installer.
+5. Prepare GitHub assets in `backend\target\release\bundle\nsis\`:
+   - dot-named installer: `PDU.Data.Automation_<ver>_x64-setup.exe`
+   - dot-named signature: `PDU.Data.Automation_<ver>_x64-setup.exe.sig`
+   - `latest.json` whose URL points at the dot-named GitHub asset
+   - `SHA256SUMS.txt`
+6. Commit the release source changes, tag the commit as `vX.Y.Z`, push `main`, and push the tag.
+7. Create the GitHub Release with the four assets above and the release notes:
+
+```powershell
+gh release create vX.Y.Z `
+  "backend\target\release\bundle\nsis\PDU.Data.Automation_X.Y.Z_x64-setup.exe" `
+  "backend\target\release\bundle\nsis\PDU.Data.Automation_X.Y.Z_x64-setup.exe.sig" `
+  "backend\target\release\bundle\nsis\latest.json" `
+  "backend\target\release\bundle\nsis\SHA256SUMS.txt" `
+  --repo Hassaan-ECE/PDU_Data_Automation_App `
+  --title "vX.Y.Z" `
+  --notes-file "release\vX.Y.Z.md"
+```
+
+8. Verify the release and updater endpoint:
+
+```powershell
+gh release view vX.Y.Z --repo Hassaan-ECE/PDU_Data_Automation_App
+Invoke-WebRequest `
+  -Uri "https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/latest/download/latest.json" `
+  -UseBasicParsing
+```
+
+9. Stage the S-drive:
+   - Copy `PDU Data Automation_<ver>_x64-setup.exe` to the S-drive root.
+   - Copy `latest.json`, `.sig`, and `SHA256SUMS.txt` to `release-support\vX.Y.Z`.
+   - Move superseded root installers/support folders to `archive\`; do not leave older versions visible at the root.
 
 ## Local `release/` Folder
 

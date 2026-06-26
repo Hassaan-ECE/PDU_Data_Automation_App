@@ -52,6 +52,16 @@ For meaningful changes:
 - Do not claim installer, updater, or report-writing behavior works unless it was actually built and tested.
 - Keep a migration checklist updated as legacy scripts are replaced.
 
+## Release / Updater Notes For Agents
+
+- Read `docs/RELEASE_AND_DEPLOYMENT.md` before doing release work.
+- Current released pilot is `v0.2.10`; its updater signing key was rotated. Older installs should be updated manually to `v0.2.10`; future updater releases should be signed with the new key.
+- The updater private key and local DPAPI passphrase helper live outside the repo under `%USERPROFILE%\.tauri\`. Never print, paste, commit, or upload either secret.
+- GitHub updater assets use dot-normalized installer names, for example `PDU.Data.Automation_0.2.10_x64-setup.exe`. The S-drive operator-facing installer uses the space-name form, for example `PDU Data Automation_0.2.10_x64-setup.exe`.
+- A GitHub updater release needs `latest.json` and a matching installer signature. Upload the installer, `.sig`, `latest.json`, and `SHA256SUMS.txt`; the `.exe` alone is only enough for manual installs.
+- Keep the S-drive root clean: only the current operator installer should be visible at the root; versioned updater support files belong under `release-support\vX.Y.Z`; superseded files belong under `archive\`.
+- If `bun run check:versions` hits the known Bun shim crash, run `bun scripts/release/check-version-consistency.mjs` directly and report that substitution.
+
 ## Important Legacy Risks To Carry Forward
 
 - The legacy GUI currently treats processor exit code `2` as `detected`, then converts that to `pass`; this must not be copied.
