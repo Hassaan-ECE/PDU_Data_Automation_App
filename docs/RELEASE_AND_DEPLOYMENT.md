@@ -6,7 +6,7 @@
 - Signed updater metadata via GitHub Releases.
 - Generated artifacts and secrets never committed.
 
-## Current Practice (v0.2.10)
+## Current Practice (v0.2.11)
 
 **Version source of truth** (must be identical):
 - `package.json`
@@ -31,9 +31,9 @@ Tauri updater URL resolves through:
 **S-drive layout**:
 ```
 S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\
-├── PDU Data Automation_0.2.10_x64-setup.exe
+├── PDU Data Automation_0.2.11_x64-setup.exe
 ├── release-support\
-│   └── v0.2.10\
+│   └── v0.2.11\
 │       ├── latest.json
 │       ├── ... .sig
 │       └── SHA256SUMS.txt
@@ -50,7 +50,7 @@ Keep the S-drive root clean: current installer at top level, versioned support f
 - The key is passphrase-protected; the local passphrase helper is stored as a Windows DPAPI secret at `%USERPROFILE%\.tauri\pdu-data-automation-updater.key.password.dpapi`.
 - Private key and password are set only for the `build:desktop` step and immediately cleared.
 - Never commit the key or password.
-- Because this key replaced the earlier public key, older installed builds may need a manual `v0.2.10` installer before future updater releases signed with this key are trusted.
+- Because this key replaced the earlier public key, older installed builds may need a manual install of the current S-drive installer before future updater releases signed with this key are trusted.
 
 ## Build & Validation Checklist (before release)
 
@@ -88,6 +88,8 @@ bun scripts/release/check-version-consistency.mjs
 
 If the NSIS bundle creates the installer but Tauri fails at the final signing step with Windows `os error 1224` ("user-mapped section open"), wait briefly and sign the produced installer directly:
 
+Use temporary environment variables for the direct signer fallback. Do not pass the password with `--password`; some wrappers echo command-line arguments.
+
 ```powershell
 $keyPath = Join-Path $env:USERPROFILE ".tauri\pdu-data-automation-updater.key"
 $passwordPath = "$keyPath.password.dpapi"
@@ -95,10 +97,13 @@ $installer = "backend\target\release\bundle\nsis\PDU Data Automation_<ver>_x64-s
 $secure = Get-Content -LiteralPath $passwordPath | ConvertTo-SecureString
 $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
 try {
-  $password = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-  bun tauri signer sign --private-key-path "$keyPath" --password "$password" "$installer"
+  $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $keyPath
+  $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+  bun tauri signer sign "$installer"
 } finally {
   if ($bstr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+  Remove-Item Env:\TAURI_SIGNING_PRIVATE_KEY_PATH -ErrorAction SilentlyContinue
+  Remove-Item Env:\TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
 }
 ```
 
