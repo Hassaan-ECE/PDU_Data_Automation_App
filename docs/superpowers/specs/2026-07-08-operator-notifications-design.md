@@ -96,7 +96,20 @@ Notification failure must never fail the automation path.
 - HTTP POST to Teams webhook
 - Soft error reporting
 
-Prefer a small shared Rust module or crate used by the pilot binary now and by the Tauri backend later. Acceptable alternative: duplicate thin HTTP/message code in the pilot and extract when integrating the main app—if extraction cost is low either way, prefer shared module from the start.
+**Repository placement:** the pilot is a **separate project folder** under `C:\Projects\Active\` (not nested inside `PDU_Data_Automation_App`). Suggested path:
+
+```text
+C:\Projects\Active\PDU_Notifier
+```
+
+(Name can be adjusted at create time; keep it short and operator-safe.)
+
+Phase 2 integration into `PDU_Data_Automation_App` will either:
+
+- copy/port the proven notify module into the Tauri backend, or  
+- depend on a tiny shared crate if both repos later share one  
+
+Do **not** require a monorepo or submodule for phase 1. The pilot must build, run, and ship on its own.
 
 ---
 
@@ -305,18 +318,25 @@ Requires a Teams bot (or Power Automate message trigger) plus a place that holds
 
 ## Repository / packaging (implementation guidance)
 
-Suggested layout (exact names flexible at plan time):
+### Pilot project (phase 1)
 
 ```text
-tools/pdu-notifier/          # or apps/pdu-notifier/
-  (pilot UI + binary)
-shared or crate: notify/     # message + webhook + config load
-docs/superpowers/specs/      # this design
+C:\Projects\Active\PDU_Notifier\     # separate project (own git repo recommended)
+  src/                               # UI + config load + webhook POST
+  station.example.json               # local station id template (no secrets)
+  settings.example.json              # shared config shape (no real webhook)
+  README.md                          # setup: Teams group, OneDrive path, station id
 ```
 
-- Keep the pilot **out of** the critical path of `bun run desktop` / production installer until phase 2.  
+- **Own folder and ideally own git repo** under `C:\Projects\Active\`.  
+- Design spec for the feature also lives in `PDU_Data_Automation_App` (`docs/superpowers/specs/…`) so the main product history retains the decision.  
 - Pilot can ship as a folder on S-drive or OneDrive (portable exe + local station file).  
-- Do not put webhook URLs or secrets in git.
+- Do not put webhook URLs or secrets in git.  
+- Do **not** couple phase 1 builds to `bun run desktop` / the main installer.
+
+### Main app (phase 2)
+
+Wire the same config schema and message rules into `PDU_Data_Automation_App` after the pilot is proven on all four stations.
 
 ---
 
@@ -324,7 +344,7 @@ docs/superpowers/specs/      # this design
 
 | Phase | Deliverable | Success criteria |
 |-------|-------------|------------------|
-| **1** | Pilot button app + OneDrive config + operators Teams group | All four stations can send test/sim messages; phones receive them |
+| **1** | Separate project `C:\Projects\Active\PDU_Notifier` (button app) + OneDrive config + operators Teams group | All four stations can send test/sim messages; phones receive them |
 | **2** | Shared notify module wired into PDU Data Automation | Real fail / complete / stuck / summary; automation unaffected by notify failures |
 | **3+** | Optional: schedule polish, rollup, two-way bot | Only if operators still want it after phase 2 |
 
@@ -336,10 +356,11 @@ docs/superpowers/specs/      # this design
 2. Local station id mechanism (file vs env).  
 3. Teams Workflow template details (Power Automate “Post to channel when webhook received” vs legacy connector).  
 4. Whether pilot is Tauri/React mini-app, native dialog, or simplest Rust+egui/web UI—prefer **fastest reliable Windows desktop**.  
-5. Whether phase 1 implements optional summary **schedule** or only manual summary (manual is enough for pilot buttons).
+5. Whether phase 1 implements optional summary **schedule** or only manual summary (manual is enough for pilot buttons).  
+6. Final folder/repo name if not `PDU_Notifier` (e.g. `PDU_Station_Notifier`).
 
 ---
 
 ## Summary
 
-Ship a **tiny button-driven notifier** that posts to a **new operators-only Teams group** using a webhook, with **Test Station N** identity and **shared OneDrive config** under `svc-pdu`. Prove it on the floor, then integrate the same path into the main automation app for problem, complete, stuck, and summary events—without two-way chat until a later phase.
+Ship a **tiny button-driven notifier** as a **separate project** at `C:\Projects\Active\PDU_Notifier` (not inside the main app repo). It posts to a **new operators-only Teams group** using a webhook, with **Test Station N** identity and **shared OneDrive config** under `svc-pdu`. Prove it on the floor, then integrate the same path into `PDU_Data_Automation_App` for problem, complete, stuck, and summary events—without two-way chat until a later phase.
