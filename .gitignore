@@ -53,3 +53,13 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Live Teams notification configuration (examples remain tracked)
+/station.json
+/settings.json
+/config/notifications/station.json
+/config/notifications/settings.json
+
+# Local notification / desktop smoke-test helpers (not for commit)
+.local-notifications/
+.local-test/

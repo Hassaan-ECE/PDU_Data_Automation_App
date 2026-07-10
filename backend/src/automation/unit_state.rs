@@ -18,6 +18,22 @@ pub struct UnitState {
     pub schema_version: u8,
     #[serde(default)]
     pub tasks: BTreeMap<String, UnitTaskState>,
+    #[serde(default)]
+    pub notification_receipts: NotificationReceipts,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationReceipts {
+    #[serde(default)]
+    pub complete: Option<NotificationReceipt>,
+    #[serde(default)]
+    pub problems: BTreeMap<String, NotificationReceipt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationReceipt {
+    pub event_key: String,
+    pub accepted_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +96,7 @@ impl Default for UnitState {
         Self {
             schema_version: 1,
             tasks: BTreeMap::new(),
+            notification_receipts: NotificationReceipts::default(),
         }
     }
 }
@@ -131,6 +148,116 @@ pub fn load_or_ensure_task_entries(
     }
 
     Ok(state)
+}
+
+/// Returns the durable receipt for the unit-level Complete notification, if one exists.
+pub fn get_complete_notification_receipt(
+    unit_folder: &Path,
+) -> io::Result<Option<NotificationReceipt>> {
+    let _lock = UnitStateLock::acquire(unit_folder)?;
+    let state = load_or_default_unlocked(unit_folder)?;
+
+    Ok(state.notification_receipts.complete)
+}
+
+/// Records that the Complete event was accepted by the notification endpoint.
+///
+/// Returns `true` when the state file changed. Re-recording the same event key preserves the
+/// original acceptance timestamp and does not rewrite the state file.
+pub fn record_complete_notification_receipt(
+    unit_folder: &Path,
+    event_key: &str,
+) -> io::Result<bool> {
+    let _lock = UnitStateLock::acquire(unit_folder)?;
+    let mut state = load_or_default_unlocked(unit_folder)?;
+
+    if state
+        .notification_receipts
+        .complete
+        .as_ref()
+        .is_some_and(|receipt| receipt.event_key == event_key)
+    {
+        return Ok(false);
+    }
+
+    state.notification_receipts.complete = Some(NotificationReceipt {
+        event_key: event_key.to_string(),
+        accepted_at: now_string(),
+    });
+    save_unit_state_unlocked(unit_folder, &state)?;
+
+    Ok(true)
+}
+
+/// Returns the durable Problem receipt for one task, if one exists.
+pub fn get_problem_notification_receipt(
+    unit_folder: &Path,
+    task_id: &str,
+) -> io::Result<Option<NotificationReceipt>> {
+    let _lock = UnitStateLock::acquire(unit_folder)?;
+    let state = load_or_default_unlocked(unit_folder)?;
+
+    Ok(state.notification_receipts.problems.get(task_id).cloned())
+}
+
+/// Records that a task-level Problem event was accepted by the notification endpoint.
+///
+/// Returns `true` when the state file changed. Re-recording the same event key for the task
+/// preserves the original acceptance timestamp and does not rewrite the state file.
+pub fn record_problem_notification_receipt(
+    unit_folder: &Path,
+    task_id: &str,
+    event_key: &str,
+) -> io::Result<bool> {
+    let _lock = UnitStateLock::acquire(unit_folder)?;
+    let mut state = load_or_default_unlocked(unit_folder)?;
+
+    if state
+        .notification_receipts
+        .problems
+        .get(task_id)
+        .is_some_and(|receipt| receipt.event_key == event_key)
+    {
+        return Ok(false);
+    }
+
+    state.notification_receipts.problems.insert(
+        task_id.to_string(),
+        NotificationReceipt {
+            event_key: event_key.to_string(),
+            accepted_at: now_string(),
+        },
+    );
+    save_unit_state_unlocked(unit_folder, &state)?;
+
+    Ok(true)
+}
+
+/// Clears Problem receipts for tasks the worker has observed as recovered or passed.
+///
+/// Returns `true` when at least one receipt was removed. Supplying tasks without receipts is a
+/// no-op and does not rewrite the state file.
+pub fn clear_problem_notification_receipts(
+    unit_folder: &Path,
+    recovered_or_passed_task_ids: &[String],
+) -> io::Result<bool> {
+    let _lock = UnitStateLock::acquire(unit_folder)?;
+    let mut state = load_or_default_unlocked(unit_folder)?;
+    let mut changed = false;
+
+    for task_id in recovered_or_passed_task_ids {
+        changed |= state
+            .notification_receipts
+            .problems
+            .remove(task_id)
+            .is_some();
+    }
+
+    if changed {
+        save_unit_state_unlocked(unit_folder, &state)?;
+    }
+
+    Ok(changed)
 }
 
 fn load_unit_state_unlocked(unit_folder: &Path) -> io::Result<Option<UnitState>> {
@@ -398,6 +525,148 @@ mod tests {
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains(UNIT_STATE_FILE));
+    }
+
+    #[test]
+    fn old_unit_state_without_notification_receipts_uses_default() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("unit");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        fs::write(
+            state_path(&unit_folder),
+            r#"{
+  "schema_version": 1,
+  "tasks": {}
+}"#,
+        )
+        .expect("write old state");
+
+        let state = load_or_default(&unit_folder).expect("load old state");
+
+        assert_eq!(state.notification_receipts, NotificationReceipts::default());
+    }
+
+    #[test]
+    fn problem_notification_receipt_records_queries_and_persists() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("unit");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+
+        assert_eq!(
+            get_problem_notification_receipt(&unit_folder, "system-208")
+                .expect("query missing receipt"),
+            None
+        );
+        assert!(record_problem_notification_receipt(
+            &unit_folder,
+            "system-208",
+            "problem:system-208:fingerprint-1",
+        )
+        .expect("record receipt"));
+
+        let receipt = get_problem_notification_receipt(&unit_folder, "system-208")
+            .expect("query recorded receipt")
+            .expect("recorded receipt");
+        let reloaded = load_or_default(&unit_folder).expect("reload state");
+
+        assert_eq!(receipt.event_key, "problem:system-208:fingerprint-1");
+        assert!(!receipt.accepted_at.is_empty());
+        assert_eq!(
+            reloaded.notification_receipts.problems.get("system-208"),
+            Some(&receipt)
+        );
+    }
+
+    #[test]
+    fn repeated_problem_receipt_record_is_a_no_op() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("unit");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let event_key = "problem:breaker-1:fingerprint-1";
+
+        assert!(
+            record_problem_notification_receipt(&unit_folder, "breaker-1", event_key)
+                .expect("first record")
+        );
+        let first_receipt = get_problem_notification_receipt(&unit_folder, "breaker-1")
+            .expect("query first receipt")
+            .expect("first receipt");
+        let first_content =
+            fs::read_to_string(state_path(&unit_folder)).expect("first state content");
+
+        assert!(
+            !record_problem_notification_receipt(&unit_folder, "breaker-1", event_key)
+                .expect("repeated record")
+        );
+
+        assert_eq!(
+            get_problem_notification_receipt(&unit_folder, "breaker-1")
+                .expect("query repeated receipt")
+                .expect("repeated receipt"),
+            first_receipt
+        );
+        assert_eq!(
+            fs::read_to_string(state_path(&unit_folder)).expect("repeated state content"),
+            first_content
+        );
+    }
+
+    #[test]
+    fn problem_receipt_clears_after_task_recovery_without_rewriting_no_op() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("unit");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        record_problem_notification_receipt(&unit_folder, "recovered", "problem:recovered:1")
+            .expect("record recovered receipt");
+        record_problem_notification_receipt(&unit_folder, "still-failing", "problem:failing:1")
+            .expect("record failing receipt");
+
+        assert!(
+            clear_problem_notification_receipts(&unit_folder, &["recovered".to_string()])
+                .expect("clear recovered receipt")
+        );
+        assert_eq!(
+            get_problem_notification_receipt(&unit_folder, "recovered")
+                .expect("query cleared receipt"),
+            None
+        );
+        assert!(
+            get_problem_notification_receipt(&unit_folder, "still-failing")
+                .expect("query retained receipt")
+                .is_some()
+        );
+
+        let cleared_content =
+            fs::read_to_string(state_path(&unit_folder)).expect("cleared state content");
+        assert!(
+            !clear_problem_notification_receipts(&unit_folder, &["recovered".to_string()])
+                .expect("repeat clear")
+        );
+        assert_eq!(
+            fs::read_to_string(state_path(&unit_folder)).expect("no-op state content"),
+            cleared_content
+        );
+    }
+
+    #[test]
+    fn complete_notification_receipt_survives_reload() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("unit");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+
+        assert!(
+            record_complete_notification_receipt(&unit_folder, "complete:unit-123:ready-1")
+                .expect("record complete receipt")
+        );
+
+        let queried = get_complete_notification_receipt(&unit_folder)
+            .expect("query complete receipt")
+            .expect("complete receipt");
+        let reloaded = load_or_default(&unit_folder).expect("reload state");
+
+        assert_eq!(queried.event_key, "complete:unit-123:ready-1");
+        assert!(!queried.accepted_at.is_empty());
+        assert_eq!(reloaded.notification_receipts.complete, Some(queried));
     }
 
     #[test]

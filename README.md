@@ -16,13 +16,13 @@ C:\Projects\Active\PDU_Data_Automation_App
 
 ## Status
 
-`v0.2.11` is the current released pilot build. `v0.2.10` and earlier remain previous pilot builds.
+`v0.2.12` is the current released pilot build. `v0.2.11` and earlier remain previous pilot builds.
 
 Current release:
 
-- tag: `v0.2.11`
-- GitHub release: `https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.11`
-- S-drive installer: `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.11_x64-setup.exe`
+- tag: `v0.2.12`
+- GitHub release: `https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.12`
+- S-drive installer: `S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\PDU Data Automation_0.2.12_x64-setup.exe`
 
 Implemented in the pilot:
 

@@ -1,9 +1,9 @@
 use serde::Serialize;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-use tauri::Emitter;
+use tauri::{Emitter, State};
 
-use crate::{automation, config};
+use crate::{automation, config, notifications};
 
 static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 static WINDOW_SETUP_UPTIME_MS: OnceLock<u128> = OnceLock::new();
@@ -40,6 +40,68 @@ pub fn get_app_status() -> BackendStatus {
 }
 
 #[tauri::command]
+pub fn get_notification_status(
+    notifications: State<'_, notifications::NotificationService>,
+) -> notifications::NotificationRuntimeStatus {
+    notifications.status()
+}
+
+#[tauri::command]
+pub fn send_notification_test(notifications: State<'_, notifications::NotificationService>) {
+    notifications.enqueue_test_ping();
+}
+
+#[tauri::command]
+pub fn get_app_notification_settings() -> Result<notifications::AppNotificationSettingsView, String>
+{
+    let settings = notifications::load_app_settings().map_err(|error| error.to_string())?;
+    Ok((&settings).into())
+}
+
+#[tauri::command]
+pub fn verify_settings_password(password: String) -> Result<bool, String> {
+    notifications::verify_settings_password(&password).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn save_app_notification_settings(
+    notification_service: State<'_, notifications::NotificationService>,
+    mut request: notifications::SaveAppNotificationSettingsRequest,
+) -> Result<notifications::AppNotificationSettingsView, String> {
+    let station_id = request.station_id.trim().to_string();
+    if !matches!(
+        station_id.as_str(),
+        "test-station-1" | "test-station-2" | "test-station-3" | "test-station-4"
+    ) {
+        return Err("Select Test Station 1, 2, 3, or 4".to_string());
+    }
+
+    request.station_name = notifications::station_name_for_id(&station_id).to_string();
+    request.station_id = station_id;
+    let saved =
+        notifications::save_app_settings_request(&request).map_err(|error| error.to_string())?;
+    notification_service.mark_configuration_changed();
+    // Create stations/* + shared root after the settings write so a layout
+    // failure does not block keeping the chosen folder. Worker appends also
+    // re-ensure the layout on the next Problem/Complete delivery.
+    if let Err(error) = notifications::ensure_configured_shared_layout(
+        &notifications::load_app_settings().map_err(|error| error.to_string())?,
+    ) {
+        return Err(format!(
+            "Settings saved, but the shared folder layout could not be prepared: {error}"
+        ));
+    }
+    Ok(saved)
+}
+
+#[tauri::command]
+pub fn change_settings_password(
+    request: notifications::ChangeSettingsPasswordRequest,
+) -> Result<(), String> {
+    notifications::change_settings_password(&request).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn load_layout_profile() -> Result<config::ProfileLoadSummary, String> {
     config::load_layout_profile()
         .map(|profile| profile.to_load_summary())
@@ -58,23 +120,35 @@ pub fn find_latest_unit_candidate() -> automation::LatestUnitCandidateResult {
 
 #[tauri::command]
 pub fn setup_unit_folder_with_transformer_sn(
+    notifications: State<'_, notifications::NotificationService>,
     unit_folder: String,
     unit_serial_number: Option<String>,
     transformer_sn: String,
 ) -> Result<automation::UnitFolderSummary, automation::AutomationCommandError> {
-    automation::setup_unit_folder_with_transformer_sn(
+    let notification_folder = unit_folder.clone();
+    let result = automation::setup_unit_folder_with_transformer_sn(
         unit_folder,
         unit_serial_number,
         transformer_sn,
-    )
+    );
+    if result.is_ok() {
+        notifications.enqueue_complete_check(notification_folder);
+    }
+    result
 }
 
 #[tauri::command]
 pub fn save_transformer_sn(
+    notifications: State<'_, notifications::NotificationService>,
     unit_folder: String,
     transformer_sn: String,
 ) -> Result<(), automation::AutomationCommandError> {
-    automation::save_transformer_sn(unit_folder, transformer_sn)
+    let notification_folder = unit_folder.clone();
+    let result = automation::save_transformer_sn(unit_folder, transformer_sn);
+    if result.is_ok() {
+        notifications.enqueue_complete_check(notification_folder);
+    }
+    result
 }
 
 #[tauri::command]
@@ -106,22 +180,33 @@ pub fn scan_unit_folder(unit_folder: String) -> Result<automation::UnitFolderSum
 
 #[tauri::command]
 pub fn process_automation_task(
+    notifications: State<'_, notifications::NotificationService>,
     unit_folder: String,
     task_id: String,
 ) -> Result<automation::TaskProcessResult, String> {
-    automation::process_task(unit_folder, task_id).map_err(|error| error.to_string())
+    let notification_folder = unit_folder.clone();
+    let result = automation::process_task(unit_folder, task_id);
+    if let Ok(processed) = &result {
+        notifications.enqueue_task_results(notification_folder, vec![processed.clone()]);
+    }
+    result.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub fn process_automation_tasks(
     app: tauri::AppHandle,
+    notifications: State<'_, notifications::NotificationService>,
     unit_folder: String,
     task_ids: Vec<String>,
 ) -> Result<automation::TaskBatchProcessResult, String> {
-    automation::process_tasks_with_progress(unit_folder, task_ids, |progress| {
+    let notification_folder = unit_folder.clone();
+    let result = automation::process_tasks_with_progress(unit_folder, task_ids, |progress| {
         let _ = app.emit(AUTOMATION_TASK_BATCH_PROGRESS_EVENT, progress);
-    })
-    .map_err(|error| error.to_string())
+    });
+    if let Ok(batch) = &result {
+        notifications.enqueue_task_results(notification_folder, batch.results.clone());
+    }
+    result.map_err(|error| error.to_string())
 }
 
 #[tauri::command]

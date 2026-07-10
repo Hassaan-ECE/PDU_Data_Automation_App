@@ -5737,12 +5737,14 @@ dependencies = [
 
 [[package]]
 name = "pdu-data-automation-app"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "chrono",
  "csv",
  "regex",
+ "reqwest 0.13.4",
  "roxmltree",
+ "rustls 0.23.40",
  "serde",
  "serde_json",
  "tauri",
@@ -6710,6 +6712,7 @@ checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "http 1.4.2",

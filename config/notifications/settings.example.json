@@ -1,0 +1,51 @@
+{
+  "enabled": true,
+  "teams_destination_name": "PDU Testing",
+  "teams_webhook_url": "https://REPLACE_WITH_TEAMS_WORKFLOW_WEBHOOK",
+  "stations": {
+    "test-station-1": {
+      "station_name": "Test Station 1",
+      "idle_timeout_minutes": 30,
+      "events": {
+        "problem": true,
+        "complete": true,
+        "stuck": false,
+        "summary": false
+      },
+      "summary_schedule_times": []
+    },
+    "test-station-2": {
+      "station_name": "Test Station 2",
+      "idle_timeout_minutes": 30,
+      "events": {
+        "problem": true,
+        "complete": true,
+        "stuck": false,
+        "summary": false
+      },
+      "summary_schedule_times": []
+    },
+    "test-station-3": {
+      "station_name": "Test Station 3",
+      "idle_timeout_minutes": 30,
+      "events": {
+        "problem": true,
+        "complete": true,
+        "stuck": false,
+        "summary": false
+      },
+      "summary_schedule_times": []
+    },
+    "test-station-4": {
+      "station_name": "Test Station 4",
+      "idle_timeout_minutes": 30,
+      "events": {
+        "problem": true,
+        "complete": true,
+        "stuck": false,
+        "summary": false
+      },
+      "summary_schedule_times": []
+    }
+  }
+}

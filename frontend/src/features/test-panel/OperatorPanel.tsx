@@ -1,24 +1,33 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, Save, Trash2 } from "lucide-react";
+import { ChevronDown, Save, Settings as SettingsIcon, Trash2 } from "lucide-react";
 
 import {
+  changeSettingsPassword,
+  chooseSharedNotificationsFolder,
   chooseUnitFolder,
+  getAppNotificationSettings,
   getBackendStatus,
+  getNotificationStatus,
   loadLayoutProfile,
   openPrintReportDialog,
   openReportLocation,
   openReportPath,
   saveFinalOperatorName,
+  saveAppNotificationSettings,
   saveTransformerSn,
   scanUnitFolder,
   setupUnitFolder,
+  sendNotificationTest,
   validateReadyForPrint,
+  verifySettingsPassword,
   type BackendStatus,
   type LayoutLoadResponse,
   type PrintReadinessBlocker,
   type TaskProcessResult,
   type UnitFolderSummary,
 } from "@/integrations/tauri/backend";
+import { NotificationSettingsPage } from "@/features/settings/NotificationSettingsPage";
+import { SettingsPasswordModal } from "@/features/settings/SettingsPasswordModal";
 import { markStartup } from "@/shared/lib/startupTiming";
 import { cn } from "@/shared/lib/utils";
 
@@ -121,6 +130,8 @@ export function OperatorPanel() {
   const [operatorDropdownOpen, setOperatorDropdownOpen] = useState(false);
   const [operatorFilterText, setOperatorFilterText] = useState("");
   const [isOpeningPrintDialog, setIsOpeningPrintDialog] = useState(false);
+  const [panelView, setPanelView] = useState<"operator" | "notification-settings">("operator");
+  const [settingsPasswordOpen, setSettingsPasswordOpen] = useState(false);
   const appVersion = backendStatus?.version ?? "0.2.9";
 
   const panelItems = useMemo(() => applyTaskStates(legacyPanelItems, taskStates), [taskStates]);
@@ -1259,9 +1270,47 @@ export function OperatorPanel() {
     resetLabel: nextResetButtonLabel,
   });
   const visibleOperatorNames = matchingOperatorNames(operatorNames, operatorFilterText);
+  const settingsAccessDisabled =
+    isRunning ||
+    Boolean(currentTaskId) ||
+    isSettingUpReports ||
+    isScanningFolder ||
+    isChoosingFolder ||
+    isOpeningPrintDialog ||
+    Boolean(backlogPrompt) ||
+    printOperatorPromptOpen ||
+    printReadinessBlockers.length > 0;
+
+  if (panelView === "notification-settings") {
+    return (
+      <NotificationSettingsPage
+        onBack={() => setPanelView("operator")}
+        loadSettings={getAppNotificationSettings}
+        saveSettings={saveAppNotificationSettings}
+        changePassword={changeSettingsPassword}
+        sendTestPing={sendNotificationTest}
+        getNotificationStatus={getNotificationStatus}
+        chooseSharedFolder={chooseSharedNotificationsFolder}
+      />
+    );
+  }
 
   return (
-    <main className="flex h-screen min-h-[400px] w-full min-w-[360px] max-w-full flex-col overflow-hidden bg-[#20201f] p-3.5 text-white">
+    <main className="relative flex h-screen min-h-[400px] w-full min-w-[360px] max-w-full flex-col overflow-hidden bg-[#20201f] p-3.5 text-white">
+      <button
+        type="button"
+        aria-label="Open notification settings"
+        title={
+          settingsAccessDisabled
+            ? "Notification settings are unavailable while automation is active"
+            : "Notification settings"
+        }
+        onClick={() => setSettingsPasswordOpen(true)}
+        disabled={settingsAccessDisabled}
+        className="absolute right-3 top-3 z-10 inline-flex h-8 w-8 items-center justify-center rounded-md bg-[#3a3a38] text-[#d8d2c8] shadow-sm transition hover:bg-[#454542] hover:text-white disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-[#3a3a38] disabled:hover:text-[#d8d2c8]"
+      >
+        <SettingsIcon className="h-4 w-4" aria-hidden="true" />
+      </button>
       <section className="px-1 py-2">
         <div className="text-center text-[26pt] font-bold leading-none tracking-normal text-white">
           {formatTime(remainingSeconds)}
@@ -1629,6 +1678,16 @@ export function OperatorPanel() {
           </section>
         </div>
       ) : null}
+
+      <SettingsPasswordModal
+        open={settingsPasswordOpen}
+        verify={verifySettingsPassword}
+        onCancel={() => setSettingsPasswordOpen(false)}
+        onUnlock={() => {
+          setSettingsPasswordOpen(false);
+          setPanelView("notification-settings");
+        }}
+      />
     </main>
   );
 }

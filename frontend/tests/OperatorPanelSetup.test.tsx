@@ -3,7 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   chooseUnitFolder: vi.fn(),
+  chooseSharedNotificationsFolder: vi.fn(),
+  changeSettingsPassword: vi.fn(),
+  getAppNotificationSettings: vi.fn(),
   getBackendStatus: vi.fn(),
+  getNotificationStatus: vi.fn(),
   getSuggestedUnitFolder: vi.fn(),
   listenAutomationTaskBatchProgress: vi.fn(),
   loadLayoutProfile: vi.fn(),
@@ -13,15 +17,22 @@ const mocks = vi.hoisted(() => ({
   processAutomationTasks: vi.fn(),
   processAutomationTask: vi.fn(),
   saveFinalOperatorName: vi.fn(),
+  saveAppNotificationSettings: vi.fn(),
+  sendNotificationTest: vi.fn(),
   saveTransformerSn: vi.fn(),
   scanUnitFolder: vi.fn(),
   setupUnitFolder: vi.fn(),
   validateReadyForPrint: vi.fn(),
+  verifySettingsPassword: vi.fn(),
 }));
 
 vi.mock("@/integrations/tauri/backend", () => ({
   chooseUnitFolder: mocks.chooseUnitFolder,
+  chooseSharedNotificationsFolder: mocks.chooseSharedNotificationsFolder,
+  changeSettingsPassword: mocks.changeSettingsPassword,
+  getAppNotificationSettings: mocks.getAppNotificationSettings,
   getBackendStatus: mocks.getBackendStatus,
+  getNotificationStatus: mocks.getNotificationStatus,
   getSuggestedUnitFolder: mocks.getSuggestedUnitFolder,
   isTauriRuntime: () => false,
   listenAutomationTaskBatchProgress: mocks.listenAutomationTaskBatchProgress,
@@ -32,10 +43,13 @@ vi.mock("@/integrations/tauri/backend", () => ({
   processAutomationTasks: mocks.processAutomationTasks,
   processAutomationTask: mocks.processAutomationTask,
   saveFinalOperatorName: mocks.saveFinalOperatorName,
+  saveAppNotificationSettings: mocks.saveAppNotificationSettings,
+  sendNotificationTest: mocks.sendNotificationTest,
   saveTransformerSn: mocks.saveTransformerSn,
   scanUnitFolder: mocks.scanUnitFolder,
   setupUnitFolder: mocks.setupUnitFolder,
   validateReadyForPrint: mocks.validateReadyForPrint,
+  verifySettingsPassword: mocks.verifySettingsPassword,
 }));
 
 import { App } from "@/app/App";
@@ -107,6 +121,25 @@ describe("OperatorPanel inline Transformer SN setup", () => {
       serial_number: "262343000072",
       unit_folder: "C:\\PDU500\\262343000072",
     });
+    mocks.getNotificationStatus.mockResolvedValue(null);
+    mocks.getAppNotificationSettings.mockResolvedValue({
+      enabled: true,
+      events: { complete: true, problem: true, stuck: false, summary: false },
+      idle_timeout_minutes: 30,
+      shared_shift_log_path: "",
+      station_id: "test-station-1",
+      station_name: "Test Station 1",
+      teams_destination_name: "PDU Testing",
+      teams_webhook_url: "",
+      webhook_configured: false,
+    });
+    mocks.saveAppNotificationSettings.mockImplementation(async (request) => ({
+      ...request,
+      webhook_configured: Boolean(request.teams_webhook_url),
+    }));
+    mocks.changeSettingsPassword.mockResolvedValue(undefined);
+    mocks.sendNotificationTest.mockResolvedValue(undefined);
+    mocks.verifySettingsPassword.mockImplementation(async (password) => password === "0601");
     mocks.listenAutomationTaskBatchProgress.mockResolvedValue(() => {});
     mocks.scanUnitFolder.mockResolvedValue(unitSummary("C:\\PDU500\\262343000072", "262343000072"));
     mocks.setupUnitFolder.mockResolvedValue(unitSummary("C:\\PDU500\\262343000072", "262343000072"));
@@ -154,6 +187,14 @@ describe("OperatorPanel inline Transformer SN setup", () => {
       expect(mocks.saveTransformerSn).toHaveBeenCalledWith("C:\\PDU500\\262343000072", "TX-PRINT");
     });
   }
+
+  it("keeps the operator panel usable without a Teams status footer line", async () => {
+    render(<App />);
+
+    expect(screen.queryByText(/Teams alerts ·/)).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Browse unit folder" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Open notification settings" })).toBeEnabled();
+  });
 
   it("shows the inline unit selector and Transformer SN input without opening setup", async () => {
     render(<App />);
@@ -251,6 +292,7 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
 
     expect(await screen.findByText("Previous Tests Detected")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open notification settings" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Batch Run Previous Tests" }));
 
     await waitFor(() => {
@@ -507,5 +549,28 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Transformer SN is missing.");
     expect(mocks.openReportPath).not.toHaveBeenCalled();
+  });
+
+  it("password-gates notification settings and re-locks after Back", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open notification settings" }));
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "wrong" } });
+    fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Incorrect password");
+    expect(screen.getByRole("dialog", { name: "Notification settings" })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "0601" } });
+    fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Notification settings" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Back to operator panel" }));
+
+    expect(screen.getByRole("button", { name: "Open notification settings" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open notification settings" }));
+    expect(screen.getByRole("dialog", { name: "Notification settings" })).toBeInTheDocument();
   });
 });

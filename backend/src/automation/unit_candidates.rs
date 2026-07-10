@@ -182,6 +182,14 @@ fn detect_unit_serial(path: &Path, rules: &SerialDetectionRules) -> Option<Candi
     detect_serial_from_folder_name(path, rules).or_else(|| detect_serial_from_metadata(path, rules))
 }
 
+/// Resolve a selected unit's serial using the same profile-driven folder and
+/// metadata rules as automatic unit discovery.
+pub(crate) fn resolve_unit_serial_number(path: &Path) -> Option<String> {
+    let profile = load_layout_profile().ok();
+    let rules = SerialDetectionRules::from_profile(profile.as_ref());
+    detect_unit_serial(path, &rules).map(|candidate| candidate.serial_number)
+}
+
 fn detect_serial_from_folder_name(
     path: &Path,
     rules: &SerialDetectionRules,

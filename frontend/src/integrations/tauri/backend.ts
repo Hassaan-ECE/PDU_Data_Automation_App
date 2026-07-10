@@ -94,6 +94,39 @@ export interface TaskProcessResult {
   csv_fingerprint: string | null;
 }
 
+export interface NotificationRuntimeStatus {
+  state: "idle" | "ready" | "sent" | "skipped" | "failed";
+  message: string;
+  station_name: string | null;
+  destination_name: string | null;
+  updated_at: string | null;
+  event_kind?: "test_ping" | "problem" | "complete" | "stuck" | "summary" | null;
+}
+
+export interface NotificationEventToggles {
+  problem: boolean;
+  complete: boolean;
+  stuck: boolean;
+  summary: boolean;
+}
+
+export interface AppNotificationSettingsView {
+  enabled: boolean;
+  teams_destination_name: string;
+  teams_webhook_url: string;
+  webhook_configured: boolean;
+  station_id: string;
+  station_name: string;
+  idle_timeout_minutes: number;
+  events: NotificationEventToggles;
+  shared_shift_log_path: string;
+}
+
+export type SaveAppNotificationSettingsRequest = Omit<
+  AppNotificationSettingsView,
+  "webhook_configured"
+>;
+
 export interface TaskBatchProcessResult {
   results: TaskProcessResult[];
   committed: boolean;
@@ -153,6 +186,21 @@ export async function chooseUnitFolder(): Promise<string | null> {
     directory: true,
     multiple: false,
     title: "Select PDU unit folder",
+  });
+
+  return typeof selected === "string" ? selected : null;
+}
+
+/** Pick the shared OneDrive/network folder used for multi-station shift logging. */
+export async function chooseSharedNotificationsFolder(): Promise<string | null> {
+  if (!isTauriRuntime()) {
+    return "C:\\Users\\Public\\PDU_Notifications_Shared";
+  }
+
+  const selected = await openDialog({
+    directory: true,
+    multiple: false,
+    title: "Select shared OneDrive notifications folder",
   });
 
   return typeof selected === "string" ? selected : null;
@@ -261,6 +309,85 @@ export async function processAutomationTask(
   return invoke<TaskProcessResult>("process_automation_task", { unitFolder, taskId });
 }
 
+export async function getNotificationStatus(): Promise<NotificationRuntimeStatus | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  return invoke<NotificationRuntimeStatus>("get_notification_status");
+}
+
+export async function getAppNotificationSettings(): Promise<AppNotificationSettingsView> {
+  if (!isTauriRuntime()) {
+    return { ...mockNotificationSettings, events: { ...mockNotificationSettings.events } };
+  }
+
+  return invoke<AppNotificationSettingsView>("get_app_notification_settings");
+}
+
+export async function verifySettingsPassword(password: string): Promise<boolean> {
+  if (!isTauriRuntime()) {
+    return password === mockSettingsPassword;
+  }
+
+  return invoke<boolean>("verify_settings_password", { password });
+}
+
+export async function saveAppNotificationSettings(
+  request: SaveAppNotificationSettingsRequest,
+): Promise<AppNotificationSettingsView> {
+  if (!isTauriRuntime()) {
+    if (request.teams_webhook_url.trim()) {
+      mockNotificationWebhookUrl = request.teams_webhook_url.trim();
+    }
+    mockNotificationSettings = {
+      ...request,
+      events: { ...request.events },
+      teams_webhook_url: "",
+      webhook_configured: Boolean(mockNotificationWebhookUrl),
+    };
+    return { ...mockNotificationSettings, events: { ...mockNotificationSettings.events } };
+  }
+
+  return invoke<AppNotificationSettingsView>("save_app_notification_settings", { request });
+}
+
+export async function changeSettingsPassword(
+  currentPassword: string,
+  newPassword: string,
+  confirmPassword: string,
+): Promise<void> {
+  if (!isTauriRuntime()) {
+    if (currentPassword !== mockSettingsPassword) {
+      throw new Error("Current password is incorrect");
+    }
+    if (!newPassword.trim()) {
+      throw new Error("New password must not be empty");
+    }
+    if (newPassword !== confirmPassword) {
+      throw new Error("New password and confirmation do not match");
+    }
+    mockSettingsPassword = newPassword.trim();
+    return;
+  }
+
+  await invoke("change_settings_password", {
+    request: {
+      confirm_password: confirmPassword,
+      current_password: currentPassword,
+      new_password: newPassword,
+    },
+  });
+}
+
+export async function sendNotificationTest(): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  await invoke("send_notification_test");
+}
+
 export async function processAutomationTasks(
   unitFolder: string,
   taskIds: string[],
@@ -353,3 +480,22 @@ function mockUnitFolderSuggestion(): UnitFolderSuggestion {
     unit_folder: unitFolder,
   };
 }
+
+let mockSettingsPassword = "0601";
+let mockNotificationWebhookUrl = "";
+let mockNotificationSettings: AppNotificationSettingsView = {
+  enabled: true,
+  events: {
+    complete: true,
+    problem: true,
+    stuck: false,
+    summary: false,
+  },
+  idle_timeout_minutes: 30,
+  shared_shift_log_path: "",
+  station_id: "test-station-1",
+  station_name: "Test Station 1",
+  teams_destination_name: "PDU Testing",
+  teams_webhook_url: "",
+  webhook_configured: false,
+};

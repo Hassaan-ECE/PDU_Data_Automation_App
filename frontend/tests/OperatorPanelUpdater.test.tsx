@@ -3,7 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const backendMocks = vi.hoisted(() => ({
   chooseUnitFolder: vi.fn(),
+  chooseSharedNotificationsFolder: vi.fn(),
+  changeSettingsPassword: vi.fn(),
+  getAppNotificationSettings: vi.fn(),
   getBackendStatus: vi.fn(),
+  getNotificationStatus: vi.fn(),
   getSuggestedUnitFolder: vi.fn(),
   listenAutomationTaskBatchProgress: vi.fn(),
   loadLayoutProfile: vi.fn(),
@@ -11,10 +15,13 @@ const backendMocks = vi.hoisted(() => ({
   openReportPath: vi.fn(),
   processAutomationTasks: vi.fn(),
   processAutomationTask: vi.fn(),
+  saveAppNotificationSettings: vi.fn(),
+  sendNotificationTest: vi.fn(),
   saveTransformerSn: vi.fn(),
   scanUnitFolder: vi.fn(),
   setupUnitFolder: vi.fn(),
   validateReadyForPrint: vi.fn(),
+  verifySettingsPassword: vi.fn(),
 }));
 
 const updaterMocks = vi.hoisted(() => ({
@@ -23,7 +30,11 @@ const updaterMocks = vi.hoisted(() => ({
 
 vi.mock("@/integrations/tauri/backend", () => ({
   chooseUnitFolder: backendMocks.chooseUnitFolder,
+  chooseSharedNotificationsFolder: backendMocks.chooseSharedNotificationsFolder,
+  changeSettingsPassword: backendMocks.changeSettingsPassword,
+  getAppNotificationSettings: backendMocks.getAppNotificationSettings,
   getBackendStatus: backendMocks.getBackendStatus,
+  getNotificationStatus: backendMocks.getNotificationStatus,
   getSuggestedUnitFolder: backendMocks.getSuggestedUnitFolder,
   isTauriRuntime: () => true,
   listenAutomationTaskBatchProgress: backendMocks.listenAutomationTaskBatchProgress,
@@ -32,10 +43,13 @@ vi.mock("@/integrations/tauri/backend", () => ({
   openReportPath: backendMocks.openReportPath,
   processAutomationTasks: backendMocks.processAutomationTasks,
   processAutomationTask: backendMocks.processAutomationTask,
+  saveAppNotificationSettings: backendMocks.saveAppNotificationSettings,
+  sendNotificationTest: backendMocks.sendNotificationTest,
   saveTransformerSn: backendMocks.saveTransformerSn,
   scanUnitFolder: backendMocks.scanUnitFolder,
   setupUnitFolder: backendMocks.setupUnitFolder,
   validateReadyForPrint: backendMocks.validateReadyForPrint,
+  verifySettingsPassword: backendMocks.verifySettingsPassword,
 }));
 
 vi.mock("@tauri-apps/plugin-updater", () => ({
@@ -61,6 +75,7 @@ describe("OperatorPanel updater timing", () => {
     vi.useFakeTimers();
     updaterMocks.check.mockResolvedValue(null);
     backendMocks.chooseUnitFolder.mockResolvedValue(null);
+    backendMocks.getNotificationStatus.mockResolvedValue(null);
     backendMocks.getSuggestedUnitFolder.mockResolvedValue(null);
     backendMocks.listenAutomationTaskBatchProgress.mockResolvedValue(() => {});
     backendMocks.openReportLocation.mockResolvedValue(undefined);

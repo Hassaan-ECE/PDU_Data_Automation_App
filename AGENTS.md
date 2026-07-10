@@ -12,7 +12,7 @@ The goal is to preserve the current operator layout and workflow while rebuildin
 
 ## Current Status
 
-This repository has a `v0.2.11` pilot release of the replacement app. The released build includes the Tauri 2 / React / TypeScript / Vite / Tailwind / Bun / Rust stack, the production PDU500 Rev02 layout profile, CSV detection/parsing, Excel workbook patching, inline unit selection, inline Transformer SN setup/save support, manual Print Report support with final operator-name capture, explicit current-step follow controls, readiness-based updater scheduling, a generic data-driven mapping path for transformer report writes, built-in Rust processor fallback for the remaining current workflow, bundled layout resource loading, setup-on-folder-selection behavior, a signed current-user NSIS installer, GitHub Release updater artifacts, and S-drive staging.
+This repository has a `v0.2.12` pilot release of the replacement app. The released build includes the Tauri 2 / React / TypeScript / Vite / Tailwind / Bun / Rust stack, the production PDU500 Rev02 layout profile, CSV detection/parsing, Excel workbook patching, inline unit selection, inline Transformer SN setup/save support, manual Print Report support with final operator-name capture, explicit current-step follow controls, readiness-based updater scheduling, a generic data-driven mapping path for transformer report writes, built-in Rust processor fallback for the remaining current workflow, bundled layout resource loading, setup-on-folder-selection behavior, in-app Teams operator notifications (Problem/Complete, password-gated settings, optional shared OneDrive shift log), a signed current-user NSIS installer, GitHub Release updater artifacts, and S-drive staging.
 
 Treat it as pilot-ready, not fully cut over. Keep the legacy Python app available until several production units have been processed cleanly, generated reports have been compared against legacy output, and the updater upgrade path has been tested with a newer release.
 
@@ -55,9 +55,9 @@ For meaningful changes:
 ## Release / Updater Notes For Agents
 
 - Read `docs/RELEASE_AND_DEPLOYMENT.md` before doing release work.
-- Current released pilot is `v0.2.11`; the updater signing key was rotated in `v0.2.10`. Older installs should be updated manually with the current S-drive installer before relying on updater flow; future updater releases should be signed with the same replacement key.
+- Current released pilot is `v0.2.12`; the updater signing key was rotated in `v0.2.10`. Older installs should be updated manually with the current S-drive installer before relying on updater flow; future updater releases should be signed with the same replacement key.
 - The updater private key and local DPAPI passphrase helper live outside the repo under `%USERPROFILE%\.tauri\`. Never print, paste, commit, or upload either secret.
-- GitHub updater assets use dot-normalized installer names, for example `PDU.Data.Automation_0.2.11_x64-setup.exe`. The S-drive operator-facing installer uses the space-name form, for example `PDU Data Automation_0.2.11_x64-setup.exe`.
+- GitHub updater assets use dot-normalized installer names, for example `PDU.Data.Automation_0.2.12_x64-setup.exe`. The S-drive operator-facing installer uses the space-name form, for example `PDU Data Automation_0.2.12_x64-setup.exe`.
 - A GitHub updater release needs `latest.json` and a matching installer signature. Upload the installer, `.sig`, `latest.json`, and `SHA256SUMS.txt`; the `.exe` alone is only enough for manual installs.
 - Keep the S-drive root clean: only the current operator installer should be visible at the root; versioned updater support files belong under `release-support\vX.Y.Z`; superseded files belong under `archive\`.
 - If `bun run check:versions` hits the known Bun shim crash, run `bun scripts/release/check-version-consistency.mjs` directly and report that substitution.

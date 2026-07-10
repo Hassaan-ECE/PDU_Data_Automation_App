@@ -1,7 +1,7 @@
 # Operator notifications (Teams) — design
 
 **Date:** 2026-07-08  
-**Status:** Approved for implementation planning  
+**Status:** Pilot validated; Phase 2 production integration in progress
 **Context:** Pilot PDU Data Automation is in use on four test stations. Operators want phone alerts for problems, completion, idle/stuck conditions, and shift handoff summaries without staying at the panel.
 
 ---
@@ -78,7 +78,7 @@ PDU Notifier (small desktop tool)
 
 No CSV, Excel, unit-folder, or automation logic in the pilot.
 
-### Phase 2 — Main app integration (after pilot is proven)
+### Phase 2 — Main app integration (pilot proven July 10, 2026)
 
 ```
 PDU Data Automation (existing)
@@ -88,6 +88,11 @@ PDU Data Automation (existing)
 ```
 
 Notification failure must never fail the automation path.
+
+The pilot also validated the final transport detail: the app sends an Adaptive Card in
+`attachments[0].content`, and Power Automate uses **Post card in a chat or channel**. A plain
+**Post message** action renders only the compatibility `text` fallback and loses the intended
+visual hierarchy.
 
 ### Shared pieces (avoid building twice)
 
@@ -143,12 +148,12 @@ Optional stretch (not required for first cut): fields to override station name o
 
 ---
 
-## Events (main app, later)
+## Events (main app)
 
 | Event | When | Notes |
 |-------|------|--------|
-| **Problem** | Task fails; process error; setup blocked; workbook locked; hard print-gate failure | Prefer once per task until state leaves fail (avoid spam) |
-| **Complete** | Unit print-ready (all tasks pass/accepted + transformer SN present), or equivalent “all done” | Once per unit session until new unit / reset |
+| **Problem** | Initial slice: committed task `fail` or blocking `warning`; command-level setup/scan/print errors follow later | Once per task until that task passes (avoid spam) |
+| **Complete** | Unit print-ready (all tasks pass/accepted + transformer SN present), or equivalent “all done” | Once per durable unit state, including across app restart/reset |
 | **Stuck / idle** | Active context, no meaningful progress for **N minutes** (config, default 30) | Cooldown so stuck is not re-spammed every minute |
 | **Summary** | Manual button; optional **configurable** schedule times | Schedules vary by week (1-shift vs 2-shift)—times are settings, not hard-coded product rules |
 | **Test ping** | Manual only | Pilot + optional main-app settings |
@@ -169,7 +174,9 @@ Optional stretch (not required for first cut): fields to override station name o
 
 ## Message format
 
-Plain text (v1). Adaptive Cards are optional later.
+Adaptive Cards are the validated production format. The request retains root plain text only as
+a compatibility fallback; the Teams Workflow renders the card attachment. Native card elements
+provide the colored heading, labeled sections, wrapping, spacing, and timestamp divider.
 
 **Test ping**
 ```text
@@ -276,6 +283,7 @@ Shared file holds the display name and feature flags; local file only selects wh
 | Invalid webhook | Clear config/webhook error |
 | OneDrive path missing | Local override if present; else explain and disable send |
 | Main app notify fails (phase 2) | Log only; **never** block scan/process/Excel |
+| Timeout / ambiguous delivery | Do not retry automatically; leave the event eligible for a later qualifying recheck |
 
 ---
 
@@ -345,22 +353,44 @@ Wire the same config schema and message rules into `PDU_Data_Automation_App` aft
 | Phase | Deliverable | Success criteria |
 |-------|-------------|------------------|
 | **1** | Separate project `C:\Projects\Active\PDU_Notifier` (button app) + OneDrive config + operators Teams group | All four stations can send test/sim messages; phones receive them |
-| **2** | Shared notify module wired into PDU Data Automation | Real fail / complete / stuck / summary; automation unaffected by notify failures |
+| **2** | Shared notify module wired into PDU Data Automation | First slice: real Problem / Complete with soft failure; follow-on: reliable stuck / summary state |
 | **3+** | Optional: schedule polish, rollup, two-way bot | Only if operators still want it after phase 2 |
+
+### Phase 2 implementation order
+
+The first production slice ports the proven card/config/HTTP path and wires only signals that are
+already authoritative:
+
+1. A real task **Problem** after a committed `fail` or blocking `warning` result.
+2. A **Complete** event only after the backend print-readiness gate succeeds.
+3. Background, bounded delivery plus durable per-unit receipts so notification work cannot block
+   CSV processing or workbook writes and cannot repeatedly spam the chat.
+
+Automatic **Stuck** and **Summary** events follow after the main app owns a meaningful-progress
+clock and shift counters. They must not be inferred from the three-second scan loop or the visible
+countdown: STEP71 legitimately runs for roughly two hours, so a naive 30-minute inactivity rule
+would create false alerts. The standalone pilot remains available for manual summary testing in
+the meantime.
 
 ---
 
-## Open decisions (resolve during implementation plan)
+## Resolved implementation decisions
 
-1. Exact OneDrive path under `svc-pdu`.  
-2. Local station id mechanism (file vs env).  
-3. Teams Workflow template details (Power Automate “Post to channel when webhook received” vs legacy connector).  
-4. Whether pilot is Tauri/React mini-app, native dialog, or simplest Rust+egui/web UI—prefer **fastest reliable Windows desktop**.  
-5. Whether phase 1 implements optional summary **schedule** or only manual summary (manual is enough for pilot buttons).  
-6. Final folder/repo name if not `PDU_Notifier` (e.g. `PDU_Station_Notifier`).
+1. Pilot: standalone Rust/egui project at `C:\Projects\Active\PDU_Notifier`.
+2. Teams: **Post card in a chat or channel** renders `attachments[0].content`.
+3. Production station identity: external `C:\PDU500\config\notifications\station.json`, with
+   `PDU_NOTIFICATIONS_STATION_PATH` as an override.
+4. Shared webhook/settings: the per-PC station file points to the `svc-pdu` OneDrive JSON; the
+   exact tenant-specific OneDrive folder remains a deployment value, not a product constant.
+5. Production Complete dedupe: one successful receipt per durable unit state.
+6. Summary remains manual in the pilot until the production app owns trustworthy shift counters.
 
 ---
 
 ## Summary
 
-Ship a **tiny button-driven notifier** as a **separate project** at `C:\Projects\Active\PDU_Notifier` (not inside the main app repo). It posts to a **new operators-only Teams group** using a webhook, with **Test Station N** identity and **shared OneDrive config** under `svc-pdu`. Prove it on the floor, then integrate the same path into `PDU_Data_Automation_App` for problem, complete, stuck, and summary events—without two-way chat until a later phase.
+The standalone `PDU_Notifier` pilot proved the operators-only Teams Workflow and Adaptive Card
+format. Phase 2 ports that transport into `PDU_Data_Automation_App` behind a bounded background
+worker. The first production slice sends committed Problem results and authoritative print-ready
+Complete events with durable dedupe; stuck/summary state and two-way Teams commands remain later
+phases.

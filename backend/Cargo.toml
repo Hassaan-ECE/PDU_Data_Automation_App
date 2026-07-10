@@ -1,6 +1,6 @@
 [package]
 name = "pdu-data-automation-app"
-version = "0.2.11"
+version = "0.2.12"
 description = "PDU data automation desktop app"
 authors = ["Syed Hassaan Shah"]
 edition = "2021"
@@ -16,6 +16,8 @@ tauri-build = { version = "2", features = [] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 csv = "1"
 regex = "1"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }

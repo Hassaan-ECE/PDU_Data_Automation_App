@@ -6,7 +6,7 @@
 - Signed updater metadata via GitHub Releases.
 - Generated artifacts and secrets never committed.
 
-## Current Practice (v0.2.11)
+## Current Practice (v0.2.12)
 
 **Version source of truth** (must be identical):
 - `package.json`
@@ -31,9 +31,9 @@ Tauri updater URL resolves through:
 **S-drive layout**:
 ```
 S:\Engineering\Public\Syed_Hassaan_Shah\PDU_Data_Automation\
-├── PDU Data Automation_0.2.11_x64-setup.exe
+├── PDU Data Automation_0.2.12_x64-setup.exe
 ├── release-support\
-│   └── v0.2.11\
+│   └── v0.2.12\
 │       ├── latest.json
 │       ├── ... .sig
 │       └── SHA256SUMS.txt

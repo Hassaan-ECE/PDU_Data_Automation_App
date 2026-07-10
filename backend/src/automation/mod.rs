@@ -4,7 +4,7 @@ mod processors;
 mod reports;
 pub mod tasks;
 mod unit_candidates;
-mod unit_state;
+pub(crate) mod unit_state;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -30,6 +30,7 @@ use self::reports::{
     WorkbookPatch,
 };
 use self::tasks::{automation_tasks, find_task};
+pub(crate) use self::unit_candidates::resolve_unit_serial_number;
 pub use self::unit_candidates::{LatestUnitCandidateResult, UnitCandidate};
 use self::unit_state::TaskStateSeed;
 

@@ -3,7 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   chooseUnitFolder: vi.fn(),
+  chooseSharedNotificationsFolder: vi.fn(),
+  changeSettingsPassword: vi.fn(),
+  getAppNotificationSettings: vi.fn(),
   getBackendStatus: vi.fn(),
+  getNotificationStatus: vi.fn(),
   getSuggestedUnitFolder: vi.fn(),
   listenAutomationTaskBatchProgress: vi.fn(),
   loadLayoutProfile: vi.fn(),
@@ -11,15 +15,22 @@ const mocks = vi.hoisted(() => ({
   openReportPath: vi.fn(),
   processAutomationTasks: vi.fn(),
   processAutomationTask: vi.fn(),
+  saveAppNotificationSettings: vi.fn(),
+  sendNotificationTest: vi.fn(),
   saveTransformerSn: vi.fn(),
   scanUnitFolder: vi.fn(),
   setupUnitFolder: vi.fn(),
   validateReadyForPrint: vi.fn(),
+  verifySettingsPassword: vi.fn(),
 }));
 
 vi.mock("@/integrations/tauri/backend", () => ({
   chooseUnitFolder: mocks.chooseUnitFolder,
+  chooseSharedNotificationsFolder: mocks.chooseSharedNotificationsFolder,
+  changeSettingsPassword: mocks.changeSettingsPassword,
+  getAppNotificationSettings: mocks.getAppNotificationSettings,
   getBackendStatus: mocks.getBackendStatus,
+  getNotificationStatus: mocks.getNotificationStatus,
   getSuggestedUnitFolder: mocks.getSuggestedUnitFolder,
   isTauriRuntime: () => false,
   listenAutomationTaskBatchProgress: mocks.listenAutomationTaskBatchProgress,
@@ -28,10 +39,13 @@ vi.mock("@/integrations/tauri/backend", () => ({
   openReportPath: mocks.openReportPath,
   processAutomationTasks: mocks.processAutomationTasks,
   processAutomationTask: mocks.processAutomationTask,
+  saveAppNotificationSettings: mocks.saveAppNotificationSettings,
+  sendNotificationTest: mocks.sendNotificationTest,
   saveTransformerSn: mocks.saveTransformerSn,
   scanUnitFolder: mocks.scanUnitFolder,
   setupUnitFolder: mocks.setupUnitFolder,
   validateReadyForPrint: mocks.validateReadyForPrint,
+  verifySettingsPassword: mocks.verifySettingsPassword,
 }));
 
 import { App } from "@/app/App";
@@ -115,6 +129,7 @@ describe("OperatorPanel current-step scrolling", () => {
       serial_number: "262343000072",
       unit_folder: "C:\\PDU500\\262343000072",
     });
+    mocks.getNotificationStatus.mockResolvedValue(null);
     mocks.listenAutomationTaskBatchProgress.mockResolvedValue(() => {});
     const summary = unitSummary("C:\\PDU500\\262343000072", "262343000072", [
       detectedTransformerTask(),
