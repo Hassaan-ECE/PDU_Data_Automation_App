@@ -416,21 +416,6 @@ export function NotificationSettingsPage({
     }
   }
 
-  async function handleLoadSummaryPreview() {
-    setIsSummaryBusy(true);
-    setSummaryResult(null);
-    try {
-      setSummaryPreview(await previewShiftSummary(summaryShiftLabel));
-    } catch (error) {
-      setSummaryResult({
-        tone: "error",
-        text: errorMessage(error, "Could not load summary preview."),
-      });
-    } finally {
-      setIsSummaryBusy(false);
-    }
-  }
-
   async function handlePostSummary() {
     if (!settings) return;
     const shiftName =
