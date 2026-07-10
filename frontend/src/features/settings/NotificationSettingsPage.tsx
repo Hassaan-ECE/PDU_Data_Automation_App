@@ -147,17 +147,20 @@ export function NotificationSettingsPage({
   useEffect(() => {
     if (view !== "home" || !settings || isLoading || loadError) return;
     let cancelled = false;
-    setIsSummaryBusy(true);
-    void previewShiftSummary(summaryShiftLabel)
-      .then((preview) => {
+    // Load summary preview off the effect body so setState is not sync-in-effect (eslint).
+    void (async () => {
+      await Promise.resolve();
+      if (cancelled) return;
+      setIsSummaryBusy(true);
+      try {
+        const preview = await previewShiftSummary(summaryShiftLabel);
         if (!cancelled) setSummaryPreview(preview);
-      })
-      .catch(() => {
+      } catch {
         if (!cancelled) setSummaryPreview(null);
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setIsSummaryBusy(false);
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
