@@ -192,18 +192,15 @@ pub fn ensure_shared_root_layout(configured: &str) -> Result<PathBuf, ShiftLogEr
             "Shared folder path is empty".to_string(),
         ));
     };
-    fs::create_dir_all(&root).map_err(|error| {
-        ShiftLogError::Write(format!("{}: {error}", root.display()))
-    })?;
+    fs::create_dir_all(&root)
+        .map_err(|error| ShiftLogError::Write(format!("{}: {error}", root.display())))?;
     let stations_root = root.join(STATIONS_DIR_NAME);
-    fs::create_dir_all(&stations_root).map_err(|error| {
-        ShiftLogError::Write(format!("{}: {error}", stations_root.display()))
-    })?;
+    fs::create_dir_all(&stations_root)
+        .map_err(|error| ShiftLogError::Write(format!("{}: {error}", stations_root.display())))?;
     for station_id in SHARED_STATION_IDS {
         let station_dir = stations_root.join(station_id);
-        fs::create_dir_all(&station_dir).map_err(|error| {
-            ShiftLogError::Write(format!("{}: {error}", station_dir.display()))
-        })?;
+        fs::create_dir_all(&station_dir)
+            .map_err(|error| ShiftLogError::Write(format!("{}: {error}", station_dir.display())))?;
     }
     Ok(root)
 }
@@ -216,9 +213,8 @@ pub fn append_event(path: &Path, event: LoggedEvent) -> Result<(), ShiftLogError
         return Ok(());
     }
     let configured = path.to_string_lossy();
-    let log_path = resolve_shift_log_file(&configured).ok_or_else(|| {
-        ShiftLogError::Write("Shared shift log path is empty".to_string())
-    })?;
+    let log_path = resolve_shift_log_file(&configured)
+        .ok_or_else(|| ShiftLogError::Write("Shared shift log path is empty".to_string()))?;
     let _ = ensure_shared_root_layout(&configured);
     ensure_parent_directory(&log_path).map_err(ShiftLogError::Write)?;
     let _lock = SharedLogLock::acquire(&log_path)?;
@@ -283,7 +279,8 @@ impl SharedLogLock {
                 }
                 Err(error)
                     if error.kind() == std::io::ErrorKind::AlreadyExists
-                        || (error.kind() == std::io::ErrorKind::PermissionDenied && path.exists()) =>
+                        || (error.kind() == std::io::ErrorKind::PermissionDenied
+                            && path.exists()) =>
                 {
                     // A process crash can leave the marker behind. Normal appends
                     // hold it for milliseconds, so only a conservatively old
