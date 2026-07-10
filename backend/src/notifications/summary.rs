@@ -66,8 +66,9 @@ pub fn preview_shift_summary(
         if shared.is_empty() {
             (0, false, None, None, None)
         } else {
-            let log_path = resolve_shift_log_file(shared)
-                .ok_or_else(|| SummaryError::Message("Shared shift log path is empty".to_string()))?;
+            let log_path = resolve_shift_log_file(shared).ok_or_else(|| {
+                SummaryError::Message("Shared shift log path is empty".to_string())
+            })?;
             match load_shift_log(&log_path) {
                 Ok(log) => {
                     let already = log.last_summary_at.is_some() && log.events.is_empty();
@@ -127,10 +128,7 @@ pub fn post_shift_summary(
                 .as_deref()
                 .filter(|value| !value.is_empty())
                 .unwrap_or("another station");
-            let when = log
-                .last_summary_at
-                .as_deref()
-                .unwrap_or("recently");
+            let when = log.last_summary_at.as_deref().unwrap_or("recently");
             return Err(SummaryError::Message(format!(
                 "End-of-shift summary was already posted by {by} at {when}. No new floor events have been logged since."
             )));
