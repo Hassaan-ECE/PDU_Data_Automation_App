@@ -12,6 +12,8 @@ import {
   openPrintReportDialog,
   openReportLocation,
   openReportPath,
+  postShiftSummary,
+  previewShiftSummary,
   saveFinalOperatorName,
   saveAppNotificationSettings,
   saveTransformerSn,
@@ -27,7 +29,6 @@ import {
   type UnitFolderSummary,
 } from "@/integrations/tauri/backend";
 import { NotificationSettingsPage } from "@/features/settings/NotificationSettingsPage";
-import { SettingsPasswordModal } from "@/features/settings/SettingsPasswordModal";
 import { markStartup } from "@/shared/lib/startupTiming";
 import { cn } from "@/shared/lib/utils";
 
@@ -131,7 +132,6 @@ export function OperatorPanel() {
   const [operatorFilterText, setOperatorFilterText] = useState("");
   const [isOpeningPrintDialog, setIsOpeningPrintDialog] = useState(false);
   const [panelView, setPanelView] = useState<"operator" | "notification-settings">("operator");
-  const [settingsPasswordOpen, setSettingsPasswordOpen] = useState(false);
   const appVersion = backendStatus?.version ?? "0.2.9";
 
   const panelItems = useMemo(() => applyTaskStates(legacyPanelItems, taskStates), [taskStates]);
@@ -1291,6 +1291,9 @@ export function OperatorPanel() {
         sendTestPing={sendNotificationTest}
         getNotificationStatus={getNotificationStatus}
         chooseSharedFolder={chooseSharedNotificationsFolder}
+        previewShiftSummary={previewShiftSummary}
+        postShiftSummary={postShiftSummary}
+        verifyPassword={verifySettingsPassword}
       />
     );
   }
@@ -1305,7 +1308,7 @@ export function OperatorPanel() {
             ? "Notification settings are unavailable while automation is active"
             : "Notification settings"
         }
-        onClick={() => setSettingsPasswordOpen(true)}
+        onClick={() => setPanelView("notification-settings")}
         disabled={settingsAccessDisabled}
         className="absolute right-3 top-3 z-10 inline-flex h-8 w-8 items-center justify-center rounded-md bg-[#3a3a38] text-[#d8d2c8] shadow-sm transition hover:bg-[#454542] hover:text-white disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-[#3a3a38] disabled:hover:text-[#d8d2c8]"
       >
@@ -1679,15 +1682,6 @@ export function OperatorPanel() {
         </div>
       ) : null}
 
-      <SettingsPasswordModal
-        open={settingsPasswordOpen}
-        verify={verifySettingsPassword}
-        onCancel={() => setSettingsPasswordOpen(false)}
-        onUnlock={() => {
-          setSettingsPasswordOpen(false);
-          setPanelView("notification-settings");
-        }}
-      />
     </main>
   );
 }

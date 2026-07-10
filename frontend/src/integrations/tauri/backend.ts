@@ -110,6 +110,12 @@ export interface NotificationEventToggles {
   summary: boolean;
 }
 
+export interface ShiftWindow {
+  label: string;
+  start_time: string;
+  end_time: string;
+}
+
 export interface AppNotificationSettingsView {
   enabled: boolean;
   teams_destination_name: string;
@@ -120,12 +126,34 @@ export interface AppNotificationSettingsView {
   idle_timeout_minutes: number;
   events: NotificationEventToggles;
   shared_shift_log_path: string;
+  shifts: ShiftWindow[];
+  summary_poster_station_id: string;
+  summary_included_station_ids: string[];
+  is_summary_poster: boolean;
 }
 
 export type SaveAppNotificationSettingsRequest = Omit<
   AppNotificationSettingsView,
-  "webhook_configured"
+  "webhook_configured" | "is_summary_poster"
 >;
+
+export interface ShiftSummaryPreview {
+  text: string;
+  is_summary_poster: boolean;
+  poster_station_id: string;
+  poster_station_name: string;
+  event_count: number;
+  shared_folder_configured: boolean;
+  already_posted?: boolean;
+  last_summary_at?: string | null;
+  last_summary_by?: string | null;
+  last_summary_shift?: string | null;
+}
+
+export interface ShiftSummaryResult {
+  message: string;
+  text: string;
+}
 
 export interface TaskBatchProcessResult {
   results: TaskProcessResult[];
@@ -343,10 +371,18 @@ export async function saveAppNotificationSettings(
     mockNotificationSettings = {
       ...request,
       events: { ...request.events },
+      shifts: request.shifts.map((shift) => ({ ...shift })),
       teams_webhook_url: "",
       webhook_configured: Boolean(mockNotificationWebhookUrl),
+      is_summary_poster:
+        request.station_id ===
+        (request.summary_poster_station_id || "pdu-lab"),
     };
-    return { ...mockNotificationSettings, events: { ...mockNotificationSettings.events } };
+    return {
+      ...mockNotificationSettings,
+      events: { ...mockNotificationSettings.events },
+      shifts: mockNotificationSettings.shifts.map((shift) => ({ ...shift })),
+    };
   }
 
   return invoke<AppNotificationSettingsView>("save_app_notification_settings", { request });
@@ -386,6 +422,44 @@ export async function sendNotificationTest(): Promise<void> {
   }
 
   await invoke("send_notification_test");
+}
+
+export async function previewShiftSummary(
+  shiftLabel?: string,
+): Promise<ShiftSummaryPreview | null> {
+  if (!isTauriRuntime()) {
+    return {
+      text: "📊 End of shift — preview (browser mock)\n\nNo live shared log in browser.",
+      is_summary_poster: mockNotificationSettings.station_id === "pdu-lab",
+      poster_station_id: mockNotificationSettings.summary_poster_station_id,
+      poster_station_name: "PDU Lab",
+      event_count: 0,
+      shared_folder_configured: Boolean(mockNotificationSettings.shared_shift_log_path),
+      already_posted: false,
+      last_summary_at: null,
+      last_summary_by: null,
+      last_summary_shift: null,
+    };
+  }
+
+  return invoke<ShiftSummaryPreview>("preview_shift_summary", {
+    shiftLabel: shiftLabel ?? null,
+  });
+}
+
+export async function postShiftSummary(shiftLabel: string): Promise<ShiftSummaryResult | null> {
+  if (!isTauriRuntime()) {
+    return {
+      message: `End-of-shift summary posted by ${mockNotificationSettings.station_name}. Other stations will see it was already sent.`,
+      text: "📊 End of shift — mock",
+    };
+  }
+
+  return invoke<ShiftSummaryResult>("post_shift_summary", {
+    request: {
+      shift_label: shiftLabel,
+    },
+  });
 }
 
 export async function processAutomationTasks(
@@ -489,7 +563,7 @@ let mockNotificationSettings: AppNotificationSettingsView = {
     complete: true,
     problem: true,
     stuck: false,
-    summary: false,
+    summary: true,
   },
   idle_timeout_minutes: 30,
   shared_shift_log_path: "",
@@ -498,4 +572,13 @@ let mockNotificationSettings: AppNotificationSettingsView = {
   teams_destination_name: "PDU Testing",
   teams_webhook_url: "",
   webhook_configured: false,
+  shifts: [],
+  summary_poster_station_id: "pdu-lab",
+  summary_included_station_ids: [
+    "test-station-1",
+    "test-station-3",
+    "test-station-4",
+    "pdu-lab",
+  ],
+  is_summary_poster: false,
 };

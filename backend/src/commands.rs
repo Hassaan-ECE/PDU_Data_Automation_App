@@ -52,6 +52,23 @@ pub fn send_notification_test(notifications: State<'_, notifications::Notificati
 }
 
 #[tauri::command]
+pub fn preview_shift_summary(
+    shift_label: Option<String>,
+) -> Result<notifications::ShiftSummaryPreview, String> {
+    notifications::preview_shift_summary(shift_label.as_deref()).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn post_shift_summary(
+    notification_service: State<'_, notifications::NotificationService>,
+    request: notifications::PostShiftSummaryRequest,
+) -> Result<notifications::ShiftSummaryResult, String> {
+    let result = notifications::post_shift_summary(&request).map_err(|error| error.to_string())?;
+    notification_service.mark_configuration_changed();
+    Ok(result)
+}
+
+#[tauri::command]
 pub fn get_app_notification_settings() -> Result<notifications::AppNotificationSettingsView, String>
 {
     let settings = notifications::load_app_settings().map_err(|error| error.to_string())?;
@@ -69,11 +86,8 @@ pub fn save_app_notification_settings(
     mut request: notifications::SaveAppNotificationSettingsRequest,
 ) -> Result<notifications::AppNotificationSettingsView, String> {
     let station_id = request.station_id.trim().to_string();
-    if !matches!(
-        station_id.as_str(),
-        "test-station-1" | "test-station-2" | "test-station-3" | "test-station-4"
-    ) {
-        return Err("Select Test Station 1, 2, 3, or 4".to_string());
+    if !notifications::is_known_station_id(&station_id) {
+        return Err("Select Test Station 1–4 or PDU Lab".to_string());
     }
 
     request.station_name = notifications::station_name_for_id(&station_id).to_string();

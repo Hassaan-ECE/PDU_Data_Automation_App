@@ -16,6 +16,9 @@ use thiserror::Error;
 
 use super::config::{EventToggles, ResolvedConfig};
 use super::shift_log;
+use super::stations::{
+    is_known_station_id, station_name_for_id, DEFAULT_SUMMARY_POSTER_STATION_ID,
+};
 
 pub const APP_SETTINGS_SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_SETTINGS_PASSWORD: &str = "0601";
@@ -49,6 +52,22 @@ pub enum AppSettingsError {
     PasswordMismatch,
     #[error("station_id is empty")]
     EmptyStationId,
+    #[error("Unknown station_id '{0}'")]
+    UnknownStation(String),
+    #[error("Invalid shift window: {0}")]
+    InvalidShift(String),
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug)]
+pub struct ShiftWindow {
+    #[serde(default)]
+    pub label: String,
+    /// Local 24h time `HH:MM`.
+    #[serde(default)]
+    pub start_time: String,
+    /// Local 24h time `HH:MM`; values earlier than start wrap to the following day.
+    #[serde(default)]
+    pub end_time: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,6 +93,15 @@ pub struct AppNotificationSettings {
     /// Empty means the optional floor-wide shift log is disabled.
     #[serde(default)]
     pub shared_shift_log_path: String,
+    /// Optional shift windows (0–2 for v1). Times are local `HH:MM`.
+    #[serde(default)]
+    pub shifts: Vec<ShiftWindow>,
+    /// Only this station_id may post the floor end-of-shift summary.
+    #[serde(default = "default_summary_poster")]
+    pub summary_poster_station_id: String,
+    /// Stations listed on the end-of-shift card (empty = all known stations).
+    #[serde(default = "default_summary_included")]
+    pub summary_included_station_ids: Vec<String>,
 }
 
 impl Default for AppNotificationSettings {
@@ -89,6 +117,9 @@ impl Default for AppNotificationSettings {
             idle_timeout_minutes: default_idle_timeout(),
             events: default_app_events(),
             shared_shift_log_path: String::new(),
+            shifts: Vec::new(),
+            summary_poster_station_id: default_summary_poster(),
+            summary_included_station_ids: default_summary_included(),
         }
     }
 }
@@ -110,6 +141,12 @@ impl fmt::Debug for AppNotificationSettings {
             .field("idle_timeout_minutes", &self.idle_timeout_minutes)
             .field("events", &self.events)
             .field("shared_shift_log_path", &self.shared_shift_log_path)
+            .field("shifts", &self.shifts)
+            .field("summary_poster_station_id", &self.summary_poster_station_id)
+            .field(
+                "summary_included_station_ids",
+                &self.summary_included_station_ids,
+            )
             .finish()
     }
 }
@@ -128,6 +165,10 @@ pub struct AppNotificationSettingsView {
     pub idle_timeout_minutes: u32,
     pub events: EventToggles,
     pub shared_shift_log_path: String,
+    pub shifts: Vec<ShiftWindow>,
+    pub summary_poster_station_id: String,
+    pub summary_included_station_ids: Vec<String>,
+    pub is_summary_poster: bool,
 }
 
 impl fmt::Debug for AppNotificationSettingsView {
@@ -146,12 +187,30 @@ impl fmt::Debug for AppNotificationSettingsView {
             .field("idle_timeout_minutes", &self.idle_timeout_minutes)
             .field("events", &self.events)
             .field("shared_shift_log_path", &self.shared_shift_log_path)
+            .field("shifts", &self.shifts)
+            .field("summary_poster_station_id", &self.summary_poster_station_id)
+            .field(
+                "summary_included_station_ids",
+                &self.summary_included_station_ids,
+            )
+            .field("is_summary_poster", &self.is_summary_poster)
             .finish()
     }
 }
 
 impl From<&AppNotificationSettings> for AppNotificationSettingsView {
     fn from(settings: &AppNotificationSettings) -> Self {
+        let poster = settings.summary_poster_station_id.trim();
+        let poster = if poster.is_empty() {
+            DEFAULT_SUMMARY_POSTER_STATION_ID
+        } else {
+            poster
+        };
+        let included = if settings.summary_included_station_ids.is_empty() {
+            default_summary_included()
+        } else {
+            settings.summary_included_station_ids.clone()
+        };
         Self {
             enabled: settings.enabled,
             teams_destination_name: settings.teams_destination_name.clone(),
@@ -162,6 +221,10 @@ impl From<&AppNotificationSettings> for AppNotificationSettingsView {
             idle_timeout_minutes: settings.idle_timeout_minutes,
             events: settings.events.clone(),
             shared_shift_log_path: settings.shared_shift_log_path.clone(),
+            shifts: settings.shifts.clone(),
+            summary_poster_station_id: poster.to_string(),
+            summary_included_station_ids: included,
+            is_summary_poster: settings.station_id.trim() == poster,
         }
     }
 }
@@ -184,6 +247,12 @@ pub struct SaveAppNotificationSettingsRequest {
     pub events: EventToggles,
     #[serde(default)]
     pub shared_shift_log_path: String,
+    #[serde(default)]
+    pub shifts: Vec<ShiftWindow>,
+    #[serde(default)]
+    pub summary_poster_station_id: String,
+    #[serde(default)]
+    pub summary_included_station_ids: Vec<String>,
 }
 
 impl fmt::Debug for SaveAppNotificationSettingsRequest {
@@ -202,6 +271,12 @@ impl fmt::Debug for SaveAppNotificationSettingsRequest {
             .field("idle_timeout_minutes", &self.idle_timeout_minutes)
             .field("events", &self.events)
             .field("shared_shift_log_path", &self.shared_shift_log_path)
+            .field("shifts", &self.shifts)
+            .field("summary_poster_station_id", &self.summary_poster_station_id)
+            .field(
+                "summary_included_station_ids",
+                &self.summary_included_station_ids,
+            )
             .finish()
     }
 }
@@ -377,17 +452,6 @@ impl AppNotificationSettings {
     }
 }
 
-pub fn station_name_for_id(station_id: &str) -> &str {
-    match station_id.trim() {
-        "test-station-1" => "Test Station 1",
-        "test-station-2" => "Test Station 2",
-        "test-station-3" => "Test Station 3",
-        "test-station-4" => "Test Station 4",
-        "" => "Unknown station",
-        other => other,
-    }
-}
-
 fn apply_settings_request(
     settings: &mut AppNotificationSettings,
     request: &SaveAppNotificationSettingsRequest,
@@ -395,6 +459,9 @@ fn apply_settings_request(
     let station_id = request.station_id.trim();
     if station_id.is_empty() {
         return Err(AppSettingsError::EmptyStationId);
+    }
+    if !is_known_station_id(station_id) {
+        return Err(AppSettingsError::UnknownStation(station_id.to_string()));
     }
 
     settings.enabled = request.enabled;
@@ -415,9 +482,99 @@ fn apply_settings_request(
     settings.idle_timeout_minutes = request.idle_timeout_minutes;
     settings.events = request.events.clone();
     settings.shared_shift_log_path = request.shared_shift_log_path.trim().to_string();
+    settings.shifts = normalize_shifts(&request.shifts)?;
+    let poster = request.summary_poster_station_id.trim();
+    settings.summary_poster_station_id = if poster.is_empty() {
+        default_summary_poster()
+    } else if is_known_station_id(poster) {
+        poster.to_string()
+    } else {
+        return Err(AppSettingsError::UnknownStation(poster.to_string()));
+    };
+    settings.summary_included_station_ids =
+        normalize_included_station_ids(&request.summary_included_station_ids)?;
     validate_settings(settings)?;
-    // Soft-fail: layout creation issues are reported separately by the command
-    // layer when it wants a hard error; here we only validate the model.
+    Ok(())
+}
+
+fn normalize_included_station_ids(ids: &[String]) -> Result<Vec<String>, AppSettingsError> {
+    if ids.is_empty() {
+        return Ok(default_summary_included());
+    }
+    let mut out = Vec::new();
+    for id in ids {
+        let id = id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        if !is_known_station_id(id) {
+            return Err(AppSettingsError::UnknownStation(id.to_string()));
+        }
+        if !out.iter().any(|existing| existing == id) {
+            out.push(id.to_string());
+        }
+    }
+    if out.is_empty() {
+        return Err(AppSettingsError::InvalidShift(
+            "select at least one station for the end-of-shift summary".to_string(),
+        ));
+    }
+    Ok(out)
+}
+
+fn normalize_shifts(shifts: &[ShiftWindow]) -> Result<Vec<ShiftWindow>, AppSettingsError> {
+    if shifts.len() > 2 {
+        return Err(AppSettingsError::InvalidShift(
+            "at most two shift windows are supported".to_string(),
+        ));
+    }
+    let mut normalized = Vec::new();
+    for shift in shifts {
+        let label = shift.label.trim().to_string();
+        let start_time = shift.start_time.trim().to_string();
+        let end_time = shift.end_time.trim().to_string();
+        if label.is_empty() && start_time.is_empty() && end_time.is_empty() {
+            continue;
+        }
+        if label.is_empty() {
+            return Err(AppSettingsError::InvalidShift(
+                "each shift needs a label".to_string(),
+            ));
+        }
+        validate_hhmm(&start_time)?;
+        validate_hhmm(&end_time)?;
+        if start_time == end_time {
+            return Err(AppSettingsError::InvalidShift(format!(
+                "shift '{label}' start and end must differ"
+            )));
+        }
+        normalized.push(ShiftWindow {
+            label,
+            start_time,
+            end_time,
+        });
+    }
+    Ok(normalized)
+}
+
+fn validate_hhmm(value: &str) -> Result<(), AppSettingsError> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 5 || bytes[2] != b':' {
+        return Err(AppSettingsError::InvalidShift(format!(
+            "time '{value}' must be HH:MM"
+        )));
+    }
+    let hour: u32 = value[..2]
+        .parse()
+        .map_err(|_| AppSettingsError::InvalidShift(format!("time '{value}' must be HH:MM")))?;
+    let minute: u32 = value[3..]
+        .parse()
+        .map_err(|_| AppSettingsError::InvalidShift(format!("time '{value}' must be HH:MM")))?;
+    if hour > 23 || minute > 59 {
+        return Err(AppSettingsError::InvalidShift(format!(
+            "time '{value}' is out of range"
+        )));
+    }
     Ok(())
 }
 
@@ -702,8 +859,19 @@ fn default_app_events() -> EventToggles {
         problem: true,
         complete: true,
         stuck: false,
-        summary: false,
+        summary: true,
     }
+}
+
+fn default_summary_poster() -> String {
+    DEFAULT_SUMMARY_POSTER_STATION_ID.to_string()
+}
+
+fn default_summary_included() -> Vec<String> {
+    super::stations::known_station_ids()
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 #[cfg(test)]
@@ -718,7 +886,7 @@ mod tests {
             teams_destination_name: "PDU Testing".to_string(),
             teams_webhook_url: String::new(),
             clear_webhook: false,
-            station_id: "test-station-2".to_string(),
+            station_id: "test-station-3".to_string(),
             station_name: String::new(),
             idle_timeout_minutes: 45,
             events: EventToggles {
@@ -728,6 +896,13 @@ mod tests {
                 summary: true,
             },
             shared_shift_log_path: r"\\server\share\shift_log.json".to_string(),
+            shifts: vec![ShiftWindow {
+                label: "Day".to_string(),
+                start_time: "06:00".to_string(),
+                end_time: "15:00".to_string(),
+            }],
+            summary_poster_station_id: "pdu-lab".to_string(),
+            summary_included_station_ids: default_summary_included(),
         }
     }
 
@@ -747,7 +922,8 @@ mod tests {
         assert!(settings.events.problem);
         assert!(settings.events.complete);
         assert!(!settings.events.stuck);
-        assert!(!settings.events.summary);
+        assert!(settings.events.summary);
+        assert_eq!(settings.summary_poster_station_id, "pdu-lab");
 
         assert_eq!(load_app_settings_from(&path).unwrap(), settings);
     }
@@ -787,11 +963,11 @@ mod tests {
         save_app_settings_to(&path, &settings).unwrap();
 
         settings.teams_webhook_url.clear();
-        settings.station_id = "test-station-2".to_string();
+        settings.station_id = "test-station-3".to_string();
         save_app_settings_to(&path, &settings).unwrap();
 
         let loaded = load_app_settings_from(&path).unwrap();
-        assert_eq!(loaded.station_id, "test-station-2");
+        assert_eq!(loaded.station_id, "test-station-3");
         assert_eq!(
             loaded.teams_webhook_url,
             "https://example.invalid/hook?sig=KEEP_ME"
@@ -809,7 +985,7 @@ mod tests {
 
         let updated = save_app_settings_request_to(&path, &request()).unwrap();
         assert_eq!(updated.settings_password, "2468");
-        assert_eq!(updated.station_name, "Test Station 2");
+        assert_eq!(updated.station_name, "Test Station 3");
         assert_eq!(updated.teams_webhook_url, initial.teams_webhook_url);
         assert_eq!(
             updated.shared_shift_log_path,

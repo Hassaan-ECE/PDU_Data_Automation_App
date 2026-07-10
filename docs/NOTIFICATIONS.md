@@ -2,6 +2,8 @@
 
 The standalone `PDU_Notifier` pilot established the Teams Workflow and Adaptive Card format. The production app uses that format for real automation events and now keeps its notification settings inside the app. Operators do not normally create or edit `station.json` or `settings.json` files.
 
+**Operator / floor catalog (what cards exist and when):** [OPERATOR_NOTIFICATION_CATALOG.md](./OPERATOR_NOTIFICATION_CATALOG.md)
+
 ## Current event scope
 
 - **Problem:** sent after a committed task result enters `fail` or a blocking `warning`.

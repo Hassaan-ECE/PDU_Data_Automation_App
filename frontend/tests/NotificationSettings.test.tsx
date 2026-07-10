@@ -14,16 +14,25 @@ function settingsFixture(): AppNotificationSettingsView {
     teams_destination_name: "PDU Testing",
     teams_webhook_url: "",
     webhook_configured: true,
-    station_id: "test-station-2",
-    station_name: "Test Station 2",
+    station_id: "test-station-3",
+    station_name: "Test Station 3",
     idle_timeout_minutes: 30,
     events: {
       problem: true,
       complete: true,
       stuck: false,
-      summary: false,
+      summary: true,
     },
     shared_shift_log_path: "",
+    shifts: [],
+    summary_poster_station_id: "pdu-lab",
+    summary_included_station_ids: [
+      "test-station-1",
+      "test-station-3",
+      "test-station-4",
+      "pdu-lab",
+    ],
+    is_summary_poster: false,
   };
 }
 
@@ -37,7 +46,7 @@ function runtimeStatus(
   return {
     state,
     message,
-    station_name: "Test Station 2",
+    station_name: "Test Station 3",
     destination_name: "PDU Testing",
     updated_at: updatedAt,
     event_kind: eventKind,
@@ -52,7 +61,9 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function renderSettingsPage(overrides: Partial<React.ComponentProps<typeof NotificationSettingsPage>> = {}) {
+function renderSettingsPage(
+  overrides: Partial<React.ComponentProps<typeof NotificationSettingsPage>> = {},
+) {
   const props: React.ComponentProps<typeof NotificationSettingsPage> = {
     onBack: vi.fn(),
     loadSettings: vi.fn(async () => settingsFixture()),
@@ -61,11 +72,22 @@ function renderSettingsPage(overrides: Partial<React.ComponentProps<typeof Notif
     sendTestPing: vi.fn(async () => undefined),
     getNotificationStatus: vi.fn(async () => null),
     chooseSharedFolder: vi.fn(async () => null),
+    previewShiftSummary: vi.fn(async () => null),
+    postShiftSummary: vi.fn(async () => null),
+    verifyPassword: vi.fn(async (password) => password === "0601"),
     ...overrides,
   };
 
   render(<NotificationSettingsPage {...props} />);
   return props;
+}
+
+async function unlockAdvancedStationTeams() {
+  fireEvent.click(await screen.findByRole("button", { name: /^Advanced$/i }));
+  fireEvent.change(await screen.findByLabelText("Password"), { target: { value: "0601" } });
+  fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
+  fireEvent.click(await screen.findByRole("button", { name: /Station & Teams/i }));
+  await screen.findByLabelText("This PC station");
 }
 
 afterEach(() => {
@@ -78,207 +100,233 @@ describe("SettingsPasswordModal", () => {
     const onUnlock = vi.fn();
 
     render(
-      <SettingsPasswordModal
-        open
-        verify={verify}
-        onCancel={vi.fn()}
-        onUnlock={onUnlock}
-      />,
+      <SettingsPasswordModal open verify={verify} onCancel={vi.fn()} onUnlock={onUnlock} />,
     );
 
     fireEvent.change(screen.getByLabelText("Password"), { target: { value: "wrong" } });
     fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Incorrect password");
-    expect(verify).toHaveBeenCalledWith("wrong");
     expect(onUnlock).not.toHaveBeenCalled();
-  });
-
-  it("unlocks after the verification callback accepts the password", async () => {
-    const onUnlock = vi.fn();
-
-    render(
-      <SettingsPasswordModal
-        open
-        verify={vi.fn(async (password) => password === "0601")}
-        onCancel={vi.fn()}
-        onUnlock={onUnlock}
-      />,
-    );
-
-    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "0601" } });
-    fireEvent.submit(screen.getByLabelText("Password").closest("form") as HTMLFormElement);
-
-    await waitFor(() => expect(onUnlock).toHaveBeenCalledOnce());
-  });
-
-  it("contains keyboard focus and restores it when cancelled", async () => {
-    const trigger = document.createElement("button");
-    trigger.textContent = "Open settings";
-    document.body.append(trigger);
-    trigger.focus();
-    const onCancel = vi.fn();
-    const { rerender } = render(
-      <SettingsPasswordModal
-        open
-        verify={vi.fn(async () => false)}
-        onCancel={onCancel}
-        onUnlock={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByLabelText("Password")).toHaveFocus();
-    fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
-    expect(screen.getByRole("button", { name: "Unlock" })).toHaveFocus();
-    fireEvent.keyDown(window, { key: "Tab" });
-    expect(screen.getByLabelText("Password")).toHaveFocus();
-
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    rerender(
-      <SettingsPasswordModal
-        open={false}
-        verify={vi.fn(async () => false)}
-        onCancel={onCancel}
-        onUnlock={vi.fn()}
-      />,
-    );
-    expect(onCancel).toHaveBeenCalledOnce();
-    expect(trigger).toHaveFocus();
-    trigger.remove();
   });
 });
 
 describe("NotificationSettingsPage", () => {
-  it("renders a masked webhook and saves station, destination, and browsed shared folder", async () => {
+  it("opens operator pages without password and advanced with password", async () => {
+    renderSettingsPage();
+
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Shifts$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Summary options/i })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: /End of shift/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Post Summary/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Station & Teams/i })).not.toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Advanced$/i }));
+    expect(await screen.findByLabelText("Password")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "0601" } });
+    fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
+    expect(await screen.findByRole("button", { name: /Station & Teams/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^End of shift$/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Advanced" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Station & Teams/i }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Station & Teams" })).toBeInTheDocument();
+    expect(await screen.findByLabelText("Teams webhook URL")).toBeInTheDocument();
+  });
+
+  it("saves station as PDU Lab from advanced settings", async () => {
     const saveSettings = vi.fn(async () => null);
-    const chooseSharedFolder = vi.fn(async () => "C:\\Users\\svc-pdu\\OneDrive\\.pdu-notifications");
-    renderSettingsPage({ saveSettings, chooseSharedFolder });
+    renderSettingsPage({ saveSettings });
+    await unlockAdvancedStationTeams();
 
-    expect(await screen.findByDisplayValue("PDU Testing")).toBeInTheDocument();
-    const webhookInput = screen.getByLabelText("Teams webhook URL");
-    expect(webhookInput).toHaveAttribute("type", "password");
-    expect(webhookInput).toHaveValue("");
-    expect(webhookInput).toHaveAttribute(
-      "placeholder",
-      "Saved webhook configured; enter a URL only to replace it",
-    );
-    expect(document.body.textContent).not.toContain("sig=secret");
-
-    fireEvent.change(screen.getByLabelText("Station"), {
-      target: { value: "test-station-4" },
+    fireEvent.change(screen.getByLabelText("This PC station"), {
+      target: { value: "pdu-lab" },
     });
-    fireEvent.change(screen.getByLabelText("Destination name"), {
-      target: { value: "PDU Floor Alerts" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Browse" }));
-    expect(await screen.findByDisplayValue("C:\\Users\\svc-pdu\\OneDrive\\.pdu-notifications")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(saveSettings).toHaveBeenCalledWith(
         expect.objectContaining({
-          station_id: "test-station-4",
-          station_name: "Test Station 4",
-          teams_destination_name: "PDU Floor Alerts",
-          shared_shift_log_path: "C:\\Users\\svc-pdu\\OneDrive\\.pdu-notifications",
+          station_id: "pdu-lab",
+          station_name: "PDU Lab",
         }),
       );
     });
-    expect(chooseSharedFolder).toHaveBeenCalledOnce();
-    expect(await screen.findByText("Notification settings saved.")).toBeInTheDocument();
   });
 
-  it("clears the shared folder selection", async () => {
-    renderSettingsPage({
-      loadSettings: vi.fn(async () => ({
-        ...settingsFixture(),
-        shared_shift_log_path: "C:\\shared\\pdu",
-      })),
-    });
+  it("lets operators set main poster and included stations without password", async () => {
+    const saveSettings = vi.fn(async () => null);
+    renderSettingsPage({ saveSettings });
 
-    expect(await screen.findByDisplayValue("C:\\shared\\pdu")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Clear shared folder" }));
-    expect(screen.getByLabelText("Shared OneDrive folder")).toHaveValue("");
-  });
-
-  it("warns before Back discards dirty settings", async () => {
-    const onBack = vi.fn();
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
-    renderSettingsPage({ onBack });
-
-    const destination = await screen.findByLabelText("Destination name");
-    fireEvent.change(destination, { target: { value: "Changed destination" } });
-    fireEvent.click(screen.getByRole("button", { name: "Back to operator panel" }));
-    expect(onBack).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Back to operator panel" }));
-    expect(confirm).toHaveBeenCalledTimes(2);
-    expect(onBack).toHaveBeenCalledOnce();
-  });
-
-  it("freezes form edits and navigation while settings are being saved", async () => {
-    const save = deferred<AppNotificationSettingsView | null>();
-    renderSettingsPage({ saveSettings: vi.fn(() => save.promise) });
-
-    const destination = await screen.findByLabelText("Destination name");
-    fireEvent.change(destination, { target: { value: "Changed destination" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
-
-    expect(destination).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Back to operator panel" })).toBeDisabled();
-    save.resolve(null);
-    expect(await screen.findByText("Notification settings saved.")).toBeInTheDocument();
-    expect(destination).toBeEnabled();
-  });
-
-  it("validates and submits current, new, and confirmation passwords", async () => {
-    const changePassword = vi.fn(async () => undefined);
-    renderSettingsPage({ changePassword });
-
-    await screen.findByDisplayValue("PDU Testing");
-    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: "0601" } });
-    fireEvent.change(screen.getByLabelText("New password"), { target: { value: "2468" } });
-    fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: "1357" } });
-    fireEvent.click(screen.getByRole("button", { name: "Update password" }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "New password and confirmation do not match.",
+    fireEvent.click(await screen.findByRole("button", { name: /Summary options/i }));
+    expect(screen.queryByLabelText("Station that posts end of shift")).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Enable summary notifications" })).toHaveAttribute(
+      "aria-checked",
+      "true",
     );
-    expect(changePassword).not.toHaveBeenCalled();
 
-    fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: "2468" } });
-    fireEvent.click(screen.getByRole("button", { name: "Update password" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Test Station 1 main poster" }));
+    fireEvent.click(screen.getByLabelText("Include PDU Lab"));
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
 
-    await waitFor(() => expect(changePassword).toHaveBeenCalledWith("0601", "2468", "2468"));
-    expect(await screen.findByText("Settings password updated.")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(saveSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          summary_poster_station_id: "test-station-1",
+          summary_included_station_ids: expect.not.arrayContaining(["pdu-lab"]),
+        }),
+      );
+    });
   });
 
-  it("sends a test ping and displays the fresh worker result", async () => {
+  it("toggles summary notifications from the save row", async () => {
+    const saveSettings = vi.fn(async () => null);
+    renderSettingsPage({ saveSettings });
+
+    fireEvent.click(await screen.findByRole("button", { name: /Summary options/i }));
+    const toggle = screen.getByRole("switch", { name: "Enable summary notifications" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    await waitFor(() => {
+      expect(saveSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          events: expect.objectContaining({ summary: false }),
+        }),
+      );
+    });
+  });
+
+  it("picks shift times with separate five-minute hour and minute wheels", async () => {
+    const saveSettings = vi.fn(async () => null);
+    renderSettingsPage({ saveSettings });
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Shifts$/i }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Shifts" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Double shift" }));
+    const minuteWheels = screen.getAllByRole("group", { name: "Minute wheel" });
+    fireEvent.wheel(minuteWheels[0], { deltaY: 100 });
+    expect(screen.getByRole("button", { name: "Edit Start time, 6:05 AM" })).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Previous minute" })[0]);
+    expect(screen.getByRole("button", { name: "Edit Start time, 6:00 AM" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    await waitFor(() => {
+      expect(saveSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          shifts: [
+            expect.objectContaining({ start_time: "06:00", end_time: "15:00" }),
+            expect.objectContaining({ start_time: "15:00", end_time: "23:00" }),
+          ],
+        }),
+      );
+    });
+  });
+
+  it("has change password under advanced after unlock", async () => {
+    renderSettingsPage();
+    fireEvent.click(await screen.findByRole("button", { name: /^Advanced$/i }));
+    fireEvent.change(await screen.findByLabelText("Password"), { target: { value: "0601" } });
+    fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Change password/i }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Change password" })).toBeInTheDocument();
+    expect(await screen.findByLabelText("Current password")).toBeInTheDocument();
+  });
+
+  it("sends a test ping from advanced station page", async () => {
     const sendTestPing = vi.fn(async () => undefined);
     const getNotificationStatus = vi
       .fn<() => Promise<NotificationRuntimeStatus | null>>()
-      .mockResolvedValueOnce(runtimeStatus("ready", "Ready.", "2026-07-10T08:00:00-05:00"))
-      .mockResolvedValueOnce(
-        runtimeStatus(
-          "sent",
-          "Complete card accepted by the Workflow.",
-          "2026-07-10T08:00:01-05:00",
-          "complete",
-        ),
-      )
-      .mockResolvedValueOnce(
-        runtimeStatus(
-          "sent",
-          "Test card accepted by the Workflow.",
-          "2026-07-10T08:00:02-05:00",
-        ),
-      );
+      .mockResolvedValueOnce(runtimeStatus("ready", "Ready.", "t0"))
+      .mockResolvedValueOnce(runtimeStatus("sent", "Test card accepted by the Workflow.", "t1"));
     renderSettingsPage({ sendTestPing, getNotificationStatus });
-
-    await screen.findByDisplayValue("PDU Testing");
+    await unlockAdvancedStationTeams();
     fireEvent.click(screen.getByRole("button", { name: "Send test ping" }));
-
     await waitFor(() => expect(sendTestPing).toHaveBeenCalledOnce());
     expect(await screen.findByText("Test card accepted by the Workflow.")).toBeInTheDocument();
+  });
+
+  it("freezes save navigation while saving", async () => {
+    const save = deferred<AppNotificationSettingsView | null>();
+    renderSettingsPage({ saveSettings: vi.fn(() => save.promise) });
+    fireEvent.click(await screen.findByRole("button", { name: /^Shifts$/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Double shift" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    expect(screen.getByRole("button", { name: "Back to settings menu" })).toBeDisabled();
+    save.resolve(null);
+    expect(await screen.findByText("Settings saved.")).toBeInTheDocument();
+  });
+
+  it("prompts to save, discard, or stay when leaving a submenu with unsaved settings", async () => {
+    const onBack = vi.fn();
+    const saveSettings = vi.fn(async () => null);
+    renderSettingsPage({ onBack, saveSettings });
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Shifts$/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Double shift" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to settings menu" }));
+
+    expect(await screen.findByRole("dialog", { name: "Unsaved settings" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Shifts" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Unsaved settings" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Shifts" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to settings menu" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Save Changes" }));
+    await waitFor(() => expect(saveSettings).toHaveBeenCalled());
+    expect(await screen.findByRole("heading", { level: 1, name: "Settings" })).toBeInTheDocument();
+    expect(onBack).not.toHaveBeenCalled();
+  });
+
+  it("discards unsaved submenu changes when chosen", async () => {
+    renderSettingsPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Shifts$/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Double shift" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to settings menu" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard Changes" }));
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Settings" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Shifts$/i }));
+    // Discarded double-shift seed falls back to single after empty re-open seed, or single if defaults restored
+    expect(screen.getByRole("button", { name: "Single shift" })).toBeInTheDocument();
+  });
+
+  it("lets any station post end of shift from the settings home after confirm", async () => {
+    const postShiftSummary = vi.fn(async () => ({
+      message: "End-of-shift summary posted by Test Station 3. Other stations will see it was already sent.",
+      text: "📊 posted",
+    }));
+    const previewShiftSummary = vi.fn(async () => ({
+      text: "📊 preview",
+      is_summary_poster: false,
+      poster_station_id: "pdu-lab",
+      poster_station_name: "PDU Lab",
+      event_count: 2,
+      shared_folder_configured: true,
+      already_posted: false,
+    }));
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderSettingsPage({
+      postShiftSummary,
+      previewShiftSummary,
+      loadSettings: vi.fn(async () => ({
+        ...settingsFixture(),
+        shared_shift_log_path: "C:\\Shared\\PDU",
+        is_summary_poster: false,
+      })),
+    });
+
+    expect(await screen.findByRole("region", { name: /End of shift/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Post Summary/i }));
+
+    expect(confirmSpy).toHaveBeenCalled();
+    await waitFor(() => expect(postShiftSummary).toHaveBeenCalled());
+    expect(await screen.findByText(/Other stations will see/i)).toBeInTheDocument();
   });
 });

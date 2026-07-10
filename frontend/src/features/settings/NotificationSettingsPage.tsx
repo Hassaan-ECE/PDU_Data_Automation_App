@@ -1,17 +1,31 @@
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type FormEvent,
-} from "react";
-import { ArrowLeft, FolderOpen, KeyRound, LoaderCircle, Save, Send, X } from "lucide-react";
+  ArrowLeft,
+  CalendarClock,
+  ChevronDown,
+  ChevronRight,
+  ClipboardList,
+  FolderOpen,
+  KeyRound,
+  ListChecks,
+  LoaderCircle,
+  Radio,
+  Save,
+  Send,
+  Shield,
+  X,
+} from "lucide-react";
 
 import { cn } from "@/shared/lib/utils";
+import { ScrollRegion } from "@/shared/ui/ScrollRegion";
 
+import { SettingsPasswordModal } from "./SettingsPasswordModal";
+import { ShiftRangePicker } from "./ShiftRangePicker";
+import { shiftScheduleError } from "./shiftTime";
 import {
   NOTIFICATION_STATIONS,
   createDefaultNotificationSettings,
+  defaultIncludedStationIds,
   stationNameForId,
   type AppNotificationSettingsView,
   type ChangeSettingsPassword,
@@ -19,32 +33,36 @@ import {
   type GetNotificationStatus,
   type LoadNotificationSettings,
   type NotificationRuntimeStatus,
+  type PostShiftSummary,
+  type PreviewShiftSummary,
   type SaveNotificationSettings,
   type SaveNotificationSettingsRequest,
   type SendNotificationTest,
+  type ShiftSummaryPreview,
+  type ShiftWindow,
+  type VerifySettingsPassword,
 } from "./settingsTypes";
 
 const inputClassName =
-  "mt-1 h-9 w-full rounded border border-[#454542] bg-[#1f1f1e] px-2 text-[8.5pt] text-white placeholder:text-[#777772] outline-none focus:border-[#1f74ae] focus:ring-2 focus:ring-cyan-200/25 disabled:cursor-not-allowed disabled:opacity-60";
+  "mt-1 h-9 w-full rounded-md border border-[#454542] bg-[#1f1f1e] px-2.5 text-[8.5pt] text-white placeholder:text-[#777772] outline-none transition focus:border-[#1f74ae] focus:ring-2 focus:ring-cyan-200/25 disabled:cursor-not-allowed disabled:opacity-60";
+const selectClassName = cn(
+  inputClassName,
+  "cursor-pointer appearance-none pr-9 font-medium",
+);
 const PING_POLL_ATTEMPTS = 45;
 const PING_POLL_INTERVAL_MS = 500;
 
-type ResultMessage = {
-  tone: "success" | "warning" | "error";
-  text: string;
-};
+type ResultMessage = { tone: "success" | "warning" | "error"; text: string };
+type PasswordFields = { current: string; next: string; confirm: string };
+type SettingsView =
+  | "home"
+  | "shifts"
+  | "summaryOptions"
+  | "advanced"
+  | "station"
+  | "password";
 
-type PasswordFields = {
-  current: string;
-  next: string;
-  confirm: string;
-};
-
-const emptyPasswordFields: PasswordFields = {
-  current: "",
-  next: "",
-  confirm: "",
-};
+const emptyPasswordFields: PasswordFields = { current: "", next: "", confirm: "" };
 
 export interface NotificationSettingsPageProps {
   onBack: () => void;
@@ -54,6 +72,9 @@ export interface NotificationSettingsPageProps {
   sendTestPing: SendNotificationTest;
   getNotificationStatus: GetNotificationStatus;
   chooseSharedFolder: ChooseSharedNotificationsFolder;
+  previewShiftSummary: PreviewShiftSummary;
+  postShiftSummary: PostShiftSummary;
+  verifyPassword: VerifySettingsPassword;
 }
 
 export function NotificationSettingsPage({
@@ -64,9 +85,18 @@ export function NotificationSettingsPage({
   sendTestPing,
   getNotificationStatus,
   chooseSharedFolder,
+  previewShiftSummary,
+  postShiftSummary,
+  verifyPassword,
 }: NotificationSettingsPageProps) {
   const pingAbortRef = useRef<AbortController | null>(null);
+  const secondShiftDraftRef = useRef<ShiftWindow | null>(null);
+  const [view, setView] = useState<SettingsView>("home");
+  const [advancedUnlocked, setAdvancedUnlocked] = useState(false);
+  const [advancedPasswordOpen, setAdvancedPasswordOpen] = useState(false);
+
   const [settings, setSettings] = useState<AppNotificationSettingsView | null>(null);
+  const [savedSettings, setSavedSettings] = useState<AppNotificationSettingsView | null>(null);
   const [savedFingerprint, setSavedFingerprint] = useState("");
   const [passwordFields, setPasswordFields] = useState<PasswordFields>(emptyPasswordFields);
   const [isLoading, setIsLoading] = useState(true);
@@ -78,20 +108,26 @@ export function NotificationSettingsPage({
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<ResultMessage | null>(null);
   const [isBrowsingSharedFolder, setIsBrowsingSharedFolder] = useState(false);
+  const [summaryShiftLabel, setSummaryShiftLabel] = useState("");
+  const [summaryPreview, setSummaryPreview] = useState<ShiftSummaryPreview | null>(null);
+  const [summaryResult, setSummaryResult] = useState<ResultMessage | null>(null);
+  const [isSummaryBusy, setIsSummaryBusy] = useState(false);
+  /** When set, show the unsaved-leave dialog before navigating to this target. */
+  const [leaveTarget, setLeaveTarget] = useState<"home" | "advanced" | "exit" | null>(null);
+
+  // Preview load must not block ← navigation (isSummaryBusy is only for post/preview UI).
   const pageBusy = isSaving || isChangingPassword || isTesting || isBrowsingSharedFolder;
 
   useEffect(() => {
     let cancelled = false;
-
     void loadSettings()
       .then((loadedSettings) => {
-        if (cancelled) {
-          return;
-        }
-        const loaded = loadedSettings ?? createDefaultNotificationSettings();
+        if (cancelled) return;
+        const loaded = normalizeLoaded(loadedSettings ?? createDefaultNotificationSettings());
         setSettings(loaded);
+        setSavedSettings(loaded);
         setSavedFingerprint(settingsFingerprint(loaded));
-        setSaveResult(null);
+        setSummaryShiftLabel(loaded.shifts[0]?.label ?? "");
       })
       .catch((error) => {
         if (!cancelled) {
@@ -99,19 +135,33 @@ export function NotificationSettingsPage({
         }
       })
       .finally(() => {
-        if (!cancelled) {
-          setIsLoading(false);
-        }
+        if (!cancelled) setIsLoading(false);
       });
-
     return () => {
       cancelled = true;
     };
   }, [loadSettings]);
 
+  useEffect(() => () => pingAbortRef.current?.abort(), []);
+
   useEffect(() => {
-    return () => pingAbortRef.current?.abort();
-  }, []);
+    if (view !== "home" || !settings || isLoading || loadError) return;
+    let cancelled = false;
+    setIsSummaryBusy(true);
+    void previewShiftSummary(summaryShiftLabel)
+      .then((preview) => {
+        if (!cancelled) setSummaryPreview(preview);
+      })
+      .catch(() => {
+        if (!cancelled) setSummaryPreview(null);
+      })
+      .finally(() => {
+        if (!cancelled) setIsSummaryBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [view, settings, isLoading, loadError, summaryShiftLabel, previewShiftSummary]);
 
   const settingsDirty = useMemo(
     () => Boolean(settings && savedFingerprint && settingsFingerprint(settings) !== savedFingerprint),
@@ -121,6 +171,7 @@ export function NotificationSettingsPage({
     passwordFields.current || passwordFields.next || passwordFields.confirm,
   );
   const isDirty = settingsDirty || passwordDirty;
+  const shiftValidationError = settings ? shiftScheduleError(settings.shifts) : "";
 
   function updateSettings(update: Partial<AppNotificationSettingsView>) {
     setSettings((current) => (current ? { ...current, ...update } : current));
@@ -128,68 +179,151 @@ export function NotificationSettingsPage({
     setTestResult(null);
   }
 
-  function updatePasswordField(field: keyof PasswordFields, value: string) {
-    setPasswordFields((current) => ({ ...current, [field]: value }));
+  function requestAdvanced() {
+    if (advancedUnlocked) {
+      setView("advanced");
+      return;
+    }
+    setAdvancedPasswordOpen(true);
+  }
+
+  function completeLeave(target: "home" | "advanced" | "exit") {
+    setLeaveTarget(null);
+    setSummaryResult(null);
     setPasswordResult(null);
-  }
-
-  function handleBack() {
-    if (pageBusy) {
+    setSaveResult(null);
+    setTestResult(null);
+    if (target === "exit") {
+      onBack();
       return;
     }
-    if (isDirty && !window.confirm("Discard unsaved notification settings?")) {
-      return;
-    }
-
-    onBack();
+    setView(target === "advanced" && advancedUnlocked ? "advanced" : "home");
   }
 
-  async function handleRetryLoad() {
-    setIsLoading(true);
-    setLoadError("");
-    try {
-      const loaded = (await loadSettings()) ?? createDefaultNotificationSettings();
-      setSettings(loaded);
-      setSavedFingerprint(settingsFingerprint(loaded));
-      setSaveResult(null);
-    } catch (error) {
-      setLoadError(errorMessage(error, "Notification settings could not be loaded."));
-    } finally {
-      setIsLoading(false);
+  function discardUnsavedChanges() {
+    if (savedSettings) {
+      setSettings(savedSettings);
+      setSavedFingerprint(settingsFingerprint(savedSettings));
     }
+    setPasswordFields(emptyPasswordFields);
+    setSaveResult(null);
+    setPasswordResult(null);
+    setTestResult(null);
   }
 
-  async function handleSave(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!settings || pageBusy) {
+  function requestLeave(target: "home" | "advanced" | "exit") {
+    if (pageBusy) return;
+    if (!isDirty) {
+      completeLeave(target);
       return;
     }
+    setLeaveTarget(target);
+  }
 
+  function handleLeaveSettings() {
+    requestLeave("exit");
+  }
+
+  function handleBackNavigation() {
+    if (pageBusy) return;
+    if (view === "home") {
+      handleLeaveSettings();
+      return;
+    }
+    if (view === "station" || view === "password") {
+      requestLeave(advancedUnlocked ? "advanced" : "home");
+      return;
+    }
+    // shifts, summaryOptions, advanced → settings home
+    requestLeave("home");
+  }
+
+  async function handleSave(event?: FormEvent): Promise<boolean> {
+    event?.preventDefault();
+    if (!settings || pageBusy) return false;
+    if (view === "shifts" && shiftValidationError) {
+      setSaveResult({ tone: "error", text: shiftValidationError });
+      return false;
+    }
     const request = saveRequestFromSettings(settings);
     setIsSaving(true);
     setSaveResult(null);
     try {
       const saved = await saveSettings(request);
-      const nextSettings = saved ?? settingsAfterSave(settings, request);
+      const nextSettings = normalizeLoaded(saved ?? settingsAfterSave(settings, request));
       setSettings(nextSettings);
+      setSavedSettings(nextSettings);
       setSavedFingerprint(settingsFingerprint(nextSettings));
-      setSaveResult({ tone: "success", text: "Notification settings saved." });
+      setSaveResult({ tone: "success", text: "Settings saved." });
+      return true;
     } catch (error) {
       setSaveResult({
         tone: "error",
-        text: errorMessage(error, "Notification settings could not be saved."),
+        text: errorMessage(error, "Settings could not be saved."),
       });
+      return false;
     } finally {
       setIsSaving(false);
     }
   }
 
-  async function handlePasswordChange(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (pageBusy) {
-      return;
+  async function handleSaveAndLeave() {
+    if (!leaveTarget || pageBusy) return;
+
+    if (passwordDirty) {
+      if (!passwordFields.current || !passwordFields.next.trim()) {
+        setPasswordResult({
+          tone: "error",
+          text: "Finish updating the password (or discard) before leaving.",
+        });
+        setLeaveTarget(null);
+        return;
+      }
+      if (passwordFields.next !== passwordFields.confirm) {
+        setPasswordResult({
+          tone: "error",
+          text: "New password and confirmation do not match.",
+        });
+        setLeaveTarget(null);
+        return;
+      }
+      setIsChangingPassword(true);
+      setPasswordResult(null);
+      try {
+        await changePassword(passwordFields.current, passwordFields.next, passwordFields.confirm);
+        setPasswordFields(emptyPasswordFields);
+      } catch (error) {
+        setPasswordResult({
+          tone: "error",
+          text: errorMessage(error, "The settings password could not be updated."),
+        });
+        setLeaveTarget(null);
+        return;
+      } finally {
+        setIsChangingPassword(false);
+      }
     }
 
+    if (settingsDirty) {
+      const saved = await handleSave();
+      if (!saved) {
+        setLeaveTarget(null);
+        return;
+      }
+    }
+
+    completeLeave(leaveTarget);
+  }
+
+  function handleDiscardAndLeave() {
+    if (!leaveTarget || pageBusy) return;
+    discardUnsavedChanges();
+    completeLeave(leaveTarget);
+  }
+
+  async function handlePasswordChange(event: FormEvent) {
+    event.preventDefault();
+    if (pageBusy) return;
     if (!passwordFields.current) {
       setPasswordResult({ tone: "error", text: "Enter the current password." });
       return;
@@ -202,15 +336,10 @@ export function NotificationSettingsPage({
       setPasswordResult({ tone: "error", text: "New password and confirmation do not match." });
       return;
     }
-
     setIsChangingPassword(true);
     setPasswordResult(null);
     try {
-      await changePassword(
-        passwordFields.current,
-        passwordFields.next,
-        passwordFields.confirm,
-      );
+      await changePassword(passwordFields.current, passwordFields.next, passwordFields.confirm);
       setPasswordFields(emptyPasswordFields);
       setPasswordResult({ tone: "success", text: "Settings password updated." });
     } catch (error) {
@@ -224,16 +353,11 @@ export function NotificationSettingsPage({
   }
 
   async function handleBrowseSharedFolder() {
-    if (pageBusy || !settings) {
-      return;
-    }
+    if (pageBusy || !settings) return;
     setIsBrowsingSharedFolder(true);
-    setSaveResult(null);
     try {
       const selected = await chooseSharedFolder();
-      if (selected) {
-        updateSettings({ shared_shift_log_path: selected });
-      }
+      if (selected) updateSettings({ shared_shift_log_path: selected });
     } catch (error) {
       setSaveResult({
         tone: "error",
@@ -245,23 +369,18 @@ export function NotificationSettingsPage({
   }
 
   async function handleTestPing() {
-    if (pageBusy || settingsDirty) {
-      return;
-    }
-
+    if (pageBusy || settingsDirty) return;
     pingAbortRef.current?.abort();
     const controller = new AbortController();
     pingAbortRef.current = controller;
     setIsTesting(true);
     setTestResult(null);
-
     let baseline: NotificationRuntimeStatus | null = null;
     try {
       baseline = await getNotificationStatus();
     } catch {
       baseline = null;
     }
-
     try {
       await sendTestPing();
     } catch (error) {
@@ -274,322 +393,805 @@ export function NotificationSettingsPage({
       }
       return;
     }
-
-    let latest: NotificationRuntimeStatus | null = null;
     try {
       for (let attempt = 0; attempt < PING_POLL_ATTEMPTS; attempt += 1) {
-        latest = await getNotificationStatus();
+        const latest = await getNotificationStatus();
         if (latest && statusAdvanced(latest, baseline)) {
-          if (!controller.signal.aborted) {
-            setTestResult(messageFromRuntimeStatus(latest));
-          }
+          if (!controller.signal.aborted) setTestResult(messageFromRuntimeStatus(latest));
           return;
         }
         if (attempt < PING_POLL_ATTEMPTS - 1) {
-          const shouldContinue = await abortableDelay(PING_POLL_INTERVAL_MS, controller.signal);
-          if (!shouldContinue) {
-            return;
-          }
+          const ok = await abortableDelay(PING_POLL_INTERVAL_MS, controller.signal);
+          if (!ok) return;
         }
       }
-
       if (!controller.signal.aborted) {
         setTestResult({
           tone: "warning",
-          text: latest
-            ? `Test ping queued. Latest notification status: ${latest.message}`
-            : "Test ping queued. Check Teams for the card.",
-        });
-      }
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        setTestResult({
-          tone: "warning",
-          text: `Test ping queued, but its result could not be read: ${errorMessage(
-            error,
-            "Notification status is unavailable.",
-          )}`,
+          text: "Test ping queued. Check Teams for the card.",
         });
       }
     } finally {
-      if (!controller.signal.aborted) {
-        setIsTesting(false);
-      }
+      if (!controller.signal.aborted) setIsTesting(false);
     }
+  }
+
+  async function handleLoadSummaryPreview() {
+    setIsSummaryBusy(true);
+    setSummaryResult(null);
+    try {
+      setSummaryPreview(await previewShiftSummary(summaryShiftLabel));
+    } catch (error) {
+      setSummaryResult({
+        tone: "error",
+        text: errorMessage(error, "Could not load summary preview."),
+      });
+    } finally {
+      setIsSummaryBusy(false);
+    }
+  }
+
+  async function handlePostSummary() {
+    if (!settings) return;
+    const shiftName =
+      summaryShiftLabel || settings.shifts[0]?.label || "this shift";
+    if (
+      !window.confirm(
+        `Post the end-of-shift summary now for ${shiftName}?\n\n` +
+          "This sends the floor card early and skips the next scheduled end-of-shift post for this period. " +
+          "Other stations will see that the summary was already sent and should not post again.\n\n" +
+          "The shared shift log is cleared after a successful post.",
+      )
+    ) {
+      return;
+    }
+    setIsSummaryBusy(true);
+    setSummaryResult(null);
+    try {
+      const result = await postShiftSummary(summaryShiftLabel);
+      setSummaryResult({
+        tone: "success",
+        text: result?.message ?? "End-of-shift summary posted.",
+      });
+      if (result?.text) {
+        setSummaryPreview({
+          text: result.text,
+          is_summary_poster: settings.is_summary_poster,
+          poster_station_id: settings.summary_poster_station_id,
+          poster_station_name: stationNameForId(settings.summary_poster_station_id),
+          event_count: 0,
+          shared_folder_configured: Boolean(settings.shared_shift_log_path),
+          already_posted: true,
+          last_summary_at: new Date().toISOString(),
+          last_summary_by: settings.station_name,
+          last_summary_shift: summaryShiftLabel || settings.shifts[0]?.label || null,
+        });
+      } else {
+        setSummaryPreview(await previewShiftSummary(summaryShiftLabel));
+      }
+    } catch (error) {
+      setSummaryResult({
+        tone: "error",
+        text: errorMessage(error, "End-of-shift summary could not be posted."),
+      });
+    } finally {
+      setIsSummaryBusy(false);
+    }
+  }
+
+  function setShiftCount(count: 1 | 2) {
+    if (!settings) return;
+    const next = [...settings.shifts];
+    if (count === 1 && next[1]) {
+      secondShiftDraftRef.current = next[1];
+    }
+    while (next.length < count) {
+      next.push(
+        next.length === 0
+          ? { label: "Day", start_time: "06:00", end_time: "15:00" }
+          : secondShiftDraftRef.current ?? {
+              label: "Night",
+              start_time: next[0]?.end_time ?? "15:00",
+              end_time: "23:00",
+            },
+      );
+    }
+    while (next.length > count) next.pop();
+    updateSettings({ shifts: next });
+  }
+
+  const shiftMode: 1 | 2 = settings?.shifts.length === 2 ? 2 : 1;
+
+  const pageTitle = useMemo(() => {
+    switch (view) {
+      case "shifts":
+        return "Shifts";
+      case "summaryOptions":
+        return "Summary options";
+      case "advanced":
+        return "Advanced";
+      case "station":
+        return "Station & Teams";
+      case "password":
+        return "Change password";
+      default:
+        return "Settings";
+    }
+  }, [view]);
+
+  function updateShift(index: number, patch: Partial<ShiftWindow>) {
+    if (!settings) return;
+    const currentFirstEnd = settings.shifts[0]?.end_time;
+    const shouldKeepSecondShiftConnected =
+      index === 0 &&
+      Boolean(patch.end_time) &&
+      settings.shifts[1]?.start_time === currentFirstEnd;
+    const next = settings.shifts.map((shift, i) =>
+      i === index ? { ...shift, ...patch } : shift,
+    );
+    if (shouldKeepSecondShiftConnected && next[1] && patch.end_time) {
+      next[1] = { ...next[1], start_time: patch.end_time };
+    }
+    updateSettings({
+      shifts: next,
+    });
+  }
+
+  function toggleIncludedStation(stationId: string) {
+    if (!settings) return;
+    const current = new Set(settings.summary_included_station_ids);
+    if (current.has(stationId)) {
+      if (current.size <= 1) return;
+      current.delete(stationId);
+    } else {
+      current.add(stationId);
+    }
+    const included = NOTIFICATION_STATIONS.map((s) => s.id).filter((id) => current.has(id));
+    let poster = settings.summary_poster_station_id;
+    if (!current.has(poster)) {
+      poster = included[0] ?? poster;
+    }
+    updateSettings({
+      summary_included_station_ids: included,
+      summary_poster_station_id: poster,
+      is_summary_poster: settings.station_id === poster,
+    });
+  }
+
+  function setMainStation(stationId: string) {
+    if (!settings || pageBusy) return;
+    const current = new Set(settings.summary_included_station_ids);
+    current.add(stationId);
+    updateSettings({
+      summary_poster_station_id: stationId,
+      is_summary_poster: settings.station_id === stationId,
+      summary_included_station_ids: NOTIFICATION_STATIONS.map((s) => s.id).filter((id) =>
+        current.has(id),
+      ),
+    });
   }
 
   return (
     <main className="flex h-screen min-h-[400px] w-full min-w-[360px] max-w-full flex-col overflow-hidden bg-[#20201f] text-white">
-      <header className="flex shrink-0 items-center gap-3 border-b border-[#454542] px-4 py-3">
+      <header className="relative flex shrink-0 items-center justify-center border-b border-[#454542] px-4 py-3">
         <button
           type="button"
-          aria-label="Back to operator panel"
-          autoFocus
-          onClick={handleBack}
+          aria-label={view === "home" ? "Back to operator panel" : "Back to settings menu"}
+          onClick={handleBackNavigation}
           disabled={pageBusy}
-          className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[#3a3a38] px-3 text-[8.5pt] font-semibold text-white transition hover:bg-[#454542] disabled:cursor-not-allowed disabled:opacity-60"
+          className="absolute left-3 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center text-[#d8d2c8] outline-none transition hover:text-white focus:outline-none focus-visible:text-white disabled:cursor-not-allowed disabled:opacity-40"
         >
-          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-          Back
+          <ArrowLeft className="h-5 w-5" aria-hidden="true" />
         </button>
-        <div className="min-w-0">
-          <h1 className="truncate text-[13pt] font-semibold leading-tight">Notification settings</h1>
-          <p className="mt-0.5 text-[7.5pt] leading-tight text-[#b7b1a8]">
-            Station identity and Teams delivery
-          </p>
-        </div>
+        <h1 className="px-10 text-center text-[13pt] font-semibold leading-tight tracking-tight">
+          {pageTitle}
+        </h1>
+        {view === "home" ? (
+          <button
+            type="button"
+            aria-label="Advanced"
+            title="Advanced"
+            onClick={() => requestAdvanced()}
+            disabled={pageBusy}
+            className="absolute right-3 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md bg-[#3a3a38] text-[#d8d2c8] shadow-sm outline-none transition hover:bg-[#454542] hover:text-white focus:outline-none focus-visible:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Shield className="h-4 w-4" aria-hidden="true" />
+          </button>
+        ) : null}
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-4 [scrollbar-width:thin]">
-        <div className="mx-auto w-full max-w-[620px] space-y-4">
-          {isLoading ? (
-            <div role="status" className="flex items-center justify-center gap-2 py-12 text-[9pt] text-[#d8d2c8]">
-              <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
-              Loading notification settings...
-            </div>
-          ) : loadError ? (
-            <section className="rounded-md border border-[#6f332c] bg-[#301f22] p-4">
-              <div role="alert" className="text-[8.5pt] leading-snug text-[#f4b1a9]">
-                {loadError}
+      {isLoading ? (
+        <div className="flex flex-1 items-center justify-center gap-2 text-[9pt] text-[#d8d2c8]">
+          <LoaderCircle className="h-4 w-4 animate-spin" /> Loading...
+        </div>
+      ) : loadError ? (
+        <div className="p-4 text-[#f4b1a9]">{loadError}</div>
+      ) : settings ? (
+        <ScrollRegion
+          aria-label="Notification settings content"
+          contentClassName="mx-auto w-full max-w-[620px] space-y-3 p-4"
+        >
+          {view === "home" ? (
+            <div className="space-y-3">
+              <div className="space-y-2">
+                <MenuButton
+                  icon={CalendarClock}
+                  title="Shifts"
+                  onClick={() => {
+                    if (settings.shifts.length === 0) setShiftCount(1);
+                    setView("shifts");
+                  }}
+                />
+                <MenuButton
+                  icon={ListChecks}
+                  title="Summary options"
+                  onClick={() => setView("summaryOptions")}
+                />
               </div>
-              <button
-                type="button"
-                onClick={() => void handleRetryLoad()}
-                className="mt-3 inline-flex min-h-8 items-center justify-center rounded bg-[#3a3a38] px-3 text-[8pt] font-semibold transition hover:bg-[#454542]"
+
+              <section
+                aria-label="End of shift"
+                className="rounded-md border border-[#454542] bg-[#292928] p-3"
               >
-                Retry
-              </button>
-            </section>
-          ) : settings ? (
-            <>
-              <form
-                aria-label="Notification settings form"
-                onSubmit={(event) => void handleSave(event)}
-                className="rounded-md border border-[#454542] bg-[#292928] p-4 shadow-sm"
-              >
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
-                    Station
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-[10pt] font-semibold">
+                    <ClipboardList className="h-4 w-4 shrink-0 text-[#8dc7ef]" aria-hidden="true" />
+                    End of shift
+                  </div>
+                  {settings.shifts.length > 1 ? (
                     <select
-                      value={settings.station_id}
+                      value={summaryShiftLabel || settings.shifts[0]?.label || ""}
                       disabled={pageBusy}
-                      onChange={(event) => {
-                        const stationId = event.target.value;
-                        updateSettings({
-                          station_id: stationId,
-                          station_name: stationNameForId(stationId),
-                        });
-                      }}
-                      className={inputClassName}
+                      aria-label="Shift"
+                      onChange={(event) => setSummaryShiftLabel(event.target.value)}
+                      className="h-8 max-w-[55%] rounded-md border border-[#454542] bg-[#1f1f1e] px-2 text-[8pt] font-semibold text-white outline-none focus:border-[#1f74ae]"
                     >
-                      {NOTIFICATION_STATIONS.map((station) => (
-                        <option key={station.id} value={station.id}>
-                          {station.name}
+                      {settings.shifts.map((shift) => (
+                        <option key={shift.label} value={shift.label}>
+                          {shift.label}
                         </option>
                       ))}
                     </select>
-                  </label>
+                  ) : null}
+                </div>
 
+                {summaryPreview?.already_posted ? (
+                  <div
+                    role="status"
+                    className="mb-2 rounded-md border border-[#e8bd69]/40 bg-[#e8bd69]/10 px-3 py-2 text-[8pt] text-[#e8bd69]"
+                  >
+                    Already posted
+                    {summaryPreview.last_summary_by
+                      ? ` by ${summaryPreview.last_summary_by}`
+                      : ""}
+                    {summaryPreview.last_summary_at
+                      ? ` at ${summaryPreview.last_summary_at}`
+                      : ""}
+                    .
+                  </div>
+                ) : null}
+
+                <div className="rounded border border-[#454542] bg-[#1f1f1e] p-3">
+                  {isSummaryBusy && !summaryPreview ? (
+                    <div className="flex min-h-[96px] items-center justify-center gap-2 text-[8pt] text-[#b7b1a8]">
+                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                      Loading preview...
+                    </div>
+                  ) : summaryPreview?.text ? (
+                    <pre className="whitespace-pre-wrap text-[7.5pt] leading-snug text-[#d8d2c8]">
+                      {summaryPreview.text}
+                    </pre>
+                  ) : (
+                    <p className="text-[8pt] text-[#9a958c]">
+                      No preview yet. Configure shared folder and shifts, then reopen Settings.
+                    </p>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  disabled={
+                    pageBusy ||
+                    isSummaryBusy ||
+                    settingsDirty ||
+                    !settings.events.summary ||
+                    !settings.shared_shift_log_path ||
+                    Boolean(summaryPreview?.already_posted)
+                  }
+                  onClick={() => void handlePostSummary()}
+                  className="mt-2 inline-flex min-h-9 w-full items-center justify-center rounded-md bg-[#1d7f47] px-3 text-[8.5pt] font-semibold text-white disabled:opacity-60"
+                >
+                  {isSummaryBusy ? (
+                    <LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  ) : null}
+                  Post Summary
+                </button>
+                {summaryResult ? <ResultLine result={summaryResult} /> : null}
+              </section>
+            </div>
+          ) : null}
+
+          {view === "advanced" && advancedUnlocked ? (
+            <div className="space-y-2">
+              <MenuButton
+                icon={Radio}
+                title="Station & Teams"
+                onClick={() => setView("station")}
+              />
+              <MenuButton
+                icon={KeyRound}
+                title="Change password"
+                onClick={() => setView("password")}
+              />
+            </div>
+          ) : null}
+
+          {view === "shifts" ? (
+            <form onSubmit={(e) => void handleSave(e)} className="space-y-3 rounded-md border border-[#454542] bg-[#292928] p-4">
+              <div>
+                <div className="text-[8pt] font-semibold text-[#d8d2c8]">Shift mode</div>
+                <div className="mt-1.5 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    disabled={pageBusy}
+                    onClick={() => setShiftCount(1)}
+                    className={cn(
+                      "inline-flex min-h-10 items-center justify-center rounded-md border px-3 text-[8.5pt] font-semibold transition",
+                      shiftMode === 1
+                        ? "border-[#1f74ae] bg-[#1f74ae] text-white shadow-sm"
+                        : "border-[#454542] bg-[#242423] text-[#d8d2c8] hover:border-[#5a5a56] hover:bg-[#2c2c2a]",
+                    )}
+                  >
+                    Single shift
+                  </button>
+                  <button
+                    type="button"
+                    disabled={pageBusy}
+                    onClick={() => setShiftCount(2)}
+                    className={cn(
+                      "inline-flex min-h-10 items-center justify-center rounded-md border px-3 text-[8.5pt] font-semibold transition",
+                      shiftMode === 2
+                        ? "border-[#1f74ae] bg-[#1f74ae] text-white shadow-sm"
+                        : "border-[#454542] bg-[#242423] text-[#d8d2c8] hover:border-[#5a5a56] hover:bg-[#2c2c2a]",
+                    )}
+                  >
+                    Double shift
+                  </button>
+                </div>
+              </div>
+
+              {settings.shifts.map((shift, index) => (
+                <div key={index} className="space-y-2 rounded-md border border-[#454542] bg-[#242423] p-3">
                   <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
-                    Destination name
+                    Label
                     <input
-                      value={settings.teams_destination_name}
+                      value={shift.label}
                       disabled={pageBusy}
-                      onChange={(event) =>
-                        updateSettings({ teams_destination_name: event.target.value })
-                      }
-                      autoComplete="off"
+                      onChange={(e) => updateShift(index, { label: e.target.value })}
                       className={inputClassName}
                     />
                   </label>
-                </div>
-
-                <label className="mt-3 block text-[8pt] font-semibold text-[#d8d2c8]">
-                  Teams webhook URL
-                  <input
-                    type="password"
-                    value={settings.teams_webhook_url}
+                  <ShiftRangePicker
+                    startTime={shift.start_time}
+                    endTime={shift.end_time}
                     disabled={pageBusy}
-                    onChange={(event) => updateSettings({ teams_webhook_url: event.target.value })}
-                    autoComplete="off"
-                    spellCheck={false}
-                    placeholder={
-                      settings.webhook_configured
-                        ? "Saved webhook configured; enter a URL only to replace it"
-                        : "Paste the Power Automate Workflow URL"
-                    }
-                    aria-describedby="webhook-help"
+                    onStartChange={(start_time) => updateShift(index, { start_time })}
+                    onEndChange={(end_time) => updateShift(index, { end_time })}
+                  />
+                </div>
+              ))}
+
+              {shiftValidationError ? (
+                <div role="alert" className="text-[7.5pt] leading-snug text-[#f4b1a9]">
+                  {shiftValidationError}
+                </div>
+              ) : null}
+
+              <div className="flex justify-end border-t border-[#454542] pt-3">
+                <button
+                  type="submit"
+                  disabled={pageBusy || !settingsDirty || Boolean(shiftValidationError)}
+                  className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#1d7f47] px-3 text-[8.5pt] font-semibold text-white disabled:opacity-60"
+                >
+                  {isSaving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                  {isSaving ? "Saving..." : "Save"}
+                </button>
+              </div>
+              {saveResult ? <ResultLine result={saveResult} /> : null}
+            </form>
+          ) : null}
+
+          {view === "summaryOptions" ? (
+            <form onSubmit={(e) => void handleSave(e)} className="space-y-3 rounded-md border border-[#454542] bg-[#292928] p-4">
+              <div>
+                <div className="flex items-center justify-between gap-2 text-[8pt] font-semibold text-[#d8d2c8]">
+                  <span>Stations in summary</span>
+                  <span className="font-medium text-[#9a958c]">Main poster</span>
+                </div>
+                <div className="mt-2 space-y-1.5" role="list" aria-label="Stations in summary">
+                  {NOTIFICATION_STATIONS.map((station) => {
+                    const checked = settings.summary_included_station_ids.includes(station.id);
+                    const isMain = settings.summary_poster_station_id === station.id;
+                    return (
+                      <div
+                        key={station.id}
+                        role="listitem"
+                        className="flex min-h-10 items-center gap-2 rounded-md border border-[#454542] bg-[#242423] px-3"
+                      >
+                        <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-[8.5pt]">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={
+                              pageBusy ||
+                              (checked && settings.summary_included_station_ids.length <= 1) ||
+                              (checked && isMain && settings.summary_included_station_ids.length <= 1)
+                            }
+                            onChange={() => toggleIncludedStation(station.id)}
+                            className="h-4 w-4 accent-[#1f74ae]"
+                            aria-label={`Include ${station.name}`}
+                          />
+                          <span className="truncate">{station.name}</span>
+                        </label>
+                        <button
+                          type="button"
+                          role="radio"
+                          aria-checked={isMain}
+                          aria-label={`${station.name} main poster`}
+                          disabled={pageBusy}
+                          onClick={() => setMainStation(station.id)}
+                          className={cn(
+                            "inline-flex h-7 shrink-0 items-center justify-center rounded-full border px-2.5 text-[7.5pt] font-semibold transition",
+                            isMain
+                              ? "border-[#1f74ae] bg-[#1f74ae] text-white"
+                              : "border-[#454542] bg-[#1f1f1e] text-[#b7b1a8] hover:border-[#5a5a56] hover:text-white",
+                          )}
+                        >
+                          Main
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-3 border-t border-[#454542] pt-3">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={settings.events.summary}
+                  aria-label="Enable summary notifications"
+                  disabled={pageBusy}
+                  onClick={() =>
+                    updateSettings({
+                      events: { ...settings.events, summary: !settings.events.summary },
+                    })
+                  }
+                  className={cn(
+                    "inline-flex min-h-9 items-center gap-2 rounded-md border px-2.5 text-[8.5pt] font-semibold transition disabled:opacity-60",
+                    settings.events.summary
+                      ? "border-[#1d7f47]/60 bg-[#1d7f47]/20 text-[#86efac]"
+                      : "border-[#454542] bg-[#242423] text-[#b7b1a8]",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition",
+                      settings.events.summary ? "bg-[#1d7f47]" : "bg-[#3a3a38]",
+                    )}
+                    aria-hidden="true"
+                  >
+                    <span
+                      className={cn(
+                        "inline-block h-4 w-4 rounded-full bg-white shadow transition",
+                        settings.events.summary ? "translate-x-4" : "translate-x-0.5",
+                      )}
+                    />
+                  </span>
+                  {settings.events.summary ? "Enabled" : "Disabled"}
+                </button>
+                <button
+                  type="submit"
+                  disabled={pageBusy || !settingsDirty}
+                  className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#1d7f47] px-3 text-[8.5pt] font-semibold text-white disabled:opacity-60"
+                >
+                  {isSaving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                  {isSaving ? "Saving..." : "Save"}
+                </button>
+              </div>
+              {saveResult ? <ResultLine result={saveResult} /> : null}
+            </form>
+          ) : null}
+
+          {view === "station" && advancedUnlocked ? (
+            <form onSubmit={(e) => void handleSave(e)} className="space-y-3 rounded-md border border-[#454542] bg-[#292928] p-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <FieldSelect
+                  label="This PC station"
+                  value={settings.station_id}
+                  disabled={pageBusy}
+                  onChange={(stationId) => {
+                    updateSettings({
+                      station_id: stationId,
+                      station_name: stationNameForId(stationId),
+                      is_summary_poster: stationId === settings.summary_poster_station_id,
+                    });
+                  }}
+                  options={NOTIFICATION_STATIONS.map((s) => ({ value: s.id, label: s.name }))}
+                />
+                <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
+                  Destination name
+                  <input
+                    value={settings.teams_destination_name}
+                    disabled={pageBusy}
+                    onChange={(e) => updateSettings({ teams_destination_name: e.target.value })}
                     className={inputClassName}
                   />
                 </label>
-                <p id="webhook-help" className="mt-1 text-[7.2pt] leading-snug text-[#b7b1a8]">
-                  The signed URL stays masked and is never included in automation logs.
-                </p>
-
-                <label className="mt-3 flex min-h-9 items-center gap-2 rounded border border-[#454542] bg-[#242423] px-3 text-[8.5pt] font-medium">
+              </div>
+              <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
+                Teams webhook URL
+                <input
+                  type="password"
+                  value={settings.teams_webhook_url}
+                  disabled={pageBusy}
+                  onChange={(e) => updateSettings({ teams_webhook_url: e.target.value })}
+                  placeholder={
+                    settings.webhook_configured
+                      ? "Saved webhook configured; enter a URL only to replace it"
+                      : "Paste the Power Automate Workflow URL"
+                  }
+                  className={inputClassName}
+                />
+              </label>
+              <label className="flex min-h-9 items-center gap-2 rounded border border-[#454542] bg-[#242423] px-3 text-[8.5pt]">
+                <input
+                  type="checkbox"
+                  checked={settings.enabled}
+                  disabled={pageBusy}
+                  onChange={(e) => updateSettings({ enabled: e.target.checked })}
+                  className="h-4 w-4 accent-[#1f74ae]"
+                />
+                Notifications enabled
+              </label>
+              <div>
+                <div className="text-[8pt] font-semibold text-[#d8d2c8]">Shared OneDrive folder</div>
+                <div className="mt-1 flex gap-1.5">
                   <input
-                    type="checkbox"
-                    checked={settings.enabled}
-                    disabled={pageBusy}
-                    onChange={(event) => updateSettings({ enabled: event.target.checked })}
-                    className="h-4 w-4 accent-[#1f74ae]"
+                    readOnly
+                    value={settings.shared_shift_log_path}
+                    aria-label="Shared OneDrive folder"
+                    className={cn(inputClassName, "mt-0 min-w-0 flex-1")}
+                    placeholder="Browse to shared folder"
                   />
-                  Notifications enabled
-                </label>
-
-                <div className="mt-3">
-                  <div className="text-[8pt] font-semibold text-[#d8d2c8]">
-                    Shared OneDrive folder
-                  </div>
-                  <div className="mt-1 flex gap-1.5">
-                    <input
-                      readOnly
-                      value={settings.shared_shift_log_path}
-                      disabled={pageBusy}
-                      autoComplete="off"
-                      spellCheck={false}
-                      placeholder="Optional — browse to a shared OneDrive folder"
-                      aria-label="Shared OneDrive folder"
-                      aria-describedby="shift-log-help"
-                      title={settings.shared_shift_log_path || undefined}
-                      className={cn(inputClassName, "mt-0 min-w-0 flex-1")}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => void handleBrowseSharedFolder()}
-                      disabled={pageBusy}
-                      className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded border border-[#454542] bg-[#3a3a38] px-2.5 text-[8pt] font-semibold text-white transition hover:bg-[#454542] disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {isBrowsingSharedFolder ? (
-                        <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                      ) : (
-                        <FolderOpen className="h-3.5 w-3.5" aria-hidden="true" />
-                      )}
-                      Browse
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Clear shared folder"
-                      title="Clear shared folder"
-                      onClick={() => updateSettings({ shared_shift_log_path: "" })}
-                      disabled={pageBusy || !settings.shared_shift_log_path}
-                      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-[#454542] bg-[#3a3a38] text-[#d8d2c8] transition hover:bg-[#454542] hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
-                    >
-                      <X className="h-3.5 w-3.5" aria-hidden="true" />
-                    </button>
-                  </div>
-                  <p id="shift-log-help" className="mt-1 text-[7.2pt] leading-snug text-[#b7b1a8]">
-                    Pick the same shared folder on every station (for example a hidden OneDrive
-                    folder). On Save the app creates <code className="text-[#d8d2c8]">shift_log.json</code>{" "}
-                    and <code className="text-[#d8d2c8]">stations/test-station-1…4</code> inside it.
-                    Leave empty to disable multi-station rollups.
-                  </p>
-                </div>
-
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-[#454542] pt-3">
                   <button
                     type="button"
-                    onClick={() => void handleTestPing()}
-                    disabled={pageBusy || settingsDirty}
-                    className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#3a3a38] px-3 py-2 text-[8.5pt] font-semibold text-white shadow-sm transition hover:bg-[#454542] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {isTesting ? (
-                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                    ) : (
-                      <Send className="h-3.5 w-3.5" aria-hidden="true" />
-                    )}
-                    {isTesting ? "Testing..." : "Send test ping"}
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={pageBusy || !settingsDirty}
-                    className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#1d7f47] px-3 py-2 text-[8.5pt] font-semibold text-white shadow-sm transition hover:bg-[#238a50] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {isSaving ? (
-                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                    ) : (
-                      <Save className="h-3.5 w-3.5" aria-hidden="true" />
-                    )}
-                    {isSaving ? "Saving..." : "Save settings"}
-                  </button>
-                </div>
-                {settingsDirty ? (
-                  <p className="mt-2 text-[7.2pt] leading-tight text-[#e8bd69]">
-                    Save changes before sending a test ping.
-                  </p>
-                ) : null}
-                {saveResult ? <ResultLine result={saveResult} /> : null}
-                {testResult ? <ResultLine result={testResult} /> : null}
-              </form>
-
-              <form
-                aria-label="Change settings password"
-                onSubmit={(event) => void handlePasswordChange(event)}
-                className="rounded-md border border-[#454542] bg-[#292928] p-4 shadow-sm"
-              >
-                <div className="flex items-center gap-2">
-                  <KeyRound className="h-4 w-4 text-[#8dc7ef]" aria-hidden="true" />
-                  <h2 className="text-[10pt] font-semibold">Change password</h2>
-                </div>
-                <p className="mt-1 text-[7.2pt] leading-snug text-[#b7b1a8]">
-                  This password is a light operator lock, not a security credential.
-                </p>
-
-                <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                  <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
-                    Current password
-                    <input
-                      type="password"
-                      value={passwordFields.current}
-                      disabled={pageBusy}
-                      onChange={(event) => updatePasswordField("current", event.target.value)}
-                      autoComplete="current-password"
-                      className={inputClassName}
-                    />
-                  </label>
-                  <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
-                    New password
-                    <input
-                      type="password"
-                      value={passwordFields.next}
-                      disabled={pageBusy}
-                      onChange={(event) => updatePasswordField("next", event.target.value)}
-                      autoComplete="new-password"
-                      className={inputClassName}
-                    />
-                  </label>
-                  <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
-                    Confirm password
-                    <input
-                      type="password"
-                      value={passwordFields.confirm}
-                      disabled={pageBusy}
-                      onChange={(event) => updatePasswordField("confirm", event.target.value)}
-                      autoComplete="new-password"
-                      className={inputClassName}
-                    />
-                  </label>
-                </div>
-
-                <div className="mt-3 flex justify-end">
-                  <button
-                    type="submit"
+                    onClick={() => void handleBrowseSharedFolder()}
                     disabled={pageBusy}
-                    className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#1f74ae] px-3 py-2 text-[8.5pt] font-semibold text-white shadow-sm transition hover:bg-[#2874a8] disabled:cursor-wait disabled:opacity-70"
+                    className="inline-flex h-9 items-center gap-1 rounded border border-[#454542] bg-[#3a3a38] px-2 text-[8pt] font-semibold"
                   >
-                    {isChangingPassword ? (
-                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                    ) : null}
-                    {isChangingPassword ? "Updating..." : "Update password"}
+                    <FolderOpen className="h-3.5 w-3.5" /> Browse
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Clear shared folder"
+                    onClick={() => updateSettings({ shared_shift_log_path: "" })}
+                    disabled={pageBusy || !settings.shared_shift_log_path}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded border border-[#454542] bg-[#3a3a38]"
+                  >
+                    <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
-                {passwordResult ? <ResultLine result={passwordResult} /> : null}
-              </form>
-            </>
+              </div>
+              <div className="flex flex-wrap justify-between gap-2 border-t border-[#454542] pt-3">
+                <button
+                  type="button"
+                  disabled={pageBusy || settingsDirty}
+                  onClick={() => void handleTestPing()}
+                  className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#3a3a38] px-3 text-[8.5pt] font-semibold disabled:opacity-60"
+                >
+                  <Send className="h-3.5 w-3.5" /> Send test ping
+                </button>
+                <button
+                  type="submit"
+                  disabled={pageBusy || !settingsDirty}
+                  className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#1d7f47] px-3 text-[8.5pt] font-semibold text-white disabled:opacity-60"
+                >
+                  <Save className="h-3.5 w-3.5" /> Save
+                </button>
+              </div>
+              {saveResult ? <ResultLine result={saveResult} /> : null}
+              {testResult ? <ResultLine result={testResult} /> : null}
+            </form>
           ) : null}
+
+          {view === "password" && advancedUnlocked ? (
+            <form
+              onSubmit={(e) => void handlePasswordChange(e)}
+              className="rounded-md border border-[#454542] bg-[#292928] p-4"
+            >
+              <div className="grid gap-3 sm:grid-cols-3">
+                <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
+                  Current password
+                  <input
+                    type="password"
+                    value={passwordFields.current}
+                    disabled={pageBusy}
+                    onChange={(e) =>
+                      setPasswordFields((c) => ({ ...c, current: e.target.value }))
+                    }
+                    className={inputClassName}
+                  />
+                </label>
+                <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
+                  New password
+                  <input
+                    type="password"
+                    value={passwordFields.next}
+                    disabled={pageBusy}
+                    onChange={(e) => setPasswordFields((c) => ({ ...c, next: e.target.value }))}
+                    className={inputClassName}
+                  />
+                </label>
+                <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
+                  Confirm password
+                  <input
+                    type="password"
+                    value={passwordFields.confirm}
+                    disabled={pageBusy}
+                    onChange={(e) =>
+                      setPasswordFields((c) => ({ ...c, confirm: e.target.value }))
+                    }
+                    className={inputClassName}
+                  />
+                </label>
+              </div>
+              <div className="mt-3 flex justify-end">
+                <button
+                  type="submit"
+                  disabled={pageBusy}
+                  className="inline-flex min-h-9 items-center justify-center rounded-md bg-[#1f74ae] px-3 text-[8.5pt] font-semibold text-white disabled:opacity-60"
+                >
+                  Update password
+                </button>
+              </div>
+              {passwordResult ? <ResultLine result={passwordResult} /> : null}
+            </form>
+          ) : null}
+        </ScrollRegion>
+      ) : null}
+
+      {leaveTarget ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4"
+          onMouseDown={(event) => {
+            if (pageBusy) return;
+            if (event.target === event.currentTarget) {
+              setLeaveTarget(null);
+            }
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="unsaved-settings-title"
+            className="w-full max-w-[360px] rounded-md border border-[#454542] bg-[#292928] p-4 text-white shadow-2xl"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <h2
+              id="unsaved-settings-title"
+              className="text-center text-[12pt] font-semibold leading-tight"
+            >
+              Unsaved settings
+            </h2>
+            <div className="mt-4 flex flex-col gap-2">
+              <button
+                type="button"
+                disabled={pageBusy}
+                onClick={() => void handleSaveAndLeave()}
+                className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#1d7f47] px-3 text-[9pt] font-semibold text-white disabled:opacity-60"
+              >
+                {isSaving || isChangingPassword ? (
+                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Save className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                Save Changes
+              </button>
+              <button
+                type="button"
+                disabled={pageBusy}
+                onClick={handleDiscardAndLeave}
+                className="inline-flex min-h-9 items-center justify-center rounded-md bg-[#3a3a38] px-3 text-[9pt] font-semibold text-white disabled:opacity-60"
+              >
+                Discard Changes
+              </button>
+              <button
+                type="button"
+                disabled={pageBusy}
+                onClick={() => setLeaveTarget(null)}
+                className="inline-flex min-h-9 items-center justify-center rounded-md border border-[#454542] bg-transparent px-3 text-[9pt] font-semibold text-[#d8d2c8] disabled:opacity-60"
+              >
+                Cancel
+              </button>
+            </div>
+          </section>
         </div>
-      </div>
+      ) : null}
+
+      <SettingsPasswordModal
+        open={advancedPasswordOpen}
+        verify={verifyPassword}
+        onCancel={() => {
+          setAdvancedPasswordOpen(false);
+        }}
+        onUnlock={() => {
+          setAdvancedPasswordOpen(false);
+          setAdvancedUnlocked(true);
+          setView("advanced");
+        }}
+      />
     </main>
+  );
+}
+
+function FieldSelect({
+  label,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: { value: string; label: string }[];
+  disabled?: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
+      {label}
+      <span className="relative mt-1 block">
+        <select
+          value={value}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.value)}
+          className={selectClassName}
+        >
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <ChevronDown
+          className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#9a958c]"
+          aria-hidden="true"
+        />
+      </span>
+    </label>
+  );
+}
+
+function MenuButton({
+  icon: Icon,
+  title,
+  onClick,
+}: {
+  icon: typeof Radio;
+  title: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center gap-3 rounded-md border border-[#454542] bg-[#292928] px-3 py-3 text-left transition hover:border-[#5a5a56] hover:bg-[#30302f]"
+    >
+      <Icon className="h-4 w-4 shrink-0 text-[#8dc7ef]" />
+      <div className="min-w-0 flex-1 text-[10pt] font-semibold">{title}</div>
+      <ChevronRight className="h-4 w-4 text-[#777772]" />
+    </button>
   );
 }
 
@@ -598,7 +1200,7 @@ function ResultLine({ result }: { result: ResultMessage }) {
     <div
       role={result.tone === "error" ? "alert" : "status"}
       className={cn(
-        "mt-2 text-[7.5pt] leading-snug",
+        "mt-2 text-[7.5pt]",
         result.tone === "success"
           ? "text-[#86efac]"
           : result.tone === "warning"
@@ -611,6 +1213,30 @@ function ResultLine({ result }: { result: ResultMessage }) {
   );
 }
 
+function normalizeLoaded(settings: AppNotificationSettingsView): AppNotificationSettingsView {
+  const included =
+    settings.summary_included_station_ids?.length > 0
+      ? settings.summary_included_station_ids.filter((id) =>
+          NOTIFICATION_STATIONS.some((s) => s.id === id),
+        )
+      : defaultIncludedStationIds();
+  return {
+    ...settings,
+    shifts: settings.shifts ?? [],
+    summary_poster_station_id: settings.summary_poster_station_id || "pdu-lab",
+    summary_included_station_ids:
+      included.length > 0 ? included : defaultIncludedStationIds(),
+    is_summary_poster:
+      settings.station_id === (settings.summary_poster_station_id || "pdu-lab"),
+    events: {
+      problem: settings.events?.problem ?? true,
+      complete: settings.events?.complete ?? true,
+      stuck: false,
+      summary: settings.events?.summary ?? true,
+    },
+  };
+}
+
 function settingsFingerprint(settings: AppNotificationSettingsView) {
   return JSON.stringify({
     enabled: settings.enabled,
@@ -621,6 +1247,9 @@ function settingsFingerprint(settings: AppNotificationSettingsView) {
     idle_timeout_minutes: settings.idle_timeout_minutes,
     events: settings.events,
     shared_shift_log_path: settings.shared_shift_log_path,
+    shifts: settings.shifts,
+    summary_poster_station_id: settings.summary_poster_station_id,
+    summary_included_station_ids: settings.summary_included_station_ids,
   });
 }
 
@@ -636,6 +1265,13 @@ function saveRequestFromSettings(
     idle_timeout_minutes: settings.idle_timeout_minutes,
     events: settings.events,
     shared_shift_log_path: settings.shared_shift_log_path.trim(),
+    shifts: settings.shifts.map((s) => ({
+      label: s.label.trim(),
+      start_time: s.start_time.trim(),
+      end_time: s.end_time.trim(),
+    })),
+    summary_poster_station_id: settings.summary_poster_station_id.trim() || "pdu-lab",
+    summary_included_station_ids: settings.summary_included_station_ids,
   };
 }
 
@@ -646,8 +1282,8 @@ function settingsAfterSave(
   return {
     ...current,
     ...request,
-    webhook_configured:
-      current.webhook_configured || Boolean(request.teams_webhook_url.trim()),
+    webhook_configured: current.webhook_configured || Boolean(request.teams_webhook_url.trim()),
+    is_summary_poster: request.station_id === (request.summary_poster_station_id || "pdu-lab"),
   };
 }
 
@@ -655,60 +1291,40 @@ function statusAdvanced(
   latest: NotificationRuntimeStatus,
   baseline: NotificationRuntimeStatus | null,
 ) {
-  if (
-    latest.event_kind !== "test_ping" ||
-    latest.state === "idle" ||
-    latest.state === "ready"
-  ) {
+  if (latest.event_kind !== "test_ping" || latest.state === "idle" || latest.state === "ready") {
     return false;
   }
-  if (!baseline) {
-    return Boolean(latest.updated_at);
-  }
-  if (latest.updated_at && latest.updated_at !== baseline.updated_at) {
-    return true;
-  }
+  if (!baseline) return Boolean(latest.updated_at);
+  if (latest.updated_at && latest.updated_at !== baseline.updated_at) return true;
   return latest.state !== baseline.state || latest.message !== baseline.message;
 }
 
 function messageFromRuntimeStatus(status: NotificationRuntimeStatus): ResultMessage {
-  if (status.state === "failed") {
-    return { tone: "error", text: status.message };
-  }
-  if (status.state === "skipped") {
-    return { tone: "warning", text: status.message };
-  }
+  if (status.state === "failed") return { tone: "error", text: status.message };
+  if (status.state === "skipped") return { tone: "warning", text: status.message };
   return { tone: "success", text: status.message };
 }
 
-function abortableDelay(milliseconds: number, signal: AbortSignal) {
+function abortableDelay(ms: number, signal: AbortSignal) {
   return new Promise<boolean>((resolve) => {
     if (signal.aborted) {
       resolve(false);
       return;
     }
-
-    const handle = window.setTimeout(() => {
-      signal.removeEventListener("abort", handleAbort);
-      resolve(true);
-    }, milliseconds);
-    const handleAbort = () => {
-      window.clearTimeout(handle);
-      resolve(false);
-    };
-    signal.addEventListener("abort", handleAbort, { once: true });
+    const t = window.setTimeout(() => resolve(true), ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(t);
+        resolve(false);
+      },
+      { once: true },
+    );
   });
 }
 
 function errorMessage(error: unknown, fallback: string) {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message;
-  }
-  if (error && typeof error === "object" && "message" in error) {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === "string" && message.trim()) {
-      return message;
-    }
-  }
+  if (error instanceof Error && error.message.trim()) return error.message;
+  if (typeof error === "string" && error.trim()) return error;
   return fallback;
 }

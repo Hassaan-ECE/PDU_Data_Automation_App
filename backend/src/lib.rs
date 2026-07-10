@@ -36,6 +36,8 @@ pub fn run() {
             commands::verify_settings_password,
             commands::change_settings_password,
             commands::send_notification_test,
+            commands::preview_shift_summary,
+            commands::post_shift_summary,
             commands::load_layout_profile,
             commands::setup_unit_folder,
             commands::find_latest_unit_candidate,

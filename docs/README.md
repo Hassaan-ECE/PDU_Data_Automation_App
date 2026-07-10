@@ -9,6 +9,7 @@ This folder contains the current, useful project documentation.
 - [LEGACY_BEHAVIOR.md](./LEGACY_BEHAVIOR.md) — What must be preserved from the original app and what must be corrected. Critical constraints.
 - [CONFIGURATION_MODEL.md](./CONFIGURATION_MODEL.md) — How report layouts, CSV mappings, and thresholds are driven by config files.
 - [NOTIFICATIONS.md](./NOTIFICATIONS.md) — Password-gated in-app Teams settings, Adaptive Card event scope, runtime status, security limits, optional shift log, and validation.
+- [OPERATOR_NOTIFICATION_CATALOG.md](./OPERATOR_NOTIFICATION_CATALOG.md) — Operator-facing list of every Teams notification (active + not yet), when it fires, and how to practice on a station.
 
 ## Supporting References
 

@@ -20,12 +20,12 @@ pub const SHIFT_LOG_SCHEMA_VERSION: u32 = 1;
 pub const SHIFT_LOG_FILE_NAME: &str = "shift_log.json";
 /// Per-station subfolders for future station-local shared state.
 pub const STATIONS_DIR_NAME: &str = "stations";
-pub const SHARED_STATION_IDS: [&str; 4] = [
-    "test-station-1",
-    "test-station-2",
-    "test-station-3",
-    "test-station-4",
-];
+pub use super::stations::known_station_ids;
+
+/// Station folder ids created under the shared OneDrive root.
+pub fn shared_station_ids() -> Vec<&'static str> {
+    known_station_ids()
+}
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 const LOCK_POLL: Duration = Duration::from_millis(20);
 const STALE_LOCK_AGE: Duration = Duration::from_secs(30);
@@ -128,6 +128,12 @@ pub struct ShiftLog {
     pub events: Vec<LoggedEvent>,
     #[serde(default)]
     pub last_summary_at: Option<String>,
+    /// Station name that posted the last floor summary (any station may post early).
+    #[serde(default)]
+    pub last_summary_by: Option<String>,
+    /// Shift label used for the last floor summary, when known.
+    #[serde(default)]
+    pub last_summary_shift: Option<String>,
 }
 
 impl Default for ShiftLog {
@@ -136,6 +142,8 @@ impl Default for ShiftLog {
             schema_version: SHIFT_LOG_SCHEMA_VERSION,
             events: Vec::new(),
             last_summary_at: None,
+            last_summary_by: None,
+            last_summary_shift: None,
         }
     }
 }
@@ -197,12 +205,160 @@ pub fn ensure_shared_root_layout(configured: &str) -> Result<PathBuf, ShiftLogEr
     let stations_root = root.join(STATIONS_DIR_NAME);
     fs::create_dir_all(&stations_root)
         .map_err(|error| ShiftLogError::Write(format!("{}: {error}", stations_root.display())))?;
-    for station_id in SHARED_STATION_IDS {
+    for station_id in shared_station_ids() {
         let station_dir = stations_root.join(station_id);
         fs::create_dir_all(&station_dir)
             .map_err(|error| ShiftLogError::Write(format!("{}: {error}", station_dir.display())))?;
     }
     Ok(root)
+}
+
+/// Combined end-of-shift totals across known stations for Teams posting.
+pub fn format_floor_summary(
+    log: &ShiftLog,
+    timestamp: &str,
+    known_stations: &[(String, String)],
+    shift_label: Option<&str>,
+    _operator_name: Option<&str>,
+    posted_by_station: Option<&str>,
+) -> String {
+    use std::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct StationTotals {
+        name: String,
+        completes: u32,
+        problems: u32,
+        stuck: u32,
+    }
+
+    let mut by_station: BTreeMap<String, StationTotals> = BTreeMap::new();
+    for (id, name) in known_stations {
+        by_station.insert(
+            id.clone(),
+            StationTotals {
+                name: name.clone(),
+                ..StationTotals::default()
+            },
+        );
+    }
+
+    for event in &log.events {
+        let entry = by_station
+            .entry(event.station_id.clone())
+            .or_insert_with(|| StationTotals {
+                name: event.station_name.clone(),
+                ..StationTotals::default()
+            });
+        if entry.name.is_empty() {
+            entry.name = event.station_name.clone();
+        }
+        match event.kind {
+            ShiftLogEventKind::Problem => entry.problems += 1,
+            ShiftLogEventKind::Complete => entry.completes += 1,
+        }
+    }
+
+    let mut total_c = 0u32;
+    let mut total_p = 0u32;
+    let mut total_s = 0u32;
+    let mut stations_with_work = 0u32;
+    for totals in by_station.values() {
+        total_c += totals.completes;
+        total_p += totals.problems;
+        total_s += totals.stuck;
+        if totals.completes + totals.problems + totals.stuck > 0 {
+            stations_with_work += 1;
+        }
+    }
+    let station_count = known_stations.len().max(by_station.len());
+    let total_events = total_c + total_p + total_s;
+
+    let headline = match shift_label.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(label) => format!("📊 End of shift — {label}"),
+        None => "📊 End of shift — all stations".to_string(),
+    };
+
+    let mut lines = vec![
+        headline,
+        format!(
+            "TOTALS (combined)\n✅ Completed: {total_c}\n🔴 Problems: {total_p}\n🟠 Stuck: {total_s}\nΣ Events: {total_events}"
+        ),
+        format!("Stations\n{stations_with_work} of {station_count} had activity this shift"),
+    ];
+
+    // `posted_by_station` is kept on the API for callers/logging but is not shown on the card.
+    let _ = posted_by_station;
+
+    if log.events.is_empty() {
+        lines.push(String::from(
+            "No problem / complete events logged yet for this shift period.",
+        ));
+    } else {
+        let mut station_lines = String::from("By station\n");
+        for (id, totals) in &by_station {
+            let name = if totals.name.is_empty() {
+                id.as_str()
+            } else {
+                totals.name.as_str()
+            };
+            if totals.completes + totals.problems + totals.stuck == 0 {
+                station_lines.push_str(&format!("• {name}: —\n"));
+            } else {
+                station_lines.push_str(&format!(
+                    "• {name}: ✅{} 🔴{} 🟠{}\n",
+                    totals.completes, totals.problems, totals.stuck
+                ));
+            }
+        }
+        lines.push(station_lines.trim_end().to_string());
+    }
+
+    if let Some(prev) = &log.last_summary_at {
+        lines.push(format!("Previous end-of-shift post\n{prev}"));
+    }
+
+    lines.push(timestamp.to_string());
+    lines.join("\n\n")
+}
+
+/// After a successful Teams post: record summary time/station and clear event ledger.
+/// All floor PCs that share this log can see the post was already sent.
+pub fn mark_summary_and_clear(
+    path: &Path,
+    timestamp: &str,
+    posted_by: &str,
+    shift_label: &str,
+) -> Result<(), ShiftLogError> {
+    if path.as_os_str().is_empty() {
+        return Err(ShiftLogError::Write(
+            "Shared shift log path is empty".to_string(),
+        ));
+    }
+    let configured = path.to_string_lossy();
+    let log_path = resolve_shift_log_file(&configured)
+        .ok_or_else(|| ShiftLogError::Write("Shared shift log path is empty".to_string()))?;
+    let _lock = SharedLogLock::acquire(&log_path)?;
+    let mut log = load_shift_log(&log_path)?;
+    log.last_summary_at = Some(timestamp.to_string());
+    log.last_summary_by = {
+        let by = posted_by.trim();
+        if by.is_empty() {
+            None
+        } else {
+            Some(by.to_string())
+        }
+    };
+    log.last_summary_shift = {
+        let label = shift_label.trim();
+        if label.is_empty() {
+            None
+        } else {
+            Some(label.to_string())
+        }
+    };
+    log.events.clear();
+    write_shift_log(&log_path, &log)
 }
 
 /// Append one accepted Problem/Complete event. `path` may be either the shared
@@ -542,6 +698,26 @@ mod tests {
     }
 
     #[test]
+    fn floor_summary_includes_lab_and_totals() {
+        let mut log = ShiftLog::default();
+        log.events.push(LoggedEvent::complete(
+            "test-station-1",
+            "Test Station 1",
+            "t1",
+        ));
+        log.events
+            .push(LoggedEvent::problem("pdu-lab", "PDU Lab", "t2"));
+        let known = super::super::stations::known_stations_owned();
+        let body = format_floor_summary(&log, "now", &known, Some("Day"), None, Some("PDU Lab"));
+        assert!(body.contains("End of shift — Day"));
+        assert!(body.contains("Completed: 1"));
+        assert!(body.contains("Problems: 1"));
+        assert!(body.contains("PDU Lab"));
+        assert!(!body.contains("Operator\n"));
+        assert!(!body.contains("Posted by"));
+    }
+
+    #[test]
     fn blank_path_is_noop_and_nonproduction_kinds_are_rejected() {
         append_event(
             Path::new(""),
@@ -565,9 +741,10 @@ mod tests {
         let root = directory.path().join("OneDrive/hidden-notifications");
         let created = ensure_shared_root_layout(root.to_str().unwrap()).unwrap();
         assert_eq!(created, root);
-        for station_id in SHARED_STATION_IDS {
+        for station_id in shared_station_ids() {
             assert!(root.join(STATIONS_DIR_NAME).join(station_id).is_dir());
         }
+        assert!(root.join(STATIONS_DIR_NAME).join("pdu-lab").is_dir());
         assert!(!root.join(SHIFT_LOG_FILE_NAME).exists());
 
         append_event(

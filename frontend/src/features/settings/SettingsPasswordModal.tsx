@@ -135,13 +135,13 @@ export function SettingsPasswordModal({
           id="settings-password-title"
           className="mt-2 text-center text-[12pt] font-semibold leading-tight"
         >
-          Notification settings
+          Advanced
         </h2>
         <p
           id="settings-password-description"
           className="mt-2 text-center text-[8pt] leading-snug text-[#d8d2c8]"
         >
-          Enter the settings password. The factory default is 0601.
+          Enter password
         </p>
 
         <form className="mt-4" onSubmit={(event) => void handleSubmit(event)}>
