@@ -25,7 +25,9 @@ import { shiftScheduleError } from "./shiftTime";
 import {
   NOTIFICATION_STATIONS,
   createDefaultNotificationSettings,
-  defaultIncludedStationIds,
+  isPendingSharedFolderConnect,
+  resolveSaveScope,
+  shouldApplySettingsReload,
   stationNameForId,
   type AppNotificationSettingsView,
   type ChangeSettingsPassword,
@@ -38,6 +40,7 @@ import {
   type SaveNotificationSettings,
   type SaveNotificationSettingsRequest,
   type SendNotificationTest,
+  type SettingsSaveScope,
   type ShiftSummaryPreview,
   type ShiftWindow,
   type VerifySettingsPassword,
@@ -51,10 +54,12 @@ const selectClassName = cn(
 );
 const PING_POLL_ATTEMPTS = 45;
 const PING_POLL_INTERVAL_MS = 500;
+/** Reload floor/local settings while Settings is open and the form is clean. */
+const SETTINGS_OPEN_POLL_MS = 45_000;
 
 type ResultMessage = { tone: "success" | "warning" | "error"; text: string };
 type PasswordFields = { current: string; next: string; confirm: string };
-type SettingsView =
+export type SettingsView =
   | "home"
   | "shifts"
   | "summaryOptions"
@@ -94,6 +99,14 @@ export function NotificationSettingsPage({
   const [view, setView] = useState<SettingsView>("home");
   const [advancedUnlocked, setAdvancedUnlocked] = useState(false);
   const [advancedPasswordOpen, setAdvancedPasswordOpen] = useState(false);
+  /** Briefly retained for Connect when floor password matches Advanced unlock. */
+  const [advancedUnlockPassword, setAdvancedUnlockPassword] = useState("");
+  /**
+   * Dedicated existing-floor password for Connect when the shared floor password
+   * differs from this PC's local Advanced password (e.g. floor 4242, local 0601).
+   */
+  const [floorConnectPassword, setFloorConnectPassword] = useState("");
+  const [floorPasswordPromptOpen, setFloorPasswordPromptOpen] = useState(false);
 
   const [settings, setSettings] = useState<AppNotificationSettingsView | null>(null);
   const [savedSettings, setSavedSettings] = useState<AppNotificationSettingsView | null>(null);
@@ -117,6 +130,9 @@ export function NotificationSettingsPage({
 
   // Preview load must not block ← navigation (isSummaryBusy is only for post/preview UI).
   const pageBusy = isSaving || isChangingPassword || isTesting || isBrowsingSharedFolder;
+  const isDirtyRef = useRef(false);
+  const isSavingRef = useRef(false);
+  const savedSettingsRef = useRef<AppNotificationSettingsView | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -175,6 +191,53 @@ export function NotificationSettingsPage({
   );
   const isDirty = settingsDirty || passwordDirty;
   const shiftValidationError = settings ? shiftScheduleError(settings.shifts) : "";
+
+  // Keep latest dirty/saving/saved snapshots for the open Settings poll (do not read in render).
+  useEffect(() => {
+    isDirtyRef.current = isDirty;
+    isSavingRef.current = isSaving;
+    savedSettingsRef.current = savedSettings;
+  }, [isDirty, isSaving, savedSettings]);
+
+  // While Settings is mounted, re-load floor/local settings every ~45s if the form is clean.
+  useEffect(() => {
+    if (isLoading || loadError) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (!shouldApplySettingsReload(isDirtyRef.current) || isSavingRef.current) return;
+      try {
+        const loadedSettings = await loadSettings();
+        if (cancelled || !shouldApplySettingsReload(isDirtyRef.current) || isSavingRef.current) {
+          return;
+        }
+        const loaded = normalizeLoaded(loadedSettings ?? createDefaultNotificationSettings());
+        const prevUpdatedAt = savedSettingsRef.current?.floor_sync?.updated_at ?? null;
+        const nextUpdatedAt = loaded.floor_sync?.updated_at ?? null;
+        setSettings(loaded);
+        setSavedSettings(loaded);
+        setSavedFingerprint(settingsFingerprint(loaded));
+        if (
+          prevUpdatedAt &&
+          nextUpdatedAt &&
+          prevUpdatedAt !== nextUpdatedAt
+        ) {
+          setSaveResult({
+            tone: "success",
+            text: "Floor settings updated from shared folder.",
+          });
+        }
+      } catch {
+        // Soft-fail open poll; delivery still uses the backend worker poll.
+      }
+    };
+    const id = window.setInterval(() => {
+      void tick();
+    }, SETTINGS_OPEN_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [isLoading, loadError, loadSettings]);
 
   function updateSettings(update: Partial<AppNotificationSettingsView>) {
     setSettings((current) => (current ? { ...current, ...update } : current));
@@ -248,7 +311,14 @@ export function NotificationSettingsPage({
       setSaveResult({ tone: "error", text: shiftValidationError });
       return false;
     }
-    const request = saveRequestFromSettings(settings);
+    const { scope, connect_password } = resolveSaveScope(
+      view,
+      settings,
+      savedSettings,
+      advancedUnlockPassword,
+      floorConnectPassword,
+    );
+    const request = saveRequestFromSettings(settings, scope, connect_password);
     setIsSaving(true);
     setSaveResult(null);
     try {
@@ -257,13 +327,24 @@ export function NotificationSettingsPage({
       setSettings(nextSettings);
       setSavedSettings(nextSettings);
       setSavedFingerprint(settingsFingerprint(nextSettings));
+      setFloorConnectPassword("");
+      setFloorPasswordPromptOpen(false);
       setSaveResult({ tone: "success", text: "Settings saved." });
       return true;
     } catch (error) {
-      setSaveResult({
-        tone: "error",
-        text: errorMessage(error, "Settings could not be saved."),
-      });
+      const raw = errorMessage(error, "Settings could not be saved.");
+      if (/floor password/i.test(raw)) {
+        setFloorPasswordPromptOpen(true);
+        setSaveResult({
+          tone: "error",
+          text: "Floor password is incorrect. Enter the shared floor password below (it may differ from this PC’s Advanced password), then Save again.",
+        });
+      } else {
+        setSaveResult({
+          tone: "error",
+          text: raw,
+        });
+      }
       return false;
     } finally {
       setIsSaving(false);
@@ -446,7 +527,10 @@ export function NotificationSettingsPage({
           text: result.text,
           is_summary_poster: settings.is_summary_poster,
           poster_station_id: settings.summary_poster_station_id,
-          poster_station_name: stationNameForId(settings.summary_poster_station_id),
+          poster_station_name: stationNameForId(
+            settings.summary_poster_station_id,
+            settings.stations,
+          ),
           event_count: 0,
           shared_folder_configured: Boolean(settings.shared_shift_log_path),
           already_posted: true,
@@ -534,7 +618,7 @@ export function NotificationSettingsPage({
     } else {
       current.add(stationId);
     }
-    const included = NOTIFICATION_STATIONS.map((s) => s.id).filter((id) => current.has(id));
+    const included = settings.stations.map((s) => s.id).filter((id) => current.has(id));
     let poster = settings.summary_poster_station_id;
     if (!current.has(poster)) {
       poster = included[0] ?? poster;
@@ -553,9 +637,9 @@ export function NotificationSettingsPage({
     updateSettings({
       summary_poster_station_id: stationId,
       is_summary_poster: settings.station_id === stationId,
-      summary_included_station_ids: NOTIFICATION_STATIONS.map((s) => s.id).filter((id) =>
-        current.has(id),
-      ),
+      summary_included_station_ids: settings.stations
+        .map((s) => s.id)
+        .filter((id) => current.has(id)),
     });
   }
 
@@ -797,7 +881,7 @@ export function NotificationSettingsPage({
                   <span className="font-medium text-[#9a958c]">Main poster</span>
                 </div>
                 <div className="mt-2 space-y-1.5" role="list" aria-label="Stations in summary">
-                  {NOTIFICATION_STATIONS.map((station) => {
+                  {settings.stations.map((station) => {
                     const checked = settings.summary_included_station_ids.includes(station.id);
                     const isMain = settings.summary_poster_station_id === station.id;
                     return (
@@ -901,11 +985,11 @@ export function NotificationSettingsPage({
                   onChange={(stationId) => {
                     updateSettings({
                       station_id: stationId,
-                      station_name: stationNameForId(stationId),
+                      station_name: stationNameForId(stationId, settings.stations),
                       is_summary_poster: stationId === settings.summary_poster_station_id,
                     });
                   }}
-                  options={NOTIFICATION_STATIONS.map((s) => ({ value: s.id, label: s.name }))}
+                  options={settings.stations.map((s) => ({ value: s.id, label: s.name }))}
                 />
                 <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
                   Destination name
@@ -916,6 +1000,48 @@ export function NotificationSettingsPage({
                     className={inputClassName}
                   />
                 </label>
+              </div>
+              <div className="rounded-md border border-[#454542] bg-[#242423] px-3 py-2 text-[7.5pt] leading-snug text-[#9a958c]">
+                {settings.floor_sync?.message ||
+                  (settings.shared_shift_log_path
+                    ? "Syncing via shared folder."
+                    : "Shared folder not set — settings stay on this PC only.")}
+              </div>
+              <div>
+                <div className="text-[8pt] font-semibold text-[#d8d2c8]">Station display names</div>
+                <p className="mt-1 text-[7.5pt] leading-snug text-[#9a958c]">
+                  Rename labels used on Teams cards and Settings. Stable ids stay fixed so history does not break.
+                  Changes sync to other PCs that share this folder.
+                </p>
+                <div className="mt-2 space-y-2">
+                  {settings.stations.map((station) => (
+                    <label key={station.id} className="block text-[8pt] font-semibold text-[#d8d2c8]">
+                      <span className="flex items-baseline justify-between gap-2">
+                        <span>Display name</span>
+                        <span className="font-normal text-[#777772]">{station.id}</span>
+                      </span>
+                      <input
+                        value={station.name}
+                        disabled={pageBusy}
+                        maxLength={64}
+                        onChange={(e) => {
+                          const name = e.target.value;
+                          const stations = settings.stations.map((entry) =>
+                            entry.id === station.id ? { ...entry, name } : entry,
+                          );
+                          updateSettings({
+                            stations,
+                            station_name:
+                              settings.station_id === station.id
+                                ? name
+                                : settings.station_name,
+                          });
+                        }}
+                        className={inputClassName}
+                      />
+                    </label>
+                  ))}
+                </div>
               </div>
               <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
                 Teams webhook URL
@@ -963,13 +1089,38 @@ export function NotificationSettingsPage({
                   <button
                     type="button"
                     aria-label="Clear shared folder"
-                    onClick={() => updateSettings({ shared_shift_log_path: "" })}
+                    onClick={() => {
+                      updateSettings({ shared_shift_log_path: "" });
+                      setFloorConnectPassword("");
+                      setFloorPasswordPromptOpen(false);
+                    }}
                     disabled={pageBusy || !settings.shared_shift_log_path}
                     className="inline-flex h-9 w-9 items-center justify-center rounded border border-[#454542] bg-[#3a3a38]"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
+                {(isPendingSharedFolderConnect(settings, savedSettings) ||
+                  floorPasswordPromptOpen) && (
+                  <label className="mt-2 block text-[8pt] font-semibold text-[#d8d2c8]">
+                    Existing floor password
+                    <input
+                      type="password"
+                      value={floorConnectPassword}
+                      disabled={pageBusy}
+                      autoComplete="off"
+                      onChange={(e) => setFloorConnectPassword(e.target.value)}
+                      placeholder="Required when the shared floor password differs from this PC"
+                      aria-label="Existing floor password"
+                      className={inputClassName}
+                    />
+                    <span className="mt-1 block text-[7.5pt] font-normal leading-snug text-[#9a958c]">
+                      Use the shared Settings password stored in the floor file (not only this PC’s
+                      Advanced unlock). Leave blank only if the floor still uses the same password
+                      as this PC, or you are seeding a brand-new folder.
+                    </span>
+                  </label>
+                )}
               </div>
               <div className="flex flex-wrap justify-between gap-2 border-t border-[#454542] pt-3">
                 <button
@@ -1113,9 +1264,10 @@ export function NotificationSettingsPage({
         onCancel={() => {
           setAdvancedPasswordOpen(false);
         }}
-        onUnlock={() => {
+        onUnlock={(password) => {
           setAdvancedPasswordOpen(false);
           setAdvancedUnlocked(true);
+          setAdvancedUnlockPassword(password);
           setView("advanced");
         }}
       />
@@ -1202,20 +1354,34 @@ function ResultLine({ result }: { result: ResultMessage }) {
 }
 
 function normalizeLoaded(settings: AppNotificationSettingsView): AppNotificationSettingsView {
+  const stations =
+    settings.stations?.length > 0
+      ? settings.stations.map((s) => ({ id: s.id, name: s.name }))
+      : NOTIFICATION_STATIONS.map((s) => ({ id: s.id, name: s.name }));
+  const knownIds = new Set(stations.map((s) => s.id));
   const included =
     settings.summary_included_station_ids?.length > 0
-      ? settings.summary_included_station_ids.filter((id) =>
-          NOTIFICATION_STATIONS.some((s) => s.id === id),
-        )
-      : defaultIncludedStationIds();
+      ? settings.summary_included_station_ids.filter((id) => knownIds.has(id))
+      : stations.map((s) => s.id);
   return {
     ...settings,
     shifts: settings.shifts ?? [],
+    stations,
+    floor_sync: settings.floor_sync ?? {
+      configured: Boolean(settings.shared_shift_log_path?.trim()),
+      source: settings.shared_shift_log_path?.trim() ? "floor" : "local",
+      updated_at: null,
+      updated_by_station_id: null,
+      message: settings.shared_shift_log_path?.trim()
+        ? "Syncing via shared folder."
+        : "Shared folder not set — settings stay on this PC only.",
+    },
     summary_poster_station_id: settings.summary_poster_station_id || "pdu-lab",
     summary_included_station_ids:
-      included.length > 0 ? included : defaultIncludedStationIds(),
+      included.length > 0 ? included : stations.map((s) => s.id),
     is_summary_poster:
       settings.station_id === (settings.summary_poster_station_id || "pdu-lab"),
+    station_name: stationNameForId(settings.station_id, stations),
     events: {
       problem: settings.events?.problem ?? true,
       complete: settings.events?.complete ?? true,
@@ -1238,18 +1404,21 @@ function settingsFingerprint(settings: AppNotificationSettingsView) {
     shifts: settings.shifts,
     summary_poster_station_id: settings.summary_poster_station_id,
     summary_included_station_ids: settings.summary_included_station_ids,
+    stations: settings.stations,
   });
 }
 
 function saveRequestFromSettings(
   settings: AppNotificationSettingsView,
+  scope: SettingsSaveScope,
+  connectPassword?: string,
 ): SaveNotificationSettingsRequest {
-  return {
+  const request: SaveNotificationSettingsRequest = {
     enabled: settings.enabled,
     teams_destination_name: settings.teams_destination_name.trim(),
     teams_webhook_url: settings.teams_webhook_url.trim(),
     station_id: settings.station_id,
-    station_name: stationNameForId(settings.station_id),
+    station_name: stationNameForId(settings.station_id, settings.stations),
     idle_timeout_minutes: settings.idle_timeout_minutes,
     events: settings.events,
     shared_shift_log_path: settings.shared_shift_log_path.trim(),
@@ -1260,7 +1429,16 @@ function saveRequestFromSettings(
     })),
     summary_poster_station_id: settings.summary_poster_station_id.trim() || "pdu-lab",
     summary_included_station_ids: settings.summary_included_station_ids,
+    stations: settings.stations.map((s) => ({
+      id: s.id,
+      name: s.name.trim(),
+    })),
+    scope,
   };
+  if (connectPassword) {
+    request.connect_password = connectPassword;
+  }
+  return request;
 }
 
 function settingsAfterSave(
@@ -1269,7 +1447,18 @@ function settingsAfterSave(
 ): AppNotificationSettingsView {
   return {
     ...current,
-    ...request,
+    enabled: request.enabled,
+    teams_destination_name: request.teams_destination_name,
+    teams_webhook_url: request.teams_webhook_url,
+    station_id: request.station_id,
+    station_name: request.station_name,
+    idle_timeout_minutes: request.idle_timeout_minutes,
+    events: request.events,
+    shared_shift_log_path: request.shared_shift_log_path,
+    shifts: request.shifts,
+    summary_poster_station_id: request.summary_poster_station_id,
+    summary_included_station_ids: request.summary_included_station_ids,
+    stations: request.stations,
     webhook_configured: current.webhook_configured || Boolean(request.teams_webhook_url.trim()),
     is_summary_poster: request.station_id === (request.summary_poster_station_id || "pdu-lab"),
   };

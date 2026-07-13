@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::app_settings::{load_app_settings, AppNotificationSettings};
+use super::app_settings::{catalog_from_local, load_app_settings, AppNotificationSettings};
 use super::config::can_send;
 use super::message::now_timestamp;
 use super::shift_log::{
@@ -90,7 +90,7 @@ pub fn preview_shift_summary(
         text,
         is_summary_poster: is_poster,
         poster_station_id: poster_id.to_string(),
-        poster_station_name: station_name_for_id(poster_id).to_string(),
+        poster_station_name: display_name_for_station(&settings, poster_id),
         event_count,
         shared_folder_configured: !shared.is_empty(),
         already_posted,
@@ -174,8 +174,34 @@ fn poster_station_id(settings: &AppNotificationSettings) -> &str {
     }
 }
 
+fn catalog_pairs(settings: &AppNotificationSettings) -> Vec<(String, String)> {
+    let shared = settings.shared_shift_log_path.trim();
+    if !shared.is_empty() {
+        if let Ok(Some(floor)) = super::try_load_floor_settings(shared) {
+            return floor.catalog_pairs();
+        }
+    }
+    // Offline / missing floor: use last-known-good local catalog cache.
+    let local = catalog_from_local(settings);
+    if !local.is_empty() {
+        return local
+            .into_iter()
+            .map(|entry| (entry.id, entry.name))
+            .collect();
+    }
+    known_stations_owned()
+}
+
+fn display_name_for_station(settings: &AppNotificationSettings, station_id: &str) -> String {
+    catalog_pairs(settings)
+        .into_iter()
+        .find(|(id, _)| id == station_id)
+        .map(|(_, name)| name)
+        .unwrap_or_else(|| station_name_for_id(station_id).to_string())
+}
+
 fn included_stations(settings: &AppNotificationSettings) -> Vec<(String, String)> {
-    let all = known_stations_owned();
+    let all = catalog_pairs(settings);
     if settings.summary_included_station_ids.is_empty() {
         return all;
     }

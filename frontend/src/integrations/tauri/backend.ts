@@ -116,6 +116,19 @@ export interface ShiftWindow {
   end_time: string;
 }
 
+export interface StationCatalogEntry {
+  id: string;
+  name: string;
+}
+
+export interface FloorSyncStatus {
+  configured: boolean;
+  source: string;
+  updated_at?: string | null;
+  updated_by_station_id?: string | null;
+  message: string;
+}
+
 export interface AppNotificationSettingsView {
   enabled: boolean;
   teams_destination_name: string;
@@ -130,12 +143,21 @@ export interface AppNotificationSettingsView {
   summary_poster_station_id: string;
   summary_included_station_ids: string[];
   is_summary_poster: boolean;
+  stations: StationCatalogEntry[];
+  floor_sync: FloorSyncStatus;
 }
+
+/** Matches backend SettingsSaveScope (snake_case). */
+export type SettingsSaveScope = "operator" | "advanced" | "connect" | "local";
 
 export type SaveAppNotificationSettingsRequest = Omit<
   AppNotificationSettingsView,
-  "webhook_configured" | "is_summary_poster"
->;
+  "webhook_configured" | "is_summary_poster" | "floor_sync"
+> & {
+  scope: SettingsSaveScope;
+  /** Required when Connect targets an existing floor file. */
+  connect_password?: string;
+};
 
 export interface ShiftSummaryPreview {
   text: string;
@@ -368,20 +390,43 @@ export async function saveAppNotificationSettings(
     if (request.teams_webhook_url.trim()) {
       mockNotificationWebhookUrl = request.teams_webhook_url.trim();
     }
+    const stations = (request.stations?.length
+      ? request.stations
+      : mockNotificationSettings.stations
+    ).map((s) => ({ ...s }));
     mockNotificationSettings = {
-      ...request,
-      events: { ...request.events },
-      shifts: request.shifts.map((shift) => ({ ...shift })),
+      enabled: request.enabled,
+      teams_destination_name: request.teams_destination_name,
       teams_webhook_url: "",
       webhook_configured: Boolean(mockNotificationWebhookUrl),
+      station_id: request.station_id,
+      station_name: request.station_name,
+      idle_timeout_minutes: request.idle_timeout_minutes,
+      events: { ...request.events },
+      shared_shift_log_path: request.shared_shift_log_path,
+      shifts: request.shifts.map((shift) => ({ ...shift })),
+      summary_poster_station_id: request.summary_poster_station_id,
+      summary_included_station_ids: [...request.summary_included_station_ids],
+      stations,
       is_summary_poster:
         request.station_id ===
         (request.summary_poster_station_id || "pdu-lab"),
+      floor_sync: {
+        configured: Boolean(request.shared_shift_log_path?.trim()),
+        source: request.shared_shift_log_path?.trim() ? "floor" : "local",
+        updated_at: null,
+        updated_by_station_id: null,
+        message: request.shared_shift_log_path?.trim()
+          ? "Syncing via shared folder."
+          : "Shared folder not set — settings stay on this PC only.",
+      },
     };
     return {
       ...mockNotificationSettings,
       events: { ...mockNotificationSettings.events },
       shifts: mockNotificationSettings.shifts.map((shift) => ({ ...shift })),
+      stations: mockNotificationSettings.stations.map((s) => ({ ...s })),
+      floor_sync: { ...mockNotificationSettings.floor_sync },
     };
   }
 
@@ -557,6 +602,12 @@ function mockUnitFolderSuggestion(): UnitFolderSuggestion {
 
 let mockSettingsPassword = "0601";
 let mockNotificationWebhookUrl = "";
+const mockStations: StationCatalogEntry[] = [
+  { id: "test-station-1", name: "Test Station 1" },
+  { id: "test-station-3", name: "Test Station 3" },
+  { id: "test-station-4", name: "Test Station 4" },
+  { id: "pdu-lab", name: "PDU Lab" },
+];
 let mockNotificationSettings: AppNotificationSettingsView = {
   enabled: true,
   events: {
@@ -581,4 +632,12 @@ let mockNotificationSettings: AppNotificationSettingsView = {
     "pdu-lab",
   ],
   is_summary_poster: false,
+  stations: mockStations,
+  floor_sync: {
+    configured: false,
+    source: "local",
+    updated_at: null,
+    updated_by_station_id: null,
+    message: "Shared folder not set — settings stay on this PC only.",
+  },
 };

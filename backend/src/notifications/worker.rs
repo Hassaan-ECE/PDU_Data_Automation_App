@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use regex::Regex;
 use serde::Serialize;
@@ -12,10 +13,13 @@ use crate::automation::{self, TaskProcessResult};
 
 use super::{
     append_shift_log_event, can_send, format_event_message_now, load_runtime_resolved_config,
-    EventKind, LoggedEvent, NotificationEvent, ResolvedConfig, ShiftLogError, TeamsClient,
+    resolve_floor_settings_file, EventKind, LoggedEvent, NotificationEvent, ResolvedConfig,
+    ShiftLogError, TeamsClient,
 };
 
 const NOTIFICATION_QUEUE_CAPACITY: usize = 16;
+/// How often to re-read `floor_settings.json` while the app is open.
+const FLOOR_SETTINGS_POLL_INTERVAL: Duration = Duration::from_secs(45);
 
 #[derive(Debug)]
 enum NotificationJob {
@@ -102,6 +106,11 @@ impl NotificationService {
                 None,
             );
         }
+
+        let poll_status = Arc::clone(&status);
+        let _ = thread::Builder::new()
+            .name("pdu-floor-settings-poll".to_string())
+            .spawn(move || floor_settings_poll_loop(poll_status));
 
         Self { sender, status }
     }
@@ -476,6 +485,52 @@ fn handle_test_ping(client: &TeamsClient, status: &Arc<Mutex<NotificationRuntime
             Some(&config),
             EventKind::TestPing,
         ),
+    }
+}
+
+/// Poll shared `floor_settings.json` so webhook/password/names stay fresh without
+/// requiring Settings to be open. Soft-fails; never affects automation.
+/// Fingerprint first (path pointer only), then a single merge load when changed.
+fn floor_settings_poll_loop(status: Arc<Mutex<NotificationRuntimeStatus>>) {
+    let mut last_fingerprint: Option<String> = None;
+    loop {
+        thread::sleep(FLOOR_SETTINGS_POLL_INTERVAL);
+        let Some(shared) = super::configured_shared_path_pointer() else {
+            last_fingerprint = None;
+            continue;
+        };
+        let Some(path) = resolve_floor_settings_file(&shared) else {
+            continue;
+        };
+        let fingerprint = match fs::metadata(&path).and_then(|meta| meta.modified()) {
+            Ok(modified) => format!("{modified:?}:{}", path.display()),
+            Err(_) => match fs::read_to_string(&path) {
+                Ok(raw) => format!("body:{}", raw.len()),
+                Err(_) => {
+                    // File missing/unavailable: still attempt a merge load so local
+                    // cache status can reflect stale/unavailable without reseeding.
+                    if last_fingerprint.as_deref() != Some("missing") {
+                        last_fingerprint = Some("missing".to_string());
+                        let _ = super::load_app_settings_with_floor();
+                    }
+                    continue;
+                }
+            },
+        };
+        if last_fingerprint.as_ref() == Some(&fingerprint) {
+            continue;
+        }
+        last_fingerprint = Some(fingerprint);
+        // Single merge load so local cache picks up peer edits (no prior full load).
+        if super::load_app_settings_with_floor().is_ok() {
+            if let Ok(mut current) = status.lock() {
+                // Reset sticky status so the next status() call re-resolves config.
+                if current.state == "idle" || current.state == "ready" || current.state == "skipped"
+                {
+                    *current = NotificationRuntimeStatus::default();
+                }
+            }
+        }
     }
 }
 

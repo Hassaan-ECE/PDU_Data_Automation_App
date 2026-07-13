@@ -11,6 +11,19 @@ export type ShiftWindow = {
   end_time: string;
 };
 
+export type StationCatalogEntry = {
+  id: string;
+  name: string;
+};
+
+export type FloorSyncStatus = {
+  configured: boolean;
+  source: string;
+  updated_at?: string | null;
+  updated_by_station_id?: string | null;
+  message: string;
+};
+
 export type AppNotificationSettingsView = {
   enabled: boolean;
   teams_destination_name: string;
@@ -25,12 +38,21 @@ export type AppNotificationSettingsView = {
   summary_poster_station_id: string;
   summary_included_station_ids: string[];
   is_summary_poster: boolean;
+  stations: StationCatalogEntry[];
+  floor_sync: FloorSyncStatus;
 };
+
+/** Which section a save may mutate (matches backend SettingsSaveScope snake_case). */
+export type SettingsSaveScope = "operator" | "advanced" | "connect" | "local";
 
 export type SaveNotificationSettingsRequest = Omit<
   AppNotificationSettingsView,
-  "webhook_configured" | "is_summary_poster"
->;
+  "webhook_configured" | "is_summary_poster" | "floor_sync"
+> & {
+  scope: SettingsSaveScope;
+  /** Required when Connect targets an existing floor file. */
+  connect_password?: string;
+};
 
 export type NotificationRuntimeStatus = {
   state: "idle" | "ready" | "sent" | "skipped" | "failed";
@@ -75,7 +97,7 @@ export type ChooseSharedNotificationsFolder = () => Promise<string | null>;
 export type PreviewShiftSummary = (shiftLabel?: string) => Promise<ShiftSummaryPreview | null>;
 export type PostShiftSummary = (shiftLabel: string) => Promise<ShiftSummaryResult | null>;
 
-/** Keep in sync with backend `notifications::stations::KNOWN_STATIONS`. */
+/** Fallback catalog when backend has not returned stations yet (tests / offline). */
 export const NOTIFICATION_STATIONS = [
   { id: "test-station-1", name: "Test Station 1" },
   { id: "test-station-3", name: "Test Station 3" },
@@ -85,7 +107,12 @@ export const NOTIFICATION_STATIONS = [
 
 export type NotificationStationId = (typeof NOTIFICATION_STATIONS)[number]["id"];
 
-export function stationNameForId(stationId: string) {
+export function stationNameForId(
+  stationId: string,
+  catalog?: StationCatalogEntry[] | null,
+) {
+  const fromCatalog = catalog?.find((station) => station.id === stationId)?.name;
+  if (fromCatalog) return fromCatalog;
   return (
     NOTIFICATION_STATIONS.find((station) => station.id === stationId)?.name ??
     "Test Station 1"
@@ -96,7 +123,18 @@ export function defaultIncludedStationIds() {
   return NOTIFICATION_STATIONS.map((station) => station.id);
 }
 
+export function defaultFloorSyncLocal(): FloorSyncStatus {
+  return {
+    configured: false,
+    source: "local",
+    updated_at: null,
+    updated_by_station_id: null,
+    message: "Shared folder not set — settings stay on this PC only.",
+  };
+}
+
 export function createDefaultNotificationSettings(): AppNotificationSettingsView {
+  const stations = NOTIFICATION_STATIONS.map((s) => ({ id: s.id, name: s.name }));
   return {
     enabled: true,
     teams_destination_name: "PDU Testing",
@@ -116,5 +154,64 @@ export function createDefaultNotificationSettings(): AppNotificationSettingsView
     summary_poster_station_id: "pdu-lab",
     summary_included_station_ids: defaultIncludedStationIds(),
     is_summary_poster: false,
+    stations,
+    floor_sync: defaultFloorSyncLocal(),
   };
+}
+
+/**
+ * While Settings is open, peer floor reloads apply only when the form is clean.
+ * Exported for unit tests.
+ */
+export function shouldApplySettingsReload(isDirty: boolean): boolean {
+  return !isDirty;
+}
+
+/**
+ * Decide which backend scope to use for the current save.
+ * view is the Settings page view id (home, shifts, summaryOptions, advanced, station, password).
+ */
+export function resolveSaveScope(
+  view: string,
+  current: AppNotificationSettingsView,
+  lastSaved: AppNotificationSettingsView | null,
+  unlockPassword: string,
+  /** Dedicated existing-floor password for Connect (preferred over Advanced unlock). */
+  floorConnectPassword = "",
+): { scope: SettingsSaveScope; connect_password?: string } {
+  if (view === "shifts" || view === "summaryOptions") {
+    return { scope: "operator" };
+  }
+
+  const savedPath = (lastSaved?.shared_shift_log_path ?? "").trim();
+  const nextPath = current.shared_shift_log_path.trim();
+
+  if (nextPath === "" && savedPath !== "") {
+    return { scope: "local" };
+  }
+  if (nextPath !== "" && nextPath !== savedPath) {
+    // Prefer explicit floor password so a new PC can connect when floor ≠ local Advanced password.
+    const password = (floorConnectPassword.trim() || unlockPassword).trim();
+    return {
+      scope: "connect",
+      connect_password: password,
+    };
+  }
+
+  if (view === "station" || view === "advanced" || view === "password" || view === "home") {
+    return { scope: "advanced" };
+  }
+
+  return { scope: "operator" };
+}
+
+/** True when Station & Teams Save will Connect (new/changed shared path). */
+export function isPendingSharedFolderConnect(
+  current: AppNotificationSettingsView | null,
+  lastSaved: AppNotificationSettingsView | null,
+): boolean {
+  if (!current) return false;
+  const nextPath = current.shared_shift_log_path.trim();
+  const savedPath = (lastSaved?.shared_shift_log_path ?? "").trim();
+  return nextPath !== "" && nextPath !== savedPath;
 }

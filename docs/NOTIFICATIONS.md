@@ -29,18 +29,22 @@ The cog is disabled while report setup or task automation is active so station a
 
 | Setting | Behavior |
 |---------|----------|
-| Station | Selects Test Station 1–4 and supplies the station identity shown on cards. Confirm the correct station on each PC. |
-| Destination name | Defaults to `PDU Testing` and labels the configured destination in the UI/status. It does not route the message; the Workflow URL determines the actual Teams chat. |
-| Teams webhook URL | Masked in the UI. Paste a non-empty URL to set or replace it. Leaving the edit blank preserves an already stored URL; disable notifications if delivery should stop. |
-| Notifications enabled | Master switch for automatic cards and test delivery. Save the enabled state before testing. |
-| Shared OneDrive folder | Optional. Use **Browse** to pick the same shared folder on every station (for example a hidden folder you create under the `svc-pdu` OneDrive). On Save the app creates `shift_log.json` plus `stations/test-station-1` … `test-station-4` inside that folder. Leave empty to disable multi-station rollups. |
-| Change password | Enter the current password, a new non-empty password, and matching confirmation. The old password stops unlocking Settings after the change is saved. |
-| Save | Writes the form to the app-owned settings store. The notification worker uses the saved values for subsequent events. |
+| Station (this PC) | Selects which fixed station slot this PC is (`test-station-1` / `3` / `4` / `pdu-lab`). Local only — does not change other PCs. |
+| Station display names | Advanced only. Editable labels for the fixed slots (e.g. renumber “Test Station 3” → “Test Station 2”). Shared via `floor_settings.json` when a shared folder is set. |
+| Destination name | Defaults to `PDU Testing` and labels the configured destination in the UI/status. Shared when floor sync is on. It does not route the message; the Workflow URL determines the actual Teams chat. |
+| Teams webhook URL | Masked in the UI. Paste a non-empty URL to set or replace it. Leaving the edit blank preserves an already stored URL; disable notifications if delivery should stop. Shared when floor sync is on. |
+| Notifications enabled | Master switch for automatic cards and test delivery. Save the enabled state before testing. Shared when floor sync is on. |
+| Shared OneDrive folder | Optional. Use **Browse** on each PC to pick that machine’s local sync of the same org OneDrive folder (confirmed name: `.PDU_Notifications` under the org OneDrive root). Never hard-code the absolute path — usernames and OneDrive roots differ per PC. On first Connect the app seeds `floor_settings.json` if missing, or adopts an existing floor (requires the floor Settings password). Creates `shift_log.json` and `stations/*` as needed. Leave empty / clear for local-only mode. |
+| Main poster / included stations / shifts | Operator-open controls (no password). Shared when floor sync is on so every PC agrees who posts and which windows apply. Saved with **operator** scope only. |
+| Change password | Enter the current password, a new non-empty password, and matching confirmation. Shared when floor sync is on so every PC uses the same Advanced unlock. Uses the dedicated change-password API (not a full settings save). |
+| Save (scoped) | Saves only the fields for the current form section so a stale open Settings page cannot overwrite peer edits. **operator** = shifts / summary / Main / included stations; **advanced** = webhook, destination, toggles, idle timeout, display names, this-PC station id; **connect** = set shared path and adopt or seed floor (does not write form policy over an existing floor; needs `connect_password` when the floor already exists); **local** = this-PC station id and clearing the shared path without writing floor policy. |
 | Test ping | Uses the saved, enabled configuration and posts a blue connection card through the same Workflow. Its asynchronous result is correlated to the test event, so a concurrent Problem or Complete result is not mistaken for the ping. |
 
 ## Settings persistence
 
-The app stores one JSON file under Tauri's per-user `app_config_dir`:
+### Local (this PC)
+
+Each install stores a local pointer file under Tauri's per-user `app_config_dir`:
 
 ```text
 <Tauri app_config_dir>\notification_settings.json
@@ -52,9 +56,32 @@ For the current application identifier, the Windows location is normally equival
 %APPDATA%\com.te.lab.pdu-data-automation\notification_settings.json
 ```
 
-Use the path returned by Tauri as authoritative; Windows/Tauri may resolve the base directory differently by environment. The app does not fall back to `%TEMP%` if that directory is unavailable. A missing store loads factory defaults: password `0601`, Test Station 1, destination `PDU Testing`, notifications enabled, Problem and Complete enabled, an empty webhook, and an empty shared shift-log path. **Save** creates or updates the file. On Windows, an interrupted replace recovers a validated synced temp file or prior backup rather than silently reverting a saved password/webhook to factory defaults.
+**Local-only fields:** this PC's station id, and the path to the shared notifications folder.
 
-The file is app-owned and should not be hand-edited as the normal operator workflow. Old external notification JSON and `PDU_NOTIFICATIONS_STATION_PATH` are not required for normal floor use.
+### Floor-wide (shared folder)
+
+When Advanced → **Browse** points at a shared OneDrive/network folder, floor-wide settings live in:
+
+```text
+<shared-folder>\floor_settings.json
+```
+
+alongside the existing `shift_log.json` and `stations/*` layout.
+
+**Shared fields:** Settings password, Teams webhook, destination name, notification enable/event toggles, shift windows, Main poster, stations included on the summary card, and **station display names** (stable ids stay fixed: `test-station-1`, `test-station-3`, `test-station-4`, `pdu-lab`).
+
+- First PC to **Connect** when `floor_settings.json` is missing **seeds** it from that PC’s local settings (explicit connect only — ordinary loads never reseed a missing file).
+- Later PCs that Browse the same folder and **Save** with **connect** scope **adopt** the existing floor after the floor password matches (they keep only their own station id). Connect does **not** write the rest of the form over peer policy.
+- **Delivery** always merges floor settings on the backend worker poll (~45s). The open Settings UI also re-fetches about every **45 seconds**, but only while the form is **clean** (unsaved edits are never clobbered by a peer reload).
+- Multi-PC OneDrive concurrency is best-effort: atomic replace + short locks reduce same-machine races; across replicas last writer still wins after sync lag.
+- Confirmed operator shared folder name: `.PDU_Notifications` under org OneDrive. Each PC must Browse its own synced copy — do not hard-code a user-specific absolute path.
+- Admin workflow: install the same app on any machine, Advanced → Browse → Connect (floor password) → edit password-gated or operator-open fields with scoped saves; peers pick them up on the next clean UI poll / delivery poll.
+
+Without a shared folder path, the app stays fully local (single-PC behavior).
+
+Use the path returned by Tauri as authoritative for AppData; Windows/Tauri may resolve the base directory differently by environment. The app does not fall back to `%TEMP%` if that directory is unavailable. A missing local store loads factory defaults: password `0601`, Test Station 1, destination `PDU Testing`, notifications enabled, Problem and Complete enabled, an empty webhook, and an empty shared shift-log path. **Save** creates or updates the local file and, when configured, the floor file. On Windows, an interrupted local replace recovers a validated synced temp file or prior backup rather than silently reverting a saved password/webhook to factory defaults.
+
+These files are app-owned and should not be hand-edited as the normal operator workflow. Old external notification JSON and `PDU_NOTIFICATIONS_STATION_PATH` are not required for normal floor use.
 
 ## Password and secret security
 
@@ -93,18 +120,19 @@ The shared folder may remain blank. When blank, no shared-log I/O occurs and mul
 
 Recommended setup:
 
-1. Under the `svc-pdu` OneDrive (or another path every station can read/write), create a **hidden** folder, for example `.pdu-notifications`.
-2. On each station: Settings → **Browse** → select that same folder → **Save**.
+1. Under the org OneDrive (or another path every station can read/write), create the shared folder **`.PDU_Notifications`** (hidden is fine).
+2. On each station: Advanced → **Browse** → select that PC’s local sync of the same folder → **Save** (Connect scope; existing floors require the floor password).
 3. The app creates this layout inside the chosen folder:
 
 ```text
 <shared-folder>/
+  floor_settings.json
   shift_log.json
   stations/
     test-station-1/
-    test-station-2/
     test-station-3/
     test-station-4/
+    pdu-lab/
 ```
 
 `shift_log.json` is the floor-wide event ledger. The per-station folders are reserved for future station-local shared state. After Teams accepts a Problem or Complete event, the app appends to `shift_log.json` with short coordination/atomic replacement so multiple stations can contribute. OneDrive sync lag, permissions, or network failures can still occur. A log failure is status-only: it must not change the accepted Teams result or automation outcome.

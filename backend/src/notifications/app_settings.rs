@@ -3,6 +3,16 @@
 //! The public `*_from` helpers keep disk behavior testable without changing the
 //! process-wide directory. Production calls use the directory installed once
 //! during Tauri setup via [`set_app_config_dir`].
+//!
+//! When a shared notifications folder is configured, floor-wide fields (webhook,
+//! password, shifts, poster, station display names, …) are authoritative in
+//! `floor_settings.json` under that folder. Local AppData keeps this PC's
+//! `station_id`, the shared-folder path pointer, and a last-known-good
+//! `station_catalog` cache for offline summary labels.
+//!
+//! Saves are **scoped**: only the fields for the requested [`SettingsSaveScope`]
+//! are patched. Connecting to an existing floor adopts it and never writes
+//! stale form policy over the shared file.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -15,9 +25,13 @@ use std::time::SystemTime;
 use thiserror::Error;
 
 use super::config::{EventToggles, ResolvedConfig};
+use super::floor_settings::{
+    try_load_floor_settings, validate_display_name, FloorSettings, FloorSettingsError, FloorStation,
+};
 use super::shift_log;
 use super::stations::{
-    is_known_station_id, station_name_for_id, DEFAULT_SUMMARY_POSTER_STATION_ID,
+    is_known_station_id, known_stations_owned, station_name_for_id,
+    DEFAULT_SUMMARY_POSTER_STATION_ID,
 };
 
 pub const APP_SETTINGS_SCHEMA_VERSION: u32 = 1;
@@ -50,12 +64,65 @@ pub enum AppSettingsError {
     EmptyPassword,
     #[error("New password and confirmation do not match")]
     PasswordMismatch,
+    #[error("Floor password is incorrect")]
+    WrongFloorPassword,
     #[error("station_id is empty")]
     EmptyStationId,
     #[error("Unknown station_id '{0}'")]
     UnknownStation(String),
     #[error("Invalid shift window: {0}")]
     InvalidShift(String),
+    #[error("{0}")]
+    Floor(String),
+}
+
+impl From<FloorSettingsError> for AppSettingsError {
+    fn from(error: FloorSettingsError) -> Self {
+        match error {
+            FloorSettingsError::Busy => AppSettingsError::Busy,
+            FloorSettingsError::EmptyStationName
+            | FloorSettingsError::StationNameTooLong
+            | FloorSettingsError::InvalidStationName
+            | FloorSettingsError::DuplicateStationName(_) => {
+                AppSettingsError::Floor(error.to_string())
+            }
+            other => AppSettingsError::Floor(other.to_string()),
+        }
+    }
+}
+
+/// Which section of settings a save request is allowed to mutate.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsSaveScope {
+    /// Shifts, summary enabled (`events.summary`), Main poster, included stations.
+    #[default]
+    Operator,
+    /// Webhook, destination, enabled, problem/complete/stuck toggles, idle
+    /// timeout, station display names, this PC `station_id`.
+    Advanced,
+    /// Set shared path + adopt existing floor OR seed if missing; never clobber
+    /// an existing floor with form policy.
+    Connect,
+    /// This-PC `station_id` only (and clearing path if emptied).
+    Local,
+}
+
+/// Stable station id + editable display name exposed to the UI catalog.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug)]
+pub struct StationCatalogEntry {
+    pub id: String,
+    pub name: String,
+}
+
+/// Whether this PC is reading/writing floor-wide settings via the shared folder.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug)]
+pub struct FloorSyncStatus {
+    pub configured: bool,
+    pub source: String,
+    pub updated_at: Option<String>,
+    pub updated_by_station_id: Option<String>,
+    pub message: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug)]
@@ -102,6 +169,9 @@ pub struct AppNotificationSettings {
     /// Stations listed on the end-of-shift card (empty = all known stations).
     #[serde(default = "default_summary_included")]
     pub summary_included_station_ids: Vec<String>,
+    /// Last-known-good full floor station catalog (offline / missing floor).
+    #[serde(default)]
+    pub station_catalog: Vec<StationCatalogEntry>,
 }
 
 impl Default for AppNotificationSettings {
@@ -120,6 +190,7 @@ impl Default for AppNotificationSettings {
             shifts: Vec::new(),
             summary_poster_station_id: default_summary_poster(),
             summary_included_station_ids: default_summary_included(),
+            station_catalog: Vec::new(),
         }
     }
 }
@@ -147,6 +218,7 @@ impl fmt::Debug for AppNotificationSettings {
                 "summary_included_station_ids",
                 &self.summary_included_station_ids,
             )
+            .field("station_catalog", &self.station_catalog)
             .finish()
     }
 }
@@ -169,6 +241,21 @@ pub struct AppNotificationSettingsView {
     pub summary_poster_station_id: String,
     pub summary_included_station_ids: Vec<String>,
     pub is_summary_poster: bool,
+    /// Floor catalog (fixed ids, editable display names).
+    #[serde(default)]
+    pub stations: Vec<StationCatalogEntry>,
+    #[serde(default = "default_floor_sync_local")]
+    pub floor_sync: FloorSyncStatus,
+}
+
+fn default_floor_sync_local() -> FloorSyncStatus {
+    FloorSyncStatus {
+        configured: false,
+        source: "local".to_string(),
+        updated_at: None,
+        updated_by_station_id: None,
+        message: "Shared folder not set — settings stay on this PC only.".to_string(),
+    }
 }
 
 impl fmt::Debug for AppNotificationSettingsView {
@@ -194,44 +281,144 @@ impl fmt::Debug for AppNotificationSettingsView {
                 &self.summary_included_station_ids,
             )
             .field("is_summary_poster", &self.is_summary_poster)
+            .field("stations", &self.stations)
+            .field("floor_sync", &self.floor_sync)
             .finish()
     }
 }
 
 impl From<&AppNotificationSettings> for AppNotificationSettingsView {
     fn from(settings: &AppNotificationSettings) -> Self {
-        let poster = settings.summary_poster_station_id.trim();
-        let poster = if poster.is_empty() {
-            DEFAULT_SUMMARY_POSTER_STATION_ID
-        } else {
-            poster
-        };
-        let included = if settings.summary_included_station_ids.is_empty() {
-            default_summary_included()
-        } else {
-            settings.summary_included_station_ids.clone()
-        };
-        Self {
-            enabled: settings.enabled,
-            teams_destination_name: settings.teams_destination_name.clone(),
-            teams_webhook_url: String::new(),
-            webhook_configured: !settings.teams_webhook_url.trim().is_empty(),
-            station_id: settings.station_id.clone(),
-            station_name: settings.station_name.clone(),
-            idle_timeout_minutes: settings.idle_timeout_minutes,
-            events: settings.events.clone(),
-            shared_shift_log_path: settings.shared_shift_log_path.clone(),
-            shifts: settings.shifts.clone(),
-            summary_poster_station_id: poster.to_string(),
-            summary_included_station_ids: included,
-            is_summary_poster: settings.station_id.trim() == poster,
-        }
+        settings_view_from(settings, None)
+    }
+}
+
+impl AppNotificationSettingsView {
+    pub fn from_merged(settings: &AppNotificationSettings, floor: Option<&FloorSettings>) -> Self {
+        settings_view_from(settings, floor)
+    }
+}
+
+fn settings_view_from(
+    settings: &AppNotificationSettings,
+    floor: Option<&FloorSettings>,
+) -> AppNotificationSettingsView {
+    let poster = settings.summary_poster_station_id.trim();
+    let poster = if poster.is_empty() {
+        DEFAULT_SUMMARY_POSTER_STATION_ID
+    } else {
+        poster
+    };
+    let included = if settings.summary_included_station_ids.is_empty() {
+        default_summary_included()
+    } else {
+        settings.summary_included_station_ids.clone()
+    };
+    let stations = match floor {
+        Some(floor) => floor
+            .stations
+            .iter()
+            .map(|s| StationCatalogEntry {
+                id: s.id.clone(),
+                name: s.name.clone(),
+            })
+            .collect(),
+        None => catalog_from_local(settings),
+    };
+    let floor_sync = match floor {
+        Some(floor) => FloorSyncStatus {
+            configured: true,
+            source: "floor".to_string(),
+            updated_at: non_empty_opt(&floor.updated_at),
+            updated_by_station_id: non_empty_opt(&floor.updated_by_station_id),
+            message: "Syncing via shared folder.".to_string(),
+        },
+        None if settings.shared_shift_log_path.trim().is_empty() => default_floor_sync_local(),
+        None => FloorSyncStatus {
+            configured: true,
+            source: "local-cache".to_string(),
+            updated_at: None,
+            updated_by_station_id: None,
+            message: "Shared folder is set but floor settings are unavailable or stale; using local cache."
+                .to_string(),
+        },
+    };
+    AppNotificationSettingsView {
+        enabled: settings.enabled,
+        teams_destination_name: settings.teams_destination_name.clone(),
+        teams_webhook_url: String::new(),
+        webhook_configured: !settings.teams_webhook_url.trim().is_empty(),
+        station_id: settings.station_id.clone(),
+        station_name: settings.station_name.clone(),
+        idle_timeout_minutes: settings.idle_timeout_minutes,
+        events: settings.events.clone(),
+        shared_shift_log_path: settings.shared_shift_log_path.clone(),
+        shifts: settings.shifts.clone(),
+        summary_poster_station_id: poster.to_string(),
+        summary_included_station_ids: included,
+        is_summary_poster: settings.station_id.trim() == poster,
+        stations,
+        floor_sync,
+    }
+}
+
+/// Views: floor stations if present, else local `station_catalog`, else defaults.
+pub fn catalog_from_local(settings: &AppNotificationSettings) -> Vec<StationCatalogEntry> {
+    if !settings.station_catalog.is_empty() {
+        return normalize_catalog_entries(&settings.station_catalog, settings);
+    }
+    known_stations_owned()
+        .into_iter()
+        .map(|(id, default_name)| {
+            let name =
+                if id == settings.station_id.trim() && !settings.station_name.trim().is_empty() {
+                    settings.station_name.trim().to_string()
+                } else {
+                    default_name
+                };
+            StationCatalogEntry { id, name }
+        })
+        .collect()
+}
+
+fn normalize_catalog_entries(
+    catalog: &[StationCatalogEntry],
+    settings: &AppNotificationSettings,
+) -> Vec<StationCatalogEntry> {
+    known_stations_owned()
+        .into_iter()
+        .map(|(id, default_name)| {
+            let name = catalog
+                .iter()
+                .find(|entry| entry.id.trim() == id)
+                .map(|entry| entry.name.trim().to_string())
+                .filter(|name| !name.is_empty())
+                .or_else(|| {
+                    if id == settings.station_id.trim() && !settings.station_name.trim().is_empty()
+                    {
+                        Some(settings.station_name.trim().to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(default_name);
+            StationCatalogEntry { id, name }
+        })
+        .collect()
+}
+
+fn non_empty_opt(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
     }
 }
 
 /// Safe update shape: schema version and password cannot be overwritten by the
 /// ordinary settings form. Empty webhook means "leave unchanged" unless the
-/// explicit `clear_webhook` flag is set.
+/// explicit `clear_webhook` flag is set. Only fields for [`scope`] are applied.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SaveAppNotificationSettingsRequest {
     pub enabled: bool,
@@ -253,6 +440,15 @@ pub struct SaveAppNotificationSettingsRequest {
     pub summary_poster_station_id: String,
     #[serde(default)]
     pub summary_included_station_ids: Vec<String>,
+    /// Optional station display-name updates (Advanced). Empty means leave catalog unchanged.
+    #[serde(default)]
+    pub stations: Vec<StationCatalogEntry>,
+    /// Which fields this request may mutate (default: Operator).
+    #[serde(default)]
+    pub scope: SettingsSaveScope,
+    /// Required when Connect scope targets an existing floor file.
+    #[serde(default)]
+    pub connect_password: String,
 }
 
 impl fmt::Debug for SaveAppNotificationSettingsRequest {
@@ -276,6 +472,16 @@ impl fmt::Debug for SaveAppNotificationSettingsRequest {
             .field(
                 "summary_included_station_ids",
                 &self.summary_included_station_ids,
+            )
+            .field("stations", &self.stations)
+            .field("scope", &self.scope)
+            .field(
+                "connect_password",
+                if self.connect_password.is_empty() {
+                    &"<empty>"
+                } else {
+                    &"<redacted>"
+                },
             )
             .finish()
     }
@@ -318,17 +524,52 @@ pub fn app_settings_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(SETTINGS_FILE_NAME))
 }
 
+/// Best-effort shared-path pointer from local settings only (no floor overlay).
+/// Used by the floor poll loop to fingerprint before a merge load.
+pub fn configured_shared_path_pointer() -> Option<String> {
+    let path = app_settings_path();
+    let raw = fs::read_to_string(path).ok()?;
+    let settings: AppNotificationSettings = serde_json::from_str(&raw).ok()?;
+    let shared = settings.shared_shift_log_path.trim().to_string();
+    if shared.is_empty() {
+        None
+    } else {
+        Some(shared)
+    }
+}
+
 pub fn load_app_settings() -> Result<AppNotificationSettings, AppSettingsError> {
     load_app_settings_from(configured_app_settings_path()?)
 }
 
+/// Load settings with floor overlay when a shared folder is configured.
+pub fn load_app_settings_with_floor(
+) -> Result<(AppNotificationSettings, Option<FloorSettings>), AppSettingsError> {
+    load_app_settings_with_floor_from(configured_app_settings_path()?)
+}
+
+pub fn load_app_settings_with_floor_from(
+    path: impl AsRef<Path>,
+) -> Result<(AppNotificationSettings, Option<FloorSettings>), AppSettingsError> {
+    let _guard = settings_io_guard()?;
+    let path = path.as_ref();
+    let mut local = load_or_create_unlocked(path)?;
+    let before = local.clone();
+    let floor = sync_floor_unlocked(&mut local)?;
+    if floor.is_some() && local != before {
+        // Keep local cache aligned with floor for offline display after restarts.
+        write_settings_unlocked(path, &local)?;
+    }
+    Ok((local, floor))
+}
+
 /// Load settings, atomically creating and persisting schema-v1 defaults when
-/// the file does not yet exist.
+/// the file does not yet exist. When a shared folder is set, floor fields overlay
+/// the local file (read-only adopt; never seeds).
 pub fn load_app_settings_from(
     path: impl AsRef<Path>,
 ) -> Result<AppNotificationSettings, AppSettingsError> {
-    let _guard = settings_io_guard()?;
-    load_or_create_unlocked(path.as_ref())
+    load_app_settings_with_floor_from(path).map(|(settings, _)| settings)
 }
 
 pub fn save_app_settings(settings: &AppNotificationSettings) -> Result<(), AppSettingsError> {
@@ -357,8 +598,10 @@ pub fn save_app_settings_to(
 pub fn save_app_settings_request(
     request: &SaveAppNotificationSettingsRequest,
 ) -> Result<AppNotificationSettingsView, AppSettingsError> {
-    save_app_settings_request_to(configured_app_settings_path()?, request)
-        .map(|settings| AppNotificationSettingsView::from(&settings))
+    let path = configured_app_settings_path()?;
+    let _guard = settings_io_guard()?;
+    let (settings, floor) = save_app_settings_request_unlocked(&path, request)?;
+    Ok(settings_view_from(&settings, floor.as_ref()))
 }
 
 pub fn save_app_settings_request_to(
@@ -366,13 +609,373 @@ pub fn save_app_settings_request_to(
     request: &SaveAppNotificationSettingsRequest,
 ) -> Result<AppNotificationSettings, AppSettingsError> {
     let _guard = settings_io_guard()?;
-    let path = path.as_ref();
+    save_app_settings_request_unlocked(path.as_ref(), request).map(|(settings, _)| settings)
+}
+
+fn save_app_settings_request_unlocked(
+    path: &Path,
+    request: &SaveAppNotificationSettingsRequest,
+) -> Result<(AppNotificationSettings, Option<FloorSettings>), AppSettingsError> {
     let mut settings = load_or_create_unlocked(path)?;
-    apply_settings_request(&mut settings, request)?;
-    // This is an exact write: `apply_settings_request` already implements the
-    // empty-preserves-existing and explicit-clear semantics.
-    write_settings_unlocked(path, &settings)?;
-    Ok(settings)
+
+    match request.scope {
+        SettingsSaveScope::Connect => save_connect_unlocked(path, &mut settings, request),
+        SettingsSaveScope::Local => save_local_unlocked(path, &mut settings, request),
+        SettingsSaveScope::Operator => {
+            save_scoped_policy_unlocked(path, &mut settings, request, SettingsSaveScope::Operator)
+        }
+        SettingsSaveScope::Advanced => {
+            save_scoped_policy_unlocked(path, &mut settings, request, SettingsSaveScope::Advanced)
+        }
+    }
+}
+
+fn save_connect_unlocked(
+    path: &Path,
+    settings: &mut AppNotificationSettings,
+    request: &SaveAppNotificationSettingsRequest,
+) -> Result<(AppNotificationSettings, Option<FloorSettings>), AppSettingsError> {
+    apply_station_id_from_request(settings, request)?;
+    let new_path = request.shared_shift_log_path.trim().to_string();
+    if new_path.is_empty() {
+        settings.shared_shift_log_path.clear();
+        write_settings_unlocked(path, settings)?;
+        return Ok((settings.clone(), None));
+    }
+
+    settings.shared_shift_log_path = new_path.clone();
+
+    // Fast path: existing floor → password check + adopt only (no floor rewrite).
+    if let Some(floor) = try_load_floor_settings(&new_path)? {
+        if request.connect_password != floor.settings_password {
+            return Err(AppSettingsError::WrongFloorPassword);
+        }
+        floor.apply_to_local(settings);
+        settings.shared_shift_log_path = new_path;
+        write_settings_unlocked(path, settings)?;
+        return Ok((settings.clone(), Some(floor)));
+    }
+
+    // Missing floor: seed under lock so a concurrent creator is detected.
+    // Fold Advanced + Operator form fields into the seed so one Browse+Save after
+    // editing names/webhook still publishes the intended policy.
+    apply_scope_to_local(settings, request, SettingsSaveScope::Advanced)?;
+    apply_scope_to_local(settings, request, SettingsSaveScope::Operator)?;
+    let mut seed = FloorSettings::from_local_settings(settings);
+    apply_scope_to_floor(&mut seed, request, SettingsSaveScope::Advanced)?;
+    apply_scope_to_floor(&mut seed, request, SettingsSaveScope::Operator)?;
+    seed.updated_by_station_id = settings.station_id.trim().to_string();
+    seed.updated_at = floor_settings_now();
+
+    let floor = super::floor_settings::update_floor_settings_with_lock(&new_path, |existing| {
+        match existing {
+            // Race: another station already seeded — keep their floor (adopt under lock).
+            Some(existing_floor) => Ok(existing_floor),
+            None => Ok(seed.clone()),
+        }
+    })
+    .map_err(AppSettingsError::from)?;
+
+    // Our seed uses the local settings password. A race-adopted floor may differ —
+    // then connect_password must match that floor password.
+    if floor.settings_password != settings.settings_password
+        && request.connect_password != floor.settings_password
+    {
+        return Err(AppSettingsError::WrongFloorPassword);
+    }
+
+    floor.apply_to_local(settings);
+    settings.shared_shift_log_path = new_path;
+    write_settings_unlocked(path, settings)?;
+    Ok((settings.clone(), Some(floor)))
+}
+
+fn save_local_unlocked(
+    path: &Path,
+    settings: &mut AppNotificationSettings,
+    request: &SaveAppNotificationSettingsRequest,
+) -> Result<(AppNotificationSettings, Option<FloorSettings>), AppSettingsError> {
+    apply_station_id_from_request(settings, request)?;
+    if request.shared_shift_log_path.trim().is_empty() {
+        settings.shared_shift_log_path.clear();
+    }
+
+    let floor = if settings.shared_shift_log_path.trim().is_empty() {
+        None
+    } else {
+        match try_load_floor_settings(&settings.shared_shift_log_path)? {
+            Some(floor) => {
+                let station_id = settings.station_id.clone();
+                floor.apply_to_local(settings);
+                settings.station_id = station_id;
+                settings.station_name = floor.station_name_for_id(&settings.station_id);
+                Some(floor)
+            }
+            None => None,
+        }
+    };
+
+    write_settings_unlocked(path, settings)?;
+    Ok((settings.clone(), floor))
+}
+
+fn save_scoped_policy_unlocked(
+    path: &Path,
+    settings: &mut AppNotificationSettings,
+    request: &SaveAppNotificationSettingsRequest,
+    scope: SettingsSaveScope,
+) -> Result<(AppNotificationSettings, Option<FloorSettings>), AppSettingsError> {
+    let shared = settings.shared_shift_log_path.trim().to_string();
+
+    if shared.is_empty() {
+        apply_scope_to_local(settings, request, scope)?;
+        write_settings_unlocked(path, settings)?;
+        return Ok((settings.clone(), None));
+    }
+
+    if scope == SettingsSaveScope::Advanced {
+        apply_station_id_from_request(settings, request)?;
+    }
+
+    let station_id = settings.station_id.trim().to_string();
+    let floor = super::floor_settings::update_floor_settings_with_lock(&shared, |existing| {
+        let mut floor = existing.ok_or_else(|| {
+            super::floor_settings::FloorSettingsError::Read(
+                "Floor settings are unavailable; cannot save floor policy until the shared file is readable."
+                    .to_string(),
+            )
+        })?;
+        // Map apply errors into FloorSettingsError for the mutator.
+        apply_scope_to_floor(&mut floor, request, scope).map_err(|error| {
+            super::floor_settings::FloorSettingsError::Write(error.to_string())
+        })?;
+        floor.updated_by_station_id = station_id.clone();
+        floor.updated_at = floor_settings_now();
+        Ok(floor)
+    })
+    .map_err(|error| match error {
+        super::floor_settings::FloorSettingsError::Read(message)
+            if message.contains("unavailable") =>
+        {
+            AppSettingsError::Floor(message)
+        }
+        other => AppSettingsError::from(other),
+    })?;
+
+    floor.apply_to_local(settings);
+    write_settings_unlocked(path, settings)?;
+    Ok((settings.clone(), Some(floor)))
+}
+
+fn apply_station_id_from_request(
+    settings: &mut AppNotificationSettings,
+    request: &SaveAppNotificationSettingsRequest,
+) -> Result<(), AppSettingsError> {
+    let station_id = request.station_id.trim();
+    if station_id.is_empty() {
+        return Err(AppSettingsError::EmptyStationId);
+    }
+    if !is_known_station_id(station_id) {
+        return Err(AppSettingsError::UnknownStation(station_id.to_string()));
+    }
+    settings.station_id = station_id.to_string();
+
+    // Prefer catalog rename for this id when Advanced provides stations.
+    let renamed = request
+        .stations
+        .iter()
+        .find(|entry| entry.id.trim() == station_id)
+        .map(|entry| entry.name.trim().to_string())
+        .filter(|name| !name.is_empty());
+    if let Some(name) = renamed {
+        settings.station_name = name;
+    } else if !request.station_name.trim().is_empty() {
+        settings.station_name = request.station_name.trim().to_string();
+    } else if let Some(entry) = settings
+        .station_catalog
+        .iter()
+        .find(|entry| entry.id.trim() == station_id)
+    {
+        let name = entry.name.trim();
+        if !name.is_empty() {
+            settings.station_name = name.to_string();
+        } else {
+            settings.station_name = station_name_for_id(station_id).to_string();
+        }
+    } else {
+        settings.station_name = station_name_for_id(station_id).to_string();
+    }
+    Ok(())
+}
+
+fn apply_scope_to_local(
+    settings: &mut AppNotificationSettings,
+    request: &SaveAppNotificationSettingsRequest,
+    scope: SettingsSaveScope,
+) -> Result<(), AppSettingsError> {
+    match scope {
+        SettingsSaveScope::Operator => {
+            settings.shifts = normalize_shifts(&request.shifts)?;
+            settings.events.summary = request.events.summary;
+            let poster = request.summary_poster_station_id.trim();
+            settings.summary_poster_station_id = if poster.is_empty() {
+                default_summary_poster()
+            } else if is_known_station_id(poster) {
+                poster.to_string()
+            } else {
+                return Err(AppSettingsError::UnknownStation(poster.to_string()));
+            };
+            settings.summary_included_station_ids =
+                normalize_included_station_ids(&request.summary_included_station_ids)?;
+        }
+        SettingsSaveScope::Advanced => {
+            settings.enabled = request.enabled;
+            settings.teams_destination_name = match request.teams_destination_name.trim() {
+                "" => default_destination_name(),
+                value => value.to_string(),
+            };
+            apply_webhook_to_string(&mut settings.teams_webhook_url, request);
+            settings.idle_timeout_minutes = request.idle_timeout_minutes;
+            settings.events.problem = request.events.problem;
+            settings.events.complete = request.events.complete;
+            settings.events.stuck = request.events.stuck;
+            apply_station_id_from_request(settings, request)?;
+            apply_station_names_to_catalog(settings, &request.stations)?;
+        }
+        SettingsSaveScope::Connect | SettingsSaveScope::Local => {}
+    }
+    validate_settings(settings)?;
+    Ok(())
+}
+
+fn apply_scope_to_floor(
+    floor: &mut FloorSettings,
+    request: &SaveAppNotificationSettingsRequest,
+    scope: SettingsSaveScope,
+) -> Result<(), AppSettingsError> {
+    match scope {
+        SettingsSaveScope::Operator => {
+            floor.shifts = normalize_shifts(&request.shifts)?;
+            floor.events.summary = request.events.summary;
+            let poster = request.summary_poster_station_id.trim();
+            floor.summary_poster_station_id = if poster.is_empty() {
+                default_summary_poster()
+            } else if is_known_station_id(poster) {
+                poster.to_string()
+            } else {
+                return Err(AppSettingsError::UnknownStation(poster.to_string()));
+            };
+            floor.summary_included_station_ids =
+                normalize_included_station_ids(&request.summary_included_station_ids)?;
+        }
+        SettingsSaveScope::Advanced => {
+            floor.enabled = request.enabled;
+            floor.teams_destination_name = match request.teams_destination_name.trim() {
+                "" => default_destination_name(),
+                value => value.to_string(),
+            };
+            apply_webhook_to_string(&mut floor.teams_webhook_url, request);
+            floor.idle_timeout_minutes = request.idle_timeout_minutes;
+            floor.events.problem = request.events.problem;
+            floor.events.complete = request.events.complete;
+            floor.events.stuck = request.events.stuck;
+            apply_station_names_to_floor(floor, &request.stations)?;
+        }
+        SettingsSaveScope::Connect | SettingsSaveScope::Local => {}
+    }
+    super::floor_settings::validate_floor_settings(floor)?;
+    Ok(())
+}
+
+fn apply_webhook_to_string(target: &mut String, request: &SaveAppNotificationSettingsRequest) {
+    if request.clear_webhook {
+        target.clear();
+    } else if !request.teams_webhook_url.trim().is_empty() {
+        *target = request.teams_webhook_url.trim().to_string();
+    }
+}
+
+fn apply_station_names_to_floor(
+    floor: &mut FloorSettings,
+    stations: &[StationCatalogEntry],
+) -> Result<(), AppSettingsError> {
+    if stations.is_empty() {
+        return Ok(());
+    }
+    for entry in stations {
+        let id = entry.id.trim();
+        if !is_known_station_id(id) {
+            return Err(AppSettingsError::UnknownStation(id.to_string()));
+        }
+        let name = entry.name.trim();
+        // Explicit blank for a known id being set → reject (no silent default).
+        if name.is_empty() {
+            return Err(FloorSettingsError::EmptyStationName.into());
+        }
+        validate_display_name(name)?;
+        if let Some(slot) = floor.stations.iter_mut().find(|s| s.id == id) {
+            slot.name = name.to_string();
+        } else {
+            floor.stations.push(FloorStation {
+                id: id.to_string(),
+                name: name.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn apply_station_names_to_catalog(
+    settings: &mut AppNotificationSettings,
+    stations: &[StationCatalogEntry],
+) -> Result<(), AppSettingsError> {
+    if stations.is_empty() {
+        return Ok(());
+    }
+    if settings.station_catalog.is_empty() {
+        settings.station_catalog = catalog_from_local(settings);
+    }
+    for entry in stations {
+        let id = entry.id.trim();
+        if !is_known_station_id(id) {
+            return Err(AppSettingsError::UnknownStation(id.to_string()));
+        }
+        let name = entry.name.trim();
+        if name.is_empty() {
+            return Err(FloorSettingsError::EmptyStationName.into());
+        }
+        validate_display_name(name)?;
+        if let Some(slot) = settings
+            .station_catalog
+            .iter_mut()
+            .find(|s| s.id.trim() == id)
+        {
+            slot.name = name.to_string();
+        } else {
+            settings.station_catalog.push(StationCatalogEntry {
+                id: id.to_string(),
+                name: name.to_string(),
+            });
+        }
+        if id == settings.station_id.trim() {
+            settings.station_name = name.to_string();
+        }
+    }
+    // Reject duplicates in local catalog the same way floor does.
+    let mut seen: Vec<String> = Vec::new();
+    for entry in &settings.station_catalog {
+        let key = entry.name.trim().to_lowercase();
+        if key.is_empty() {
+            continue;
+        }
+        if seen.iter().any(|s| s == &key) {
+            return Err(
+                FloorSettingsError::DuplicateStationName(entry.name.trim().to_string()).into(),
+            );
+        }
+        seen.push(key);
+    }
+    Ok(())
 }
 
 pub fn verify_password(settings: &AppNotificationSettings, attempt: &str) -> bool {
@@ -416,7 +1019,25 @@ pub fn change_settings_password_at(
     let _guard = settings_io_guard()?;
     let path = path.as_ref();
     let mut settings = load_or_create_unlocked(path)?;
-    change_password(&mut settings, &request.current_password, new_password)?;
+    let shared = settings.shared_shift_log_path.trim().to_string();
+    if !shared.is_empty() {
+        // Password change hits floor only — never reseed if missing.
+        let mut floor = try_load_floor_settings(&shared)?.ok_or_else(|| {
+            AppSettingsError::Floor(
+                "Floor settings file is missing; cannot change password while a shared folder is configured."
+                    .to_string(),
+            )
+        })?;
+        floor.apply_to_local(&mut settings);
+        change_password(&mut settings, &request.current_password, new_password)?;
+        floor.settings_password = settings.settings_password.clone();
+        floor.updated_by_station_id = settings.station_id.trim().to_string();
+        floor.updated_at = floor_settings_now();
+        super::floor_settings::save_floor_settings(&shared, &floor)?;
+        floor.apply_to_local(&mut settings);
+    } else {
+        change_password(&mut settings, &request.current_password, new_password)?;
+    }
     write_settings_unlocked(path, &settings)
 }
 
@@ -452,49 +1073,32 @@ impl AppNotificationSettings {
     }
 }
 
-fn apply_settings_request(
-    settings: &mut AppNotificationSettings,
-    request: &SaveAppNotificationSettingsRequest,
-) -> Result<(), AppSettingsError> {
-    let station_id = request.station_id.trim();
-    if station_id.is_empty() {
-        return Err(AppSettingsError::EmptyStationId);
+/// Load floor when path is set; never seeds. Soft-fails overlay so automation still works.
+fn sync_floor_unlocked(
+    local: &mut AppNotificationSettings,
+) -> Result<Option<FloorSettings>, AppSettingsError> {
+    let shared = local.shared_shift_log_path.trim();
+    if shared.is_empty() {
+        return Ok(None);
     }
-    if !is_known_station_id(station_id) {
-        return Err(AppSettingsError::UnknownStation(station_id.to_string()));
+    match try_load_floor_settings(shared) {
+        Ok(Some(floor)) => {
+            floor.apply_to_local(local);
+            Ok(Some(floor))
+        }
+        Ok(None) => {
+            // Previously configured but file missing (OneDrive lag, etc.): keep cache.
+            Ok(None)
+        }
+        Err(_error) => {
+            // Soft-fail overlay: keep local cache so automation/settings still work.
+            Ok(None)
+        }
     }
+}
 
-    settings.enabled = request.enabled;
-    settings.teams_destination_name = match request.teams_destination_name.trim() {
-        "" => default_destination_name(),
-        value => value.to_string(),
-    };
-    if request.clear_webhook {
-        settings.teams_webhook_url.clear();
-    } else if !request.teams_webhook_url.trim().is_empty() {
-        settings.teams_webhook_url = request.teams_webhook_url.trim().to_string();
-    }
-    settings.station_id = station_id.to_string();
-    settings.station_name = match request.station_name.trim() {
-        "" => station_name_for_id(station_id).to_string(),
-        value => value.to_string(),
-    };
-    settings.idle_timeout_minutes = request.idle_timeout_minutes;
-    settings.events = request.events.clone();
-    settings.shared_shift_log_path = request.shared_shift_log_path.trim().to_string();
-    settings.shifts = normalize_shifts(&request.shifts)?;
-    let poster = request.summary_poster_station_id.trim();
-    settings.summary_poster_station_id = if poster.is_empty() {
-        default_summary_poster()
-    } else if is_known_station_id(poster) {
-        poster.to_string()
-    } else {
-        return Err(AppSettingsError::UnknownStation(poster.to_string()));
-    };
-    settings.summary_included_station_ids =
-        normalize_included_station_ids(&request.summary_included_station_ids)?;
-    validate_settings(settings)?;
-    Ok(())
+fn floor_settings_now() -> String {
+    chrono::Local::now().to_rfc3339()
 }
 
 fn normalize_included_station_ids(ids: &[String]) -> Result<Vec<String>, AppSettingsError> {
@@ -875,12 +1479,20 @@ fn default_summary_included() -> Vec<String> {
 }
 
 #[cfg(test)]
+fn default_stations_catalog() -> Vec<StationCatalogEntry> {
+    known_stations_owned()
+        .into_iter()
+        .map(|(id, name)| StationCatalogEntry { id, name })
+        .collect()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::notifications::can_send;
     use tempfile::tempdir;
 
-    fn request() -> SaveAppNotificationSettingsRequest {
+    fn base_request() -> SaveAppNotificationSettingsRequest {
         SaveAppNotificationSettingsRequest {
             enabled: true,
             teams_destination_name: "PDU Testing".to_string(),
@@ -895,7 +1507,7 @@ mod tests {
                 stuck: false,
                 summary: true,
             },
-            shared_shift_log_path: r"\\server\share\shift_log.json".to_string(),
+            shared_shift_log_path: String::new(),
             shifts: vec![ShiftWindow {
                 label: "Day".to_string(),
                 start_time: "06:00".to_string(),
@@ -903,7 +1515,35 @@ mod tests {
             }],
             summary_poster_station_id: "pdu-lab".to_string(),
             summary_included_station_ids: default_summary_included(),
+            stations: Vec::new(),
+            scope: SettingsSaveScope::Operator,
+            connect_password: String::new(),
         }
+    }
+
+    fn connect_request(shared: &str, station_id: &str) -> SaveAppNotificationSettingsRequest {
+        let mut req = base_request();
+        req.scope = SettingsSaveScope::Connect;
+        req.shared_shift_log_path = shared.to_string();
+        req.station_id = station_id.to_string();
+        req.connect_password = DEFAULT_SETTINGS_PASSWORD.to_string();
+        req
+    }
+
+    fn advanced_request() -> SaveAppNotificationSettingsRequest {
+        let mut req = base_request();
+        req.scope = SettingsSaveScope::Advanced;
+        req
+    }
+
+    fn operator_request() -> SaveAppNotificationSettingsRequest {
+        let mut req = base_request();
+        req.scope = SettingsSaveScope::Operator;
+        req
+    }
+
+    fn frontend_shaped_default_stations() -> Vec<StationCatalogEntry> {
+        default_stations_catalog()
     }
 
     #[test]
@@ -937,7 +1577,7 @@ mod tests {
         settings.teams_webhook_url = "https://example.invalid/workflow?sig=TOP_SECRET".to_string();
         settings.station_id = "test-station-3".to_string();
         settings.station_name = "Test Station 3".to_string();
-        settings.shared_shift_log_path = r"\\server\share\shift_log.json".to_string();
+        settings.shared_shift_log_path = String::new();
 
         save_app_settings_to(&path, &settings).unwrap();
         let loaded = load_app_settings_from(&path).unwrap();
@@ -978,25 +1618,273 @@ mod tests {
     fn safe_request_preserves_or_explicitly_clears_webhook_and_password() {
         let directory = tempdir().unwrap();
         let path = directory.path().join(SETTINGS_FILE_NAME);
+        let shared = directory.path().join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        let shared_path = shared.to_string_lossy().to_string();
         let mut initial = AppNotificationSettings::default();
         initial.settings_password = "2468".to_string();
         initial.teams_webhook_url = "https://example.invalid/hook?sig=KEEP_ME".to_string();
         save_app_settings_to(&path, &initial).unwrap();
 
-        let updated = save_app_settings_request_to(&path, &request()).unwrap();
+        // Connect seeds floor from local (webhook + password).
+        let mut connect = connect_request(&shared_path, "test-station-3");
+        connect.connect_password = "2468".to_string();
+        // Floor was just seeded with password 2468 — but connect when missing seeds
+        // without password check. Password only required when floor exists.
+        // First connect: file absent → seed.
+        connect.connect_password.clear();
+        let updated = save_app_settings_request_to(&path, &connect).unwrap();
         assert_eq!(updated.settings_password, "2468");
         assert_eq!(updated.station_name, "Test Station 3");
         assert_eq!(updated.teams_webhook_url, initial.teams_webhook_url);
-        assert_eq!(
-            updated.shared_shift_log_path,
-            request().shared_shift_log_path
-        );
+        assert_eq!(updated.shared_shift_log_path, shared_path);
+        assert!(shared
+            .join(super::super::floor_settings::FLOOR_SETTINGS_FILE_NAME)
+            .is_file());
 
-        let mut clear = request();
+        let mut clear = advanced_request();
+        clear.station_id = "test-station-3".to_string();
         clear.clear_webhook = true;
         let cleared = save_app_settings_request_to(&path, &clear).unwrap();
         assert!(cleared.teams_webhook_url.is_empty());
         assert_eq!(cleared.settings_password, "2468");
+    }
+
+    #[test]
+    fn adoption_with_full_frontend_shaped_catalog_does_not_overwrite_renames() {
+        let directory = tempdir().unwrap();
+        let shared = directory.path().join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        let shared_path = shared.to_string_lossy().to_string();
+
+        let path_a = directory.path().join("a").join(SETTINGS_FILE_NAME);
+        let path_b = directory.path().join("b").join(SETTINGS_FILE_NAME);
+
+        // PC A: Advanced renames locally, then Connect seeds floor.
+        let mut advanced_a = advanced_request();
+        advanced_a.station_id = "test-station-1".to_string();
+        advanced_a.teams_webhook_url = "https://floor.example/hook".to_string();
+        advanced_a.stations = vec![StationCatalogEntry {
+            id: "test-station-3".to_string(),
+            name: "Bay Three".to_string(),
+        }];
+        save_app_settings_request_to(&path_a, &advanced_a).unwrap();
+        save_app_settings_request_to(&path_a, &connect_request(&shared_path, "test-station-1"))
+            .unwrap();
+
+        // PC B: Connect with full default frontend-shaped catalog — must adopt only.
+        let mut req_b = connect_request(&shared_path, "pdu-lab");
+        req_b.teams_webhook_url = String::new();
+        req_b.stations = frontend_shaped_default_stations();
+        req_b.shifts = vec![ShiftWindow {
+            label: "Stale".to_string(),
+            start_time: "00:00".to_string(),
+            end_time: "01:00".to_string(),
+        }];
+        req_b.summary_poster_station_id = "test-station-1".to_string();
+        let loaded_b = save_app_settings_request_to(&path_b, &req_b).unwrap();
+
+        assert_eq!(loaded_b.station_id, "pdu-lab");
+        assert_eq!(loaded_b.teams_webhook_url, "https://floor.example/hook");
+        assert_eq!(loaded_b.station_name, "PDU Lab");
+        assert!(
+            loaded_b
+                .station_catalog
+                .iter()
+                .any(|s| s.id == "test-station-3" && s.name == "Bay Three"),
+            "catalog cache must show peer rename: {:?}",
+            loaded_b.station_catalog
+        );
+
+        let (merged, floor) = load_app_settings_with_floor_from(&path_b).unwrap();
+        let floor = floor.expect("floor present");
+        assert_eq!(floor.station_name_for_id("test-station-3"), "Bay Three");
+        assert_eq!(merged.teams_webhook_url, "https://floor.example/hook");
+        // Floor file must not have been rewritten with B's defaults.
+        assert_eq!(floor.station_name_for_id("test-station-3"), "Bay Three");
+    }
+
+    #[test]
+    fn operator_scoped_save_does_not_clobber_station_names() {
+        let directory = tempdir().unwrap();
+        let shared = directory.path().join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        let shared_path = shared.to_string_lossy().to_string();
+        let path = directory.path().join(SETTINGS_FILE_NAME);
+
+        let mut advanced = advanced_request();
+        advanced.station_id = "test-station-1".to_string();
+        advanced.stations = vec![StationCatalogEntry {
+            id: "test-station-1".to_string(),
+            name: "Bay One".to_string(),
+        }];
+        save_app_settings_request_to(&path, &advanced).unwrap();
+        save_app_settings_request_to(&path, &connect_request(&shared_path, "test-station-1"))
+            .unwrap();
+
+        // Operator save with default stations in request must not rewrite names.
+        let mut op = operator_request();
+        op.station_id = "test-station-1".to_string();
+        op.stations = frontend_shaped_default_stations();
+        op.summary_poster_station_id = "test-station-3".to_string();
+        op.shifts = vec![ShiftWindow {
+            label: "Night".to_string(),
+            start_time: "15:00".to_string(),
+            end_time: "23:00".to_string(),
+        }];
+        let saved = save_app_settings_request_to(&path, &op).unwrap();
+        assert_eq!(saved.summary_poster_station_id, "test-station-3");
+        assert_eq!(saved.shifts[0].label, "Night");
+        assert_eq!(saved.station_name, "Bay One");
+
+        let floor = try_load_floor_settings(&shared_path)
+            .unwrap()
+            .expect("floor");
+        assert_eq!(floor.station_name_for_id("test-station-1"), "Bay One");
+        assert_eq!(floor.summary_poster_station_id, "test-station-3");
+    }
+
+    #[test]
+    fn missing_floor_after_connect_does_not_reseed_on_load() {
+        let directory = tempdir().unwrap();
+        let shared = directory.path().join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        let shared_path = shared.to_string_lossy().to_string();
+        let path = directory.path().join(SETTINGS_FILE_NAME);
+
+        let mut advanced = advanced_request();
+        advanced.station_id = "test-station-1".to_string();
+        advanced.teams_webhook_url = "https://keep.example/hook".to_string();
+        advanced.stations = vec![StationCatalogEntry {
+            id: "test-station-1".to_string(),
+            name: "Cached Bay".to_string(),
+        }];
+        save_app_settings_request_to(&path, &advanced).unwrap();
+        save_app_settings_request_to(&path, &connect_request(&shared_path, "test-station-1"))
+            .unwrap();
+
+        let floor_path = shared.join(super::super::floor_settings::FLOOR_SETTINGS_FILE_NAME);
+        assert!(floor_path.is_file());
+        fs::remove_file(&floor_path).unwrap();
+
+        let loaded = load_app_settings_from(&path).unwrap();
+        assert!(!floor_path.exists(), "load must not reseed floor file");
+        assert_eq!(loaded.teams_webhook_url, "https://keep.example/hook");
+        assert_eq!(loaded.station_name, "Cached Bay");
+        assert!(
+            loaded
+                .station_catalog
+                .iter()
+                .any(|s| s.id == "test-station-1" && s.name == "Cached Bay"),
+            "local catalog cache retained: {:?}",
+            loaded.station_catalog
+        );
+        let view = AppNotificationSettingsView::from_merged(&loaded, None);
+        assert_eq!(view.floor_sync.source, "local-cache");
+    }
+
+    #[test]
+    fn connect_requires_password_when_floor_exists() {
+        let directory = tempdir().unwrap();
+        let shared = directory.path().join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        let shared_path = shared.to_string_lossy().to_string();
+        let path_a = directory.path().join("a").join(SETTINGS_FILE_NAME);
+        let path_b = directory.path().join("b").join(SETTINGS_FILE_NAME);
+
+        // Seed with non-default password via local + connect.
+        let mut initial = AppNotificationSettings::default();
+        initial.settings_password = "4242".to_string();
+        save_app_settings_to(&path_a, &initial).unwrap();
+        save_app_settings_request_to(&path_a, &connect_request(&shared_path, "test-station-1"))
+            .unwrap();
+
+        // PC B wrong password
+        let mut bad = connect_request(&shared_path, "pdu-lab");
+        bad.connect_password = "0601".to_string();
+        assert_eq!(
+            save_app_settings_request_to(&path_b, &bad),
+            Err(AppSettingsError::WrongFloorPassword)
+        );
+
+        // Correct password adopts.
+        let mut good = connect_request(&shared_path, "pdu-lab");
+        good.connect_password = "4242".to_string();
+        let loaded = save_app_settings_request_to(&path_b, &good).unwrap();
+        assert_eq!(loaded.settings_password, "4242");
+        assert_eq!(loaded.station_id, "pdu-lab");
+    }
+
+    #[test]
+    fn seed_on_connect_when_missing_still_works() {
+        let directory = tempdir().unwrap();
+        let shared = directory.path().join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        let shared_path = shared.to_string_lossy().to_string();
+        let path = directory.path().join(SETTINGS_FILE_NAME);
+
+        let mut advanced = advanced_request();
+        advanced.station_id = "test-station-3".to_string();
+        advanced.teams_webhook_url = "https://seed.example/hook".to_string();
+        advanced.stations = vec![StationCatalogEntry {
+            id: "test-station-3".to_string(),
+            name: "Seed Three".to_string(),
+        }];
+        save_app_settings_request_to(&path, &advanced).unwrap();
+
+        let floor_path = shared.join(super::super::floor_settings::FLOOR_SETTINGS_FILE_NAME);
+        assert!(!floor_path.exists());
+        let seeded =
+            save_app_settings_request_to(&path, &connect_request(&shared_path, "test-station-3"))
+                .unwrap();
+        assert!(floor_path.is_file());
+        assert_eq!(seeded.teams_webhook_url, "https://seed.example/hook");
+        assert_eq!(seeded.station_name, "Seed Three");
+
+        let floor = try_load_floor_settings(&shared_path).unwrap().unwrap();
+        assert_eq!(floor.station_name_for_id("test-station-3"), "Seed Three");
+        assert_eq!(floor.teams_webhook_url, "https://seed.example/hook");
+    }
+
+    #[test]
+    fn connect_seed_includes_unsaved_advanced_form_fields() {
+        // Single Browse+Save: no prior Advanced local save; form fields on Connect request seed.
+        let directory = tempdir().unwrap();
+        let shared = directory.path().join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        let shared_path = shared.to_string_lossy().to_string();
+        let path = directory.path().join(SETTINGS_FILE_NAME);
+
+        let mut req = connect_request(&shared_path, "test-station-1");
+        req.teams_webhook_url = "https://one-shot.example/hook".to_string();
+        req.teams_destination_name = "PDU Lab Chat".to_string();
+        req.stations = vec![
+            StationCatalogEntry {
+                id: "test-station-1".to_string(),
+                name: "Bay One".to_string(),
+            },
+            StationCatalogEntry {
+                id: "test-station-3".to_string(),
+                name: "Bay Three".to_string(),
+            },
+            StationCatalogEntry {
+                id: "test-station-4".to_string(),
+                name: "Test Station 4".to_string(),
+            },
+            StationCatalogEntry {
+                id: "pdu-lab".to_string(),
+                name: "PDU Lab".to_string(),
+            },
+        ];
+        let seeded = save_app_settings_request_to(&path, &req).unwrap();
+        assert_eq!(seeded.teams_webhook_url, "https://one-shot.example/hook");
+        assert_eq!(seeded.station_name, "Bay One");
+
+        let floor = try_load_floor_settings(&shared_path).unwrap().unwrap();
+        assert_eq!(floor.teams_webhook_url, "https://one-shot.example/hook");
+        assert_eq!(floor.teams_destination_name, "PDU Lab Chat");
+        assert_eq!(floor.station_name_for_id("test-station-1"), "Bay One");
+        assert_eq!(floor.station_name_for_id("test-station-3"), "Bay Three");
     }
 
     #[test]
@@ -1027,6 +1915,31 @@ mod tests {
             &load_app_settings_from(&path).unwrap(),
             "9999"
         ));
+    }
+
+    #[test]
+    fn password_change_with_shared_path_does_not_reseed() {
+        let directory = tempdir().unwrap();
+        let shared = directory.path().join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        let shared_path = shared.to_string_lossy().to_string();
+        let path = directory.path().join(SETTINGS_FILE_NAME);
+
+        save_app_settings_request_to(&path, &connect_request(&shared_path, "test-station-1"))
+            .unwrap();
+        let floor_path = shared.join(super::super::floor_settings::FLOOR_SETTINGS_FILE_NAME);
+        fs::remove_file(&floor_path).unwrap();
+
+        let req = ChangeSettingsPasswordRequest {
+            current_password: DEFAULT_SETTINGS_PASSWORD.to_string(),
+            new_password: "9999".to_string(),
+            confirm_password: "9999".to_string(),
+        };
+        assert!(matches!(
+            change_settings_password_at(&path, &req),
+            Err(AppSettingsError::Floor(_))
+        ));
+        assert!(!floor_path.exists());
     }
 
     #[test]

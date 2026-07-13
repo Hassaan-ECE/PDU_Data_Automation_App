@@ -6,7 +6,7 @@ import type { VerifySettingsPassword } from "./settingsTypes";
 export interface SettingsPasswordModalProps {
   open: boolean;
   onCancel: () => void;
-  onUnlock: () => void;
+  onUnlock: (password: string) => void;
   verify: VerifySettingsPassword;
 }
 
@@ -103,8 +103,9 @@ export function SettingsPasswordModal({
         return;
       }
 
+      const unlockedPassword = password;
       setPassword("");
-      onUnlock();
+      onUnlock(unlockedPassword);
     } catch {
       setError("The settings password could not be verified.");
     } finally {

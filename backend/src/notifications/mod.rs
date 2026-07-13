@@ -2,6 +2,7 @@
 
 mod app_settings;
 mod config;
+mod floor_settings;
 mod message;
 mod shift_log;
 mod stations;
@@ -10,13 +11,20 @@ mod teams;
 mod worker;
 
 pub use app_settings::{
-    app_settings_path, change_password, change_settings_password, ensure_configured_shared_layout,
-    load_app_settings, load_app_settings_from, load_runtime_resolved_config, save_app_settings,
-    save_app_settings_request, save_app_settings_request_to, save_app_settings_to,
-    set_app_config_dir, verify_password, verify_settings_password, AppNotificationSettings,
-    AppNotificationSettingsView, AppSettingsError, ChangeSettingsPasswordRequest,
-    SaveAppNotificationSettingsRequest, ShiftWindow, APP_SETTINGS_SCHEMA_VERSION,
+    app_settings_path, catalog_from_local, change_password, change_settings_password,
+    configured_shared_path_pointer, ensure_configured_shared_layout, load_app_settings,
+    load_app_settings_from, load_app_settings_with_floor, load_runtime_resolved_config,
+    save_app_settings, save_app_settings_request, save_app_settings_request_to,
+    save_app_settings_to, set_app_config_dir, verify_password, verify_settings_password,
+    AppNotificationSettings, AppNotificationSettingsView, AppSettingsError,
+    ChangeSettingsPasswordRequest, FloorSyncStatus, SaveAppNotificationSettingsRequest,
+    SettingsSaveScope, ShiftWindow, StationCatalogEntry, APP_SETTINGS_SCHEMA_VERSION,
     DEFAULT_SETTINGS_PASSWORD, SETTINGS_FILE_NAME,
+};
+pub use floor_settings::{
+    load_or_seed_floor_settings, resolve_floor_settings_file, try_load_floor_settings,
+    update_floor_settings_with_lock, FloorSettings, FloorSettingsError, FloorStation,
+    FLOOR_SETTINGS_FILE_NAME,
 };
 pub use stations::{
     is_known_station_id, known_stations_owned, station_name_for_id,

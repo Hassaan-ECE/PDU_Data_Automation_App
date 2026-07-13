@@ -145,11 +145,39 @@ describe("OperatorPanel inline Transformer SN setup", () => {
         "pdu-lab",
       ],
       is_summary_poster: false,
+      stations: [
+        { id: "test-station-1", name: "Test Station 1" },
+        { id: "test-station-3", name: "Test Station 3" },
+        { id: "test-station-4", name: "Test Station 4" },
+        { id: "pdu-lab", name: "PDU Lab" },
+      ],
+      floor_sync: {
+        configured: false,
+        source: "local",
+        updated_at: null,
+        updated_by_station_id: null,
+        message: "Shared folder not set — settings stay on this PC only.",
+      },
     });
     mocks.saveAppNotificationSettings.mockImplementation(async (request) => ({
       ...request,
       webhook_configured: Boolean(request.teams_webhook_url),
       is_summary_poster: request.station_id === (request.summary_poster_station_id || "pdu-lab"),
+      stations: request.stations ?? [
+        { id: "test-station-1", name: "Test Station 1" },
+        { id: "test-station-3", name: "Test Station 3" },
+        { id: "test-station-4", name: "Test Station 4" },
+        { id: "pdu-lab", name: "PDU Lab" },
+      ],
+      floor_sync: {
+        configured: Boolean(request.shared_shift_log_path?.trim()),
+        source: request.shared_shift_log_path?.trim() ? "floor" : "local",
+        updated_at: null,
+        updated_by_station_id: null,
+        message: request.shared_shift_log_path?.trim()
+          ? "Syncing via shared folder."
+          : "Shared folder not set — settings stay on this PC only.",
+      },
     }));
     mocks.changeSettingsPassword.mockResolvedValue(undefined);
     mocks.sendNotificationTest.mockResolvedValue(undefined);

@@ -71,8 +71,12 @@ pub fn post_shift_summary(
 #[tauri::command]
 pub fn get_app_notification_settings() -> Result<notifications::AppNotificationSettingsView, String>
 {
-    let settings = notifications::load_app_settings().map_err(|error| error.to_string())?;
-    Ok((&settings).into())
+    let (settings, floor) =
+        notifications::load_app_settings_with_floor().map_err(|error| error.to_string())?;
+    Ok(notifications::AppNotificationSettingsView::from_merged(
+        &settings,
+        floor.as_ref(),
+    ))
 }
 
 #[tauri::command]
@@ -90,7 +94,17 @@ pub fn save_app_notification_settings(
         return Err("Select Test Station 1–4 or PDU Lab".to_string());
     }
 
-    request.station_name = notifications::station_name_for_id(&station_id).to_string();
+    // Keep any Advanced catalog rename; only fill blank names from defaults.
+    if request.station_name.trim().is_empty() {
+        let renamed = request
+            .stations
+            .iter()
+            .find(|entry| entry.id.trim() == station_id)
+            .map(|entry| entry.name.trim().to_string())
+            .filter(|name| !name.is_empty());
+        request.station_name =
+            renamed.unwrap_or_else(|| notifications::station_name_for_id(&station_id).to_string());
+    }
     request.station_id = station_id;
     let saved =
         notifications::save_app_settings_request(&request).map_err(|error| error.to_string())?;

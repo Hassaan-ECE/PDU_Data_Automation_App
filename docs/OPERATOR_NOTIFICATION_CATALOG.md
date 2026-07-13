@@ -158,16 +158,18 @@ It can be checked after a successful pass (or after saving Transformer SN when t
 
 | Open (no password) | Password-locked (Advanced) |
 |--------------------|----------------------------|
-| **Shift & summary options** — windows, who posts, which stations appear on the card, enable/disable summary | **Station & Teams** — this PC identity, webhook, shared folder, test ping |
-| **End of shift** — preview / post (if this PC is the poster) | **Change password** |
+| **Shift & summary options** — windows, who posts, which stations appear on the card, enable/disable summary | **Station & Teams** — this PC identity, webhook, shared folder, station display names, test ping |
+| **End of shift** — preview / post (if this PC is the poster) | **Change password** (shared across PCs when the shared folder is set) |
 
-If the usual poster PC is down, any operator can open **Shift & summary options** and reassign the poster station (no password).
+If the usual poster PC is down, any operator can open **Shift & summary options** and reassign the poster station (no password). With a shared folder configured, that Main assignment syncs to other PCs within about 45 seconds.
 
 ## Station notes (current floor)
 
-- **Stations in Settings:** Test Station 1, 3, 4 and **PDU Lab** (Station 2 removed)  
-- Lab PC selects **PDU Lab**; end-of-shift poster defaults to **PDU Lab**  
-- Phones only ring if that person is in **PDU Testing** and has Teams notifications enabled for the chat  
+- **Stable slots:** `test-station-1`, `test-station-3`, `test-station-4`, `pdu-lab` (Station 2 still not used)
+- **Display names** are editable in Advanced (password) and sync via the shared folder — renumber labels without an app update
+- Lab PC selects the **pdu-lab** slot; end-of-shift poster defaults to that slot
+- Phones only ring if that person is in **PDU Testing** and has Teams notifications enabled for the chat
+- Admin can point any copy of the app at the same shared folder and change floor settings from a desk PC
 
 ---
 

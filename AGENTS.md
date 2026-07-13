@@ -12,7 +12,9 @@ The goal is to preserve the current operator layout and workflow while rebuildin
 
 ## Current Status
 
-This repository has a `v0.2.12` pilot release of the replacement app. The released build includes the Tauri 2 / React / TypeScript / Vite / Tailwind / Bun / Rust stack, the production PDU500 Rev02 layout profile, CSV detection/parsing, Excel workbook patching, inline unit selection, inline Transformer SN setup/save support, manual Print Report support with final operator-name capture, explicit current-step follow controls, readiness-based updater scheduling, a generic data-driven mapping path for transformer report writes, built-in Rust processor fallback for the remaining current workflow, bundled layout resource loading, setup-on-folder-selection behavior, in-app Teams operator notifications (Problem/Complete, password-gated settings, optional shared OneDrive shift log), a signed current-user NSIS installer, GitHub Release updater artifacts, and S-drive staging.
+**Current release:** `v0.2.14` adds shared floor notification settings (`floor_settings.json` in the shared OneDrive folder), scoped saves, Connect floor-password field, editable station display names, and Settings clean-form poll. See `docs/superpowers/specs/2026-07-13-shared-floor-settings-followups.md` and `release/v0.2.14.md`. Paste large reviews into `docs/review-paste-inbox.txt`. Operator validation: Browse each PC to the same `.PDU_Notifications` folder (never hard-code paths).
+
+This repository has a pilot replacement app. The released build includes the Tauri 2 / React / TypeScript / Vite / Tailwind / Bun / Rust stack, the production PDU500 Rev02 layout profile, CSV detection/parsing, Excel workbook patching, inline unit selection, inline Transformer SN setup/save support, manual Print Report support with final operator-name capture, explicit current-step follow controls, readiness-based updater scheduling, a generic data-driven mapping path for transformer report writes, built-in Rust processor fallback for the remaining current workflow, bundled layout resource loading, setup-on-folder-selection behavior, in-app Teams operator notifications (Problem/Complete, password-gated settings, optional shared OneDrive shift log + floor settings), a signed current-user NSIS installer, GitHub Release updater artifacts, and S-drive staging.
 
 Treat it as pilot-ready, not fully cut over. Keep the legacy Python app available until several production units have been processed cleanly, generated reports have been compared against legacy output, and the updater upgrade path has been tested with a newer release.
 
@@ -55,7 +57,7 @@ For meaningful changes:
 ## Release / Updater Notes For Agents
 
 - Read `docs/RELEASE_AND_DEPLOYMENT.md` before doing release work.
-- Current released pilot is `v0.2.12`; the updater signing key was rotated in `v0.2.10`. Older installs should be updated manually with the current S-drive installer before relying on updater flow; future updater releases should be signed with the same replacement key.
+- Current released pilot is `v0.2.14`; the updater signing key was rotated in `v0.2.10`. Older installs should be updated manually with the current S-drive installer before relying on updater flow; future updater releases should be signed with the same replacement key.
 - The updater private key and local DPAPI passphrase helper live outside the repo under `%USERPROFILE%\.tauri\`. Never print, paste, commit, or upload either secret.
 - GitHub updater assets use dot-normalized installer names, for example `PDU.Data.Automation_0.2.12_x64-setup.exe`. The S-drive operator-facing installer uses the space-name form, for example `PDU Data Automation_0.2.12_x64-setup.exe`.
 - A GitHub updater release needs `latest.json` and a matching installer signature. Upload the installer, `.sig`, `latest.json`, and `SHA256SUMS.txt`; the `.exe` alone is only enough for manual installs.
