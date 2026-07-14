@@ -811,12 +811,18 @@ fn save_scoped_policy_unlocked(
     let station_id = settings.station_id.trim().to_string();
     let mut created_identity: Option<FloorStation> = None;
     let floor = super::floor_settings::update_floor_settings_with_lock(&shared, |existing| {
-        let mut floor = existing.ok_or_else(|| {
-            super::floor_settings::FloorSettingsError::Read(
+        let mut floor = match existing {
+            Some(floor) => floor,
+            None if scope == SettingsSaveScope::Identity => {
+                FloorSettings::from_local_settings(settings)
+            }
+            None => {
+                return Err(super::floor_settings::FloorSettingsError::Read(
                 "Floor settings are unavailable; cannot save floor policy until the shared file is readable."
                     .to_string(),
-            )
-        })?;
+                ));
+            }
+        };
         // Map apply errors into FloorSettingsError for the mutator.
         apply_scope_to_floor(&mut floor, request, scope).map_err(|error| {
             super::floor_settings::FloorSettingsError::Write(error.to_string())
@@ -2209,6 +2215,43 @@ mod tests {
         assert_eq!(admin.role, StationRole::Admin);
         assert_eq!(saved.station_id, admin.id);
         assert!(!shared.join("stations").join(&admin.id).exists());
+    }
+
+    #[test]
+    fn identity_create_seeds_missing_floor_and_selects_new_admin_locally() {
+        let directory = tempdir().unwrap();
+        let app_path = directory.path().join(SETTINGS_FILE_NAME);
+        let shared = directory.path().join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        let shared_path = shared.to_string_lossy().to_string();
+
+        let mut local = AppNotificationSettings::default();
+        local.shared_shift_log_path = shared_path.clone();
+        save_app_settings_to(&app_path, &local).unwrap();
+
+        let mut request = advanced_request();
+        request.scope = SettingsSaveScope::Identity;
+        request.station_id = "test-station-1".to_string();
+        request.shared_shift_log_path = shared_path.clone();
+        request.catalog_create = Some(CatalogCreateRequest {
+            name: "Admin Desk".to_string(),
+            role: StationRole::Admin,
+            select_for_this_pc: true,
+        });
+
+        let saved = save_app_settings_request_to(&app_path, &request).unwrap();
+        let floor = try_load_floor_settings(&shared_path)
+            .unwrap()
+            .expect("Identity save should seed the missing floor file");
+        let admin = floor
+            .stations
+            .iter()
+            .find(|station| station.name == "Admin Desk")
+            .expect("new Admin identity should be in the shared catalog");
+
+        assert_eq!(admin.role, StationRole::Admin);
+        assert_eq!(saved.station_id, admin.id);
+        assert_eq!(saved.station_name, "Admin Desk");
     }
 
     #[test]
