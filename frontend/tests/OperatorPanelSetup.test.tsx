@@ -669,7 +669,12 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     expect(screen.getByRole("button", { name: /Summary options/i })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: /End of shift/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Post Summary/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Station & Teams/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Station & Identities/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Teams & Notifications/i }),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Advanced$/i }));
     expect(await screen.findByLabelText("Password")).toBeInTheDocument();
@@ -679,9 +684,12 @@ describe("OperatorPanel inline Transformer SN setup", () => {
 
     fireEvent.change(screen.getByLabelText("Password"), { target: { value: "0601" } });
     fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
-    expect(await screen.findByRole("button", { name: /Station & Teams/i })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: /Station & Identities/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Teams & Notifications/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^End of shift$/i })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Station & Teams/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Teams & Notifications/i }));
     expect(await screen.findByLabelText("Teams webhook URL")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Back to settings menu" }));

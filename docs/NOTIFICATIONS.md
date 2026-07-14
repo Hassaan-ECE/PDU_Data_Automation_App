@@ -30,17 +30,17 @@ The cog is disabled while report setup or task automation is active so station a
 
 | Setting | Behavior |
 |---------|----------|
-| This PC identity | Searchable Advanced combobox containing Floor Stations and Admin Identities. The selection is local to this PC; selecting an Admin Identity is allowed. |
-| Manage identities | Advanced only. Select an existing identity to rename it without changing its stable id, or type a unique name and add it as a **Floor Station** or **Admin Identity**. New identities require a configured shared floor. Delete and role conversion are intentionally unavailable. |
-| Destination name | Defaults to `PDU Testing` and labels the configured destination in the UI/status. Shared when floor sync is on. It does not route the message; the Workflow URL determines the actual Teams chat. |
-| Teams webhook URL | Masked in the UI. Paste a non-empty URL to set or replace it. Leaving the edit blank preserves an already stored URL; disable notifications if delivery should stop. Shared when floor sync is on. |
-| Notifications enabled | Master switch for automatic cards and test delivery. Save the enabled state before testing. Shared when floor sync is on. |
-| Changeover card | Advanced toggle, default on. Controls the one-time STEP42 action card after the committed STEP41 pass. It does not change automation or STEP43 readiness. |
-| Shared OneDrive folder | Optional. Use **Browse** on each PC to pick that machine’s local sync of the same org OneDrive folder (confirmed name: `.PDU_Notifications` under the org OneDrive root). Never hard-code the absolute path — usernames and OneDrive roots differ per PC. On first Connect the app seeds `floor_settings.json` if missing, or adopts an existing floor (requires the floor Settings password). Creates `shift_log.json` and `stations/*` as needed. Leave empty / clear for local-only mode. |
+| This PC identity | **Advanced → Station & Identities.** Searchable combobox containing Floor Stations and Admin Identities. The selection is local to this PC; selecting an Admin Identity is allowed. |
+| Manage identities | **Advanced → Station & Identities.** Select an existing identity to rename it without changing its stable id, or type a unique name and add it as a **Floor Station** or **Admin Identity**. New identities require a configured shared floor. Delete and role conversion are intentionally unavailable. |
+| Destination name | **Advanced → Teams & Notifications.** Defaults to `PDU Testing` and labels the configured destination in the UI/status. Shared when floor sync is on. It does not route the message; the Workflow URL determines the actual Teams chat. |
+| Teams webhook URL | **Advanced → Teams & Notifications.** Masked in the UI. Paste a non-empty URL to set or replace it. Leaving the edit blank preserves an already stored URL; disable notifications if delivery should stop. Shared when floor sync is on. |
+| Notifications enabled | **Advanced → Teams & Notifications.** Master switch for automatic cards and test delivery. Save the enabled state before testing. Shared when floor sync is on. |
+| Changeover card | **Advanced → Teams & Notifications.** Toggle, default on. Controls the one-time STEP42 action card after the committed STEP41 pass. It does not change automation or STEP43 readiness. |
+| Shared OneDrive folder | **Advanced → Station & Identities.** Optional. Use **Browse** on each PC to pick that machine’s local sync of the same org OneDrive folder (confirmed name: `.PDU_Notifications` under the org OneDrive root). Never hard-code the absolute path — usernames and OneDrive roots differ per PC. On first Connect the app seeds `floor_settings.json` if missing, or adopts an existing floor (requires the floor Settings password). Creates `shift_log.json` and `stations/*` as needed. Leave empty / clear for local-only mode. |
 | Main poster / included stations / shifts | Operator-open controls (no password). Shared when floor sync is on so every PC agrees who posts and which windows apply. Saved with **operator** scope only. |
 | Change password | Enter the current password, a new non-empty password, and matching confirmation. Shared when floor sync is on so every PC uses the same Advanced unlock. Uses the dedicated change-password API (not a full settings save). |
-| Save (scoped) | Saves only the fields for the current form section so a stale open Settings page cannot overwrite peer edits. **operator** = shifts / summary / Main / included Floor Stations; **advanced** = webhook, destination, toggles, idle timeout, identity rename/create, this-PC identity; **connect** = set shared path and adopt or seed floor (does not write form policy over an existing floor; needs `connect_password` when the floor already exists); **local** = this-PC identity and clearing the shared path without writing floor policy. |
-| Test ping | Uses the saved, enabled configuration and posts a blue connection card through the same Workflow. Its asynchronous result is correlated to the test event, so a concurrent Problem or Complete result is not mistaken for the ping. |
+| Save (scoped) | Saves only the fields for the current form section so a stale open Settings page cannot overwrite peer edits. **operator** = shifts / summary / Main / included Floor Stations; **identity** = identity rename/create and this-PC identity; **teams** = webhook, destination, notification toggles, and idle timeout; **advanced** remains accepted for older callers; **connect** = set shared path and adopt or seed floor (does not write form policy over an existing floor; needs `connect_password` when the floor already exists); **local** = this-PC identity and clearing the shared path without writing floor policy. |
+| Test ping | **Advanced → Teams & Notifications.** Uses the saved, enabled configuration and posts a blue connection card through the same Workflow. Its asynchronous result is correlated to the test event, so a concurrent Problem or Complete result is not mistaken for the ping. |
 
 ## Settings persistence
 
@@ -62,7 +62,7 @@ For the current application identifier, the Windows location is normally equival
 
 ### Floor-wide (shared folder)
 
-When Advanced → **Browse** points at a shared OneDrive/network folder, floor-wide settings live in:
+When Advanced → **Station & Identities → Browse** points at a shared OneDrive/network folder, floor-wide settings live in:
 
 ```text
 <shared-folder>\floor_settings.json
@@ -77,7 +77,7 @@ alongside the existing `shift_log.json` and `stations/*` layout.
 - **Delivery** always merges floor settings on the backend worker poll (~45s). The open Settings UI also re-fetches about every **45 seconds**, but only while the form is **clean** (unsaved edits are never clobbered by a peer reload).
 - Multi-PC OneDrive concurrency is best-effort: atomic replace + short locks reduce same-machine races; across replicas last writer still wins after sync lag.
 - Confirmed operator shared folder name: `.PDU_Notifications` under org OneDrive. Each PC must Browse its own synced copy — do not hard-code a user-specific absolute path.
-- Admin workflow: install the same app on any machine, Advanced → Browse → Connect (floor password) → edit password-gated or operator-open fields with scoped saves; peers pick them up on the next clean UI poll / delivery poll.
+- Admin workflow: install the same app on any machine, Advanced → Station & Identities → Browse → Connect (floor password). Manage identities there, and use Advanced → Teams & Notifications for Teams policy. Peers pick saved changes up on the next clean UI poll / delivery poll.
 
 ### Dynamic identity compatibility boundary
 

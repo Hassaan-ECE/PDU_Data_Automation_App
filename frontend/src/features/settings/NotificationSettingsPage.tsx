@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   ArrowLeft,
+  Bell,
   CalendarClock,
   ChevronRight,
   ClipboardList,
@@ -61,7 +62,8 @@ export type SettingsView =
   | "shifts"
   | "summaryOptions"
   | "advanced"
-  | "station"
+  | "identities"
+  | "teams"
   | "password";
 
 const emptyPasswordFields: PasswordFields = { current: "", next: "", confirm: "" };
@@ -309,7 +311,7 @@ export function NotificationSettingsPage({
       handleLeaveSettings();
       return;
     }
-    if (view === "station" || view === "password") {
+    if (view === "identities" || view === "teams" || view === "password") {
       requestLeave(advancedUnlocked ? "advanced" : "home");
       return;
     }
@@ -324,14 +326,14 @@ export function NotificationSettingsPage({
       setSaveResult({ tone: "error", text: shiftValidationError });
       return false;
     }
-    if (view === "station" && thisPcIdentityQuery !== settings.station_name) {
+    if (view === "identities" && thisPcIdentityQuery !== settings.station_name) {
       setSaveResult({
         tone: "error",
         text: "Choose an identity from the This PC identity list before saving.",
       });
       return false;
     }
-    if (view === "station" && identityDraft.trim() && !managedIdentityId && !catalogCreate) {
+    if (view === "identities" && identityDraft.trim() && !managedIdentityId && !catalogCreate) {
       setSaveResult({
         tone: "error",
         text: "Choose an existing identity or use an Add as Floor/Admin option before saving.",
@@ -618,8 +620,10 @@ export function NotificationSettingsPage({
         return "Summary options";
       case "advanced":
         return "Advanced";
-      case "station":
-        return "Station & Teams";
+      case "identities":
+        return "Station & Identities";
+      case "teams":
+        return "Teams & Notifications";
       case "password":
         return "Change password";
       default:
@@ -832,8 +836,13 @@ export function NotificationSettingsPage({
             <div className="space-y-2">
               <MenuButton
                 icon={Radio}
-                title="Station & Teams"
-                onClick={() => setView("station")}
+                title="Station & Identities"
+                onClick={() => setView("identities")}
+              />
+              <MenuButton
+                icon={Bell}
+                title="Teams & Notifications"
+                onClick={() => setView("teams")}
               />
               <MenuButton
                 icon={KeyRound}
@@ -1020,9 +1029,9 @@ export function NotificationSettingsPage({
             </form>
           ) : null}
 
-          {view === "station" && advancedUnlocked ? (
+          {view === "identities" && advancedUnlocked ? (
             <form onSubmit={(e) => void handleSave(e)} className="space-y-3 rounded-md border border-[#454542] bg-[#292928] p-4">
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div>
                 <IdentityCombobox
                   label="This PC identity"
                   entries={settings.stations}
@@ -1039,15 +1048,6 @@ export function NotificationSettingsPage({
                   }}
                   onCreate={() => undefined}
                 />
-                <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
-                  Destination name
-                  <input
-                    value={settings.teams_destination_name}
-                    disabled={pageBusy}
-                    onChange={(e) => updateSettings({ teams_destination_name: e.target.value })}
-                    className={inputClassName}
-                  />
-                </label>
               </div>
               <div className="rounded-md border border-[#454542] bg-[#242423] px-3 py-2 text-[7.5pt] leading-snug text-[#9a958c]">
                 {settings.floor_sync?.message ||
@@ -1136,45 +1136,6 @@ export function NotificationSettingsPage({
                   ) : null}
                 </div>
               </div>
-              <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
-                Teams webhook URL
-                <input
-                  type="password"
-                  value={settings.teams_webhook_url}
-                  disabled={pageBusy}
-                  onChange={(e) => updateSettings({ teams_webhook_url: e.target.value })}
-                  placeholder={
-                    settings.webhook_configured
-                      ? "Saved webhook configured; enter a URL only to replace it"
-                      : "Paste the Power Automate Workflow URL"
-                  }
-                  className={inputClassName}
-                />
-              </label>
-              <label className="flex min-h-9 items-center gap-2 rounded border border-[#454542] bg-[#242423] px-3 text-[8.5pt]">
-                <input
-                  type="checkbox"
-                  checked={settings.enabled}
-                  disabled={pageBusy}
-                  onChange={(e) => updateSettings({ enabled: e.target.checked })}
-                  className="h-4 w-4 accent-[#1f74ae]"
-                />
-                Notifications enabled
-              </label>
-              <label className="flex min-h-9 items-center gap-2 rounded border border-[#454542] bg-[#242423] px-3 text-[8.5pt]">
-                <input
-                  type="checkbox"
-                  checked={settings.events.changeover}
-                  disabled={pageBusy}
-                  onChange={(event) =>
-                    updateSettings({
-                      events: { ...settings.events, changeover: event.target.checked },
-                    })
-                  }
-                  className="h-4 w-4 accent-[#1f74ae]"
-                />
-                Changeover card after 208V Breaker 8 – 20% Load
-              </label>
               <div>
                 <div className="text-[8pt] font-semibold text-[#d8d2c8]">Shared OneDrive folder</div>
                 <div className="mt-1 flex gap-1.5">
@@ -1229,10 +1190,82 @@ export function NotificationSettingsPage({
                   </label>
                 )}
               </div>
+              <div className="flex justify-end border-t border-[#454542] pt-3">
+                <button
+                  type="submit"
+                  disabled={pageBusy || !stationSettingsDirty}
+                  className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#1d7f47] px-3 text-[8.5pt] font-semibold text-white disabled:opacity-60"
+                >
+                  <Save className="h-3.5 w-3.5" /> Save
+                </button>
+              </div>
+              {saveResult ? <ResultLine result={saveResult} /> : null}
+            </form>
+          ) : null}
+
+          {view === "teams" && advancedUnlocked ? (
+            <form
+              onSubmit={(e) => void handleSave(e)}
+              className="space-y-3 rounded-md border border-[#454542] bg-[#292928] p-4"
+            >
+              <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
+                Destination name
+                <input
+                  value={settings.teams_destination_name}
+                  disabled={pageBusy}
+                  onChange={(e) => updateSettings({ teams_destination_name: e.target.value })}
+                  className={inputClassName}
+                />
+              </label>
+              <div className="rounded-md border border-[#454542] bg-[#242423] px-3 py-2 text-[7.5pt] leading-snug text-[#9a958c]">
+                {settings.floor_sync?.message ||
+                  (settings.shared_shift_log_path
+                    ? "Syncing via shared folder."
+                    : "Shared folder not set — settings stay on this PC only.")}
+              </div>
+              <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
+                Teams webhook URL
+                <input
+                  type="password"
+                  value={settings.teams_webhook_url}
+                  disabled={pageBusy}
+                  onChange={(e) => updateSettings({ teams_webhook_url: e.target.value })}
+                  placeholder={
+                    settings.webhook_configured
+                      ? "Saved webhook configured; enter a URL only to replace it"
+                      : "Paste the Power Automate Workflow URL"
+                  }
+                  className={inputClassName}
+                />
+              </label>
+              <label className="flex min-h-9 items-center gap-2 rounded border border-[#454542] bg-[#242423] px-3 text-[8.5pt]">
+                <input
+                  type="checkbox"
+                  checked={settings.enabled}
+                  disabled={pageBusy}
+                  onChange={(e) => updateSettings({ enabled: e.target.checked })}
+                  className="h-4 w-4 accent-[#1f74ae]"
+                />
+                Notifications enabled
+              </label>
+              <label className="flex min-h-9 items-center gap-2 rounded border border-[#454542] bg-[#242423] px-3 text-[8.5pt]">
+                <input
+                  type="checkbox"
+                  checked={settings.events.changeover}
+                  disabled={pageBusy}
+                  onChange={(event) =>
+                    updateSettings({
+                      events: { ...settings.events, changeover: event.target.checked },
+                    })
+                  }
+                  className="h-4 w-4 accent-[#1f74ae]"
+                />
+                Changeover card after 208V Breaker 8 – 20% Load
+              </label>
               <div className="flex flex-wrap justify-between gap-2 border-t border-[#454542] pt-3">
                 <button
                   type="button"
-                  disabled={pageBusy || stationSettingsDirty}
+                  disabled={pageBusy || settingsDirty}
                   onClick={() => void handleTestPing()}
                   className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#3a3a38] px-3 text-[8.5pt] font-semibold disabled:opacity-60"
                 >
@@ -1240,7 +1273,7 @@ export function NotificationSettingsPage({
                 </button>
                 <button
                   type="submit"
-                  disabled={pageBusy || !stationSettingsDirty}
+                  disabled={pageBusy || !settingsDirty}
                   className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#1d7f47] px-3 text-[8.5pt] font-semibold text-white disabled:opacity-60"
                 >
                   <Save className="h-3.5 w-3.5" /> Save

@@ -101,12 +101,23 @@ function renderSettingsPage(
   return props;
 }
 
-async function unlockAdvancedStationTeams() {
+async function unlockAdvancedMenu() {
   fireEvent.click(await screen.findByRole("button", { name: /^Advanced$/i }));
   fireEvent.change(await screen.findByLabelText("Password"), { target: { value: "0601" } });
   fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
-  fireEvent.click(await screen.findByRole("button", { name: /Station & Teams/i }));
+  await screen.findByRole("heading", { level: 1, name: "Advanced" });
+}
+
+async function unlockAdvancedStationTeams() {
+  await unlockAdvancedMenu();
+  fireEvent.click(screen.getByRole("button", { name: "Station & Identities" }));
   await screen.findByRole("combobox", { name: "This PC identity" });
+}
+
+async function unlockAdvancedTeams() {
+  await unlockAdvancedMenu();
+  fireEvent.click(screen.getByRole("button", { name: "Teams & Notifications" }));
+  await screen.findByLabelText("Teams webhook URL");
 }
 
 afterEach(() => {
@@ -155,16 +166,17 @@ describe("resolveSaveScope / shouldApplySettingsReload", () => {
 
     expect(resolveSaveScope("shifts", base, base, "0601").scope).toBe("operator");
     expect(resolveSaveScope("summaryOptions", base, base, "0601").scope).toBe("operator");
-    expect(resolveSaveScope("station", base, base, "0601").scope).toBe("advanced");
-    expect(resolveSaveScope("station", withPath, base, "0601")).toEqual({
+    expect(resolveSaveScope("identities", base, base, "0601").scope).toBe("identity");
+    expect(resolveSaveScope("teams", base, base, "0601").scope).toBe("teams");
+    expect(resolveSaveScope("identities", withPath, base, "0601")).toEqual({
       scope: "connect",
       connect_password: "0601",
     });
-    expect(resolveSaveScope("station", withPath, base, "0601", "4242")).toEqual({
+    expect(resolveSaveScope("identities", withPath, base, "0601", "4242")).toEqual({
       scope: "connect",
       connect_password: "4242",
     });
-    expect(resolveSaveScope("station", cleared, withPath, "0601").scope).toBe("local");
+    expect(resolveSaveScope("identities", cleared, withPath, "0601").scope).toBe("local");
   });
 
   it("blocks peer reload apply while the form is dirty", () => {
@@ -182,18 +194,30 @@ describe("NotificationSettingsPage", () => {
     expect(screen.getByRole("button", { name: /Summary options/i })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: /End of shift/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Post Summary/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Station & Teams/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Station & Identities" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Teams & Notifications" })).not.toBeInTheDocument();
 
     fireEvent.click(await screen.findByRole("button", { name: /^Advanced$/i }));
     expect(await screen.findByLabelText("Password")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Password"), { target: { value: "0601" } });
     fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
-    expect(await screen.findByRole("button", { name: /Station & Teams/i })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Station & Identities" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Teams & Notifications" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Station & Teams" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^End of shift$/i })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1, name: "Advanced" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Station & Teams/i }));
-    expect(await screen.findByRole("heading", { level: 1, name: "Station & Teams" })).toBeInTheDocument();
-    expect(await screen.findByLabelText("Teams webhook URL")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Station & Identities" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Station & Identities" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "This PC identity" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Shared OneDrive folder")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Teams webhook URL")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to settings menu" }));
+    fireEvent.click(screen.getByRole("button", { name: "Teams & Notifications" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Teams & Notifications" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Teams webhook URL")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "This PC identity" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Shared OneDrive folder")).not.toBeInTheDocument();
   });
 
   it("shows searchable identity controls with immutable id and role details", async () => {
@@ -225,7 +249,7 @@ describe("NotificationSettingsPage", () => {
     await waitFor(() => {
       expect(saveSettings).toHaveBeenCalledWith(
         expect.objectContaining({
-          scope: "advanced",
+          scope: "identity",
           stations: expect.arrayContaining([
             expect.objectContaining({ id: "test-station-3", name: "Test Station 2" }),
           ]),
@@ -344,7 +368,7 @@ describe("NotificationSettingsPage", () => {
     expect(manager).toHaveValue("Unfinished Admin");
   });
 
-  it("saves PDU Lab as this PC identity with advanced scope", async () => {
+  it("saves PDU Lab as this PC identity with identity scope", async () => {
     const saveSettings = vi.fn(async () => null);
     renderSettingsPage({ saveSettings });
     await unlockAdvancedStationTeams();
@@ -357,7 +381,7 @@ describe("NotificationSettingsPage", () => {
     await waitFor(() => {
       expect(saveSettings).toHaveBeenCalledWith(
         expect.objectContaining({
-          scope: "advanced",
+          scope: "identity",
           station_id: "pdu-lab",
           station_name: "PDU Lab",
         }),
@@ -534,7 +558,7 @@ describe("NotificationSettingsPage", () => {
   it("saves the Changeover notification toggle from Advanced", async () => {
     const saveSettings = vi.fn(async () => null);
     renderSettingsPage({ saveSettings });
-    await unlockAdvancedStationTeams();
+    await unlockAdvancedTeams();
 
     fireEvent.click(
       screen.getByRole("checkbox", {
@@ -546,7 +570,7 @@ describe("NotificationSettingsPage", () => {
     await waitFor(() =>
       expect(saveSettings).toHaveBeenCalledWith(
         expect.objectContaining({
-          scope: "advanced",
+          scope: "teams",
           events: expect.objectContaining({ changeover: false }),
         }),
       ),
@@ -591,14 +615,14 @@ describe("NotificationSettingsPage", () => {
     expect(await screen.findByLabelText("Current password")).toBeInTheDocument();
   });
 
-  it("sends a test ping from advanced station page", async () => {
+  it("sends a test ping from Teams & Notifications", async () => {
     const sendTestPing = vi.fn(async () => undefined);
     const getNotificationStatus = vi
       .fn<() => Promise<NotificationRuntimeStatus | null>>()
       .mockResolvedValueOnce(runtimeStatus("ready", "Ready.", "t0"))
       .mockResolvedValueOnce(runtimeStatus("sent", "Test card accepted by the Workflow.", "t1"));
     renderSettingsPage({ sendTestPing, getNotificationStatus });
-    await unlockAdvancedStationTeams();
+    await unlockAdvancedTeams();
     fireEvent.click(screen.getByRole("button", { name: "Send test ping" }));
     await waitFor(() => expect(sendTestPing).toHaveBeenCalledOnce());
     expect(await screen.findByText("Test card accepted by the Workflow.")).toBeInTheDocument();

@@ -191,7 +191,8 @@ It can be checked after a successful pass (or after saving Transformer SN when t
 
 | Open (no password) | Password-locked (Advanced) |
 |--------------------|----------------------------|
-| **Shift & summary options** — windows, who posts, which Floor Stations appear on the card, enable/disable summary | **Station & Teams** — searchable this-PC identity, webhook, shared folder, add/rename identities, Changeover toggle, test ping |
+| **Shift & summary options** — windows, who posts, which Floor Stations appear on the card, enable/disable summary | **Station & Identities** — searchable this-PC identity, shared folder, add/rename identities |
+|  | **Teams & Notifications** — destination, webhook, enable/disable notifications, Changeover toggle, test ping |
 | **End of shift** — preview / post (if this PC is the poster) | **Change password** (shared across PCs when the shared folder is set) |
 
 If the usual poster PC is down, any operator can open **Shift & summary options** and reassign the poster station (no password). With a shared folder configured, that Main assignment syncs to other PCs within about 45 seconds.

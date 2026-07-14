@@ -36,7 +36,7 @@ Each PC Browses its own synced copy. Before rollout: OneDrive fully synced; one 
 These were the first review’s critical items; code now has them:
 
 - Adopt-only **Connect** for an existing floor (no full-form overwrite).
-- Save scopes: **Operator**, **Advanced**, **Connect**, **Local**.
+- Save scopes: **Operator**, **Identity**, **Teams**, **Connect**, **Local**; **Advanced** remains compatible for older callers.
 - Fresh floor read before scoped policy patches.
 - Seed only on explicit Connect when floor file is missing (no ordinary-load reseed).
 - Full local `station_catalog` cache.
@@ -52,7 +52,7 @@ These were the first review’s critical items; code now has them:
 
 ### 1. Dedicated existing-floor password — done
 
-- Station & Teams shows **Existing floor password** when the shared path is new/changed (pending Connect).
+- Station & Identities shows **Existing floor password** when the shared path is new/changed (pending Connect).
 - `resolveSaveScope` prefers that field over Advanced unlock password.
 - WrongFloorPassword keeps the field visible and shows a clear error for retry.
 

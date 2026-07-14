@@ -171,7 +171,13 @@ export interface AppNotificationSettingsView {
 }
 
 /** Matches backend SettingsSaveScope (snake_case). */
-export type SettingsSaveScope = "operator" | "advanced" | "connect" | "local";
+export type SettingsSaveScope =
+  | "operator"
+  | "identity"
+  | "teams"
+  | "advanced"
+  | "connect"
+  | "local";
 
 export type SaveAppNotificationSettingsRequest = Omit<
   AppNotificationSettingsView,

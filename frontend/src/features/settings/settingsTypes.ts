@@ -53,7 +53,13 @@ export type AppNotificationSettingsView = {
 };
 
 /** Which section a save may mutate (matches backend SettingsSaveScope snake_case). */
-export type SettingsSaveScope = "operator" | "advanced" | "connect" | "local";
+export type SettingsSaveScope =
+  | "operator"
+  | "identity"
+  | "teams"
+  | "advanced"
+  | "connect"
+  | "local";
 
 export type SaveNotificationSettingsRequest = Omit<
   AppNotificationSettingsView,
@@ -182,7 +188,8 @@ export function shouldApplySettingsReload(isDirty: boolean): boolean {
 
 /**
  * Decide which backend scope to use for the current save.
- * view is the Settings page view id (home, shifts, summaryOptions, advanced, station, password).
+ * view is the Settings page view id
+ * (home, shifts, summaryOptions, advanced, identities, teams, password).
  */
 export function resolveSaveScope(
   view: string,
@@ -211,14 +218,20 @@ export function resolveSaveScope(
     };
   }
 
-  if (view === "station" || view === "advanced" || view === "password" || view === "home") {
+  if (view === "identities") {
+    return { scope: "identity" };
+  }
+  if (view === "teams") {
+    return { scope: "teams" };
+  }
+  if (view === "advanced" || view === "password" || view === "home") {
     return { scope: "advanced" };
   }
 
   return { scope: "operator" };
 }
 
-/** True when Station & Teams Save will Connect (new/changed shared path). */
+/** True when Station & Identities Save will Connect (new/changed shared path). */
 export function isPendingSharedFolderConnect(
   current: AppNotificationSettingsView | null,
   lastSaved: AppNotificationSettingsView | null,
