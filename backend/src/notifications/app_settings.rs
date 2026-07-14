@@ -101,8 +101,13 @@ pub enum SettingsSaveScope {
     /// Shifts, summary enabled (`events.summary`), Main poster, included stations.
     #[default]
     Operator,
+    /// Shared identity catalog plus this PC's local identity selection.
+    Identity,
+    /// Teams delivery policy and Advanced notification event toggles.
+    Teams,
     /// Webhook, destination, enabled, problem/complete/stuck toggles, idle
-    /// timeout, station display names, this PC `station_id`.
+    /// timeout, station display names, this PC `station_id`. Retained for
+    /// backward compatibility with combined-page callers.
     Advanced,
     /// Set shared path + adopt existing floor OR seed if missing; never clobber
     /// an existing floor with form policy.
@@ -657,6 +662,12 @@ fn save_app_settings_request_unlocked(
         SettingsSaveScope::Operator => {
             save_scoped_policy_unlocked(path, &mut settings, request, SettingsSaveScope::Operator)
         }
+        SettingsSaveScope::Identity => {
+            save_scoped_policy_unlocked(path, &mut settings, request, SettingsSaveScope::Identity)
+        }
+        SettingsSaveScope::Teams => {
+            save_scoped_policy_unlocked(path, &mut settings, request, SettingsSaveScope::Teams)
+        }
         SettingsSaveScope::Advanced => {
             save_scoped_policy_unlocked(path, &mut settings, request, SettingsSaveScope::Advanced)
         }
@@ -790,7 +801,10 @@ fn save_scoped_policy_unlocked(
         return Ok((settings.clone(), None));
     }
 
-    if scope == SettingsSaveScope::Advanced {
+    if matches!(
+        scope,
+        SettingsSaveScope::Identity | SettingsSaveScope::Advanced
+    ) {
         apply_station_id_from_request(settings, request)?;
     }
 
@@ -807,7 +821,10 @@ fn save_scoped_policy_unlocked(
         apply_scope_to_floor(&mut floor, request, scope).map_err(|error| {
             super::floor_settings::FloorSettingsError::Write(error.to_string())
         })?;
-        if scope == SettingsSaveScope::Advanced {
+        if matches!(
+            scope,
+            SettingsSaveScope::Identity | SettingsSaveScope::Advanced
+        ) {
             created_identity = apply_catalog_patch(
                 &mut floor,
                 &request.stations,
@@ -918,18 +935,13 @@ fn apply_scope_to_local(
                 settings,
             )?;
         }
+        SettingsSaveScope::Identity => {
+            apply_station_id_from_request(settings, request)?;
+            apply_station_names_to_catalog(settings, &request.stations)?;
+        }
+        SettingsSaveScope::Teams => apply_teams_scope_to_local(settings, request),
         SettingsSaveScope::Advanced => {
-            settings.enabled = request.enabled;
-            settings.teams_destination_name = match request.teams_destination_name.trim() {
-                "" => default_destination_name(),
-                value => value.to_string(),
-            };
-            apply_webhook_to_string(&mut settings.teams_webhook_url, request);
-            settings.idle_timeout_minutes = request.idle_timeout_minutes;
-            settings.events.problem = request.events.problem;
-            settings.events.complete = request.events.complete;
-            settings.events.changeover = request.events.changeover;
-            settings.events.stuck = request.events.stuck;
+            apply_teams_scope_to_local(settings, request);
             apply_station_id_from_request(settings, request)?;
             apply_station_names_to_catalog(settings, &request.stations)?;
         }
@@ -959,23 +971,48 @@ fn apply_scope_to_floor(
             floor.summary_included_station_ids =
                 normalize_included_station_ids_floor(&request.summary_included_station_ids, floor)?;
         }
-        SettingsSaveScope::Advanced => {
-            floor.enabled = request.enabled;
-            floor.teams_destination_name = match request.teams_destination_name.trim() {
-                "" => default_destination_name(),
-                value => value.to_string(),
-            };
-            apply_webhook_to_string(&mut floor.teams_webhook_url, request);
-            floor.idle_timeout_minutes = request.idle_timeout_minutes;
-            floor.events.problem = request.events.problem;
-            floor.events.complete = request.events.complete;
-            floor.events.changeover = request.events.changeover;
-            floor.events.stuck = request.events.stuck;
+        SettingsSaveScope::Identity => {}
+        SettingsSaveScope::Teams | SettingsSaveScope::Advanced => {
+            apply_teams_scope_to_floor(floor, request)
         }
         SettingsSaveScope::Connect | SettingsSaveScope::Local => {}
     }
     super::floor_settings::validate_floor_settings(floor)?;
     Ok(())
+}
+
+fn apply_teams_scope_to_local(
+    settings: &mut AppNotificationSettings,
+    request: &SaveAppNotificationSettingsRequest,
+) {
+    settings.enabled = request.enabled;
+    settings.teams_destination_name = match request.teams_destination_name.trim() {
+        "" => default_destination_name(),
+        value => value.to_string(),
+    };
+    apply_webhook_to_string(&mut settings.teams_webhook_url, request);
+    settings.idle_timeout_minutes = request.idle_timeout_minutes;
+    settings.events.problem = request.events.problem;
+    settings.events.complete = request.events.complete;
+    settings.events.changeover = request.events.changeover;
+    settings.events.stuck = request.events.stuck;
+}
+
+fn apply_teams_scope_to_floor(
+    floor: &mut FloorSettings,
+    request: &SaveAppNotificationSettingsRequest,
+) {
+    floor.enabled = request.enabled;
+    floor.teams_destination_name = match request.teams_destination_name.trim() {
+        "" => default_destination_name(),
+        value => value.to_string(),
+    };
+    apply_webhook_to_string(&mut floor.teams_webhook_url, request);
+    floor.idle_timeout_minutes = request.idle_timeout_minutes;
+    floor.events.problem = request.events.problem;
+    floor.events.complete = request.events.complete;
+    floor.events.changeover = request.events.changeover;
+    floor.events.stuck = request.events.stuck;
 }
 
 fn apply_webhook_to_string(target: &mut String, request: &SaveAppNotificationSettingsRequest) {
@@ -1922,6 +1959,72 @@ mod tests {
             .expect("floor");
         assert_eq!(floor.station_name_for_id("test-station-1"), "Bay One");
         assert_eq!(floor.summary_poster_station_id, "test-station-3");
+    }
+
+    #[test]
+    fn teams_scoped_save_preserves_identity_catalog_and_local_station() {
+        let directory = tempdir().unwrap();
+        let shared = directory.path().join("shared");
+        let shared_path = shared.to_string_lossy().to_string();
+        let path = directory.path().join(SETTINGS_FILE_NAME);
+
+        save_app_settings_request_to(&path, &connect_request(&shared_path, "test-station-1"))
+            .unwrap();
+        let before = load_app_settings_from(&path).unwrap();
+
+        let mut request = advanced_request();
+        request.scope = SettingsSaveScope::Teams;
+        request.station_id = "pdu-lab".to_string();
+        request.stations = vec![StationCatalogEntry {
+            id: "test-station-1".to_string(),
+            name: "STALE NAME".to_string(),
+            role: StationRole::Floor,
+        }];
+        request.teams_destination_name = "New Teams Destination".to_string();
+
+        let saved = save_app_settings_request_to(&path, &request).unwrap();
+        let floor = try_load_floor_settings(&shared_path).unwrap().unwrap();
+
+        assert_eq!(saved.station_id, before.station_id);
+        assert_eq!(
+            floor.station_name_for_id("test-station-1"),
+            "Test Station 1"
+        );
+        assert_eq!(floor.teams_destination_name, "New Teams Destination");
+    }
+
+    #[test]
+    fn identity_scoped_save_preserves_teams_policy() {
+        let directory = tempdir().unwrap();
+        let shared = directory.path().join("shared");
+        let shared_path = shared.to_string_lossy().to_string();
+        let path = directory.path().join(SETTINGS_FILE_NAME);
+
+        save_app_settings_request_to(&path, &connect_request(&shared_path, "test-station-1"))
+            .unwrap();
+        let before_floor = try_load_floor_settings(&shared_path).unwrap().unwrap();
+
+        let mut request = advanced_request();
+        request.scope = SettingsSaveScope::Identity;
+        request.station_id = "pdu-lab".to_string();
+        request.stations = vec![StationCatalogEntry {
+            id: "test-station-1".to_string(),
+            name: "Bay One".to_string(),
+            role: StationRole::Floor,
+        }];
+        request.enabled = !before_floor.enabled;
+        request.teams_destination_name = "STALE DESTINATION".to_string();
+
+        let saved = save_app_settings_request_to(&path, &request).unwrap();
+        let floor = try_load_floor_settings(&shared_path).unwrap().unwrap();
+
+        assert_eq!(saved.station_id, "pdu-lab");
+        assert_eq!(floor.station_name_for_id("test-station-1"), "Bay One");
+        assert_eq!(floor.enabled, before_floor.enabled);
+        assert_eq!(
+            floor.teams_destination_name,
+            before_floor.teams_destination_name
+        );
     }
 
     #[test]
