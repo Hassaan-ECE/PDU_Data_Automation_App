@@ -109,6 +109,7 @@ export function NotificationSettingsPage({
   const [thisPcIdentityQuery, setThisPcIdentityQuery] = useState("");
   const [identityDraft, setIdentityDraft] = useState("");
   const [managedIdentityId, setManagedIdentityId] = useState<string | null>(null);
+  const [renameOriginalName, setRenameOriginalName] = useState("");
   const [catalogCreate, setCatalogCreate] = useState<CatalogCreateRequest | null>(null);
 
   const [settings, setSettings] = useState<AppNotificationSettingsView | null>(null);
@@ -285,6 +286,7 @@ export function NotificationSettingsPage({
     }
     setIdentityDraft("");
     setManagedIdentityId(null);
+    setRenameOriginalName("");
     setCatalogCreate(null);
     setPasswordFields(emptyPasswordFields);
     setSaveResult(null);
@@ -326,7 +328,11 @@ export function NotificationSettingsPage({
       setSaveResult({ tone: "error", text: shiftValidationError });
       return false;
     }
-    if (view === "identities" && thisPcIdentityQuery !== settings.station_name) {
+    if (
+      view === "identities" &&
+      thisPcIdentityQuery !== settings.station_name &&
+      !catalogCreate
+    ) {
       setSaveResult({
         tone: "error",
         text: "Choose an identity from the This PC identity list before saving.",
@@ -364,6 +370,7 @@ export function NotificationSettingsPage({
       setThisPcIdentityQuery(nextSettings.station_name);
       setIdentityDraft("");
       setManagedIdentityId(null);
+      setRenameOriginalName("");
       setCatalogCreate(null);
       setFloorConnectPassword("");
       setFloorPasswordPromptOpen(false);
@@ -691,6 +698,8 @@ export function NotificationSettingsPage({
   }
 
   const floorStations = settings?.stations.filter((station) => station.role === "floor") ?? [];
+  const selectedIdentity =
+    settings?.stations.find((station) => station.id === settings.station_id) ?? null;
 
   return (
     <main className="flex h-screen min-h-[400px] w-full min-w-[360px] max-w-full flex-col overflow-hidden bg-[#20201f] text-white">
@@ -1037,16 +1046,33 @@ export function NotificationSettingsPage({
                   entries={settings.stations}
                   value={thisPcIdentityQuery}
                   disabled={pageBusy}
-                  onValueChange={setThisPcIdentityQuery}
+                  allowCreate
+                  placeholder="Search or add an identity"
+                  onValueChange={(name) => {
+                    setThisPcIdentityQuery(name);
+                    if (catalogCreate) {
+                      setCatalogCreate({ ...catalogCreate, name });
+                    }
+                  }}
                   onSelect={(identity) => {
                     setThisPcIdentityQuery(identity.name);
+                    setIdentityDraft("");
+                    setManagedIdentityId(null);
+                    setRenameOriginalName("");
+                    setCatalogCreate(null);
                     updateSettings({
                       station_id: identity.id,
                       station_name: identity.name,
                       is_summary_poster: identity.id === settings.summary_poster_station_id,
                     });
                   }}
-                  onCreate={() => undefined}
+                  onCreate={(name, role) => {
+                    setThisPcIdentityQuery(name);
+                    setIdentityDraft("");
+                    setManagedIdentityId(null);
+                    setRenameOriginalName("");
+                    setCatalogCreate({ name, role, select_for_this_pc: true });
+                  }}
                 />
               </div>
               <div className="rounded-md border border-[#454542] bg-[#242423] px-3 py-2 text-[7.5pt] leading-snug text-[#9a958c]">
@@ -1055,87 +1081,86 @@ export function NotificationSettingsPage({
                     ? "Syncing via shared folder."
                     : "Shared folder not set — settings stay on this PC only.")}
               </div>
-              <div>
-                <div className="text-[8pt] font-semibold text-[#d8d2c8]">Manage identities</div>
-                <p className="mt-1 text-[7.5pt] leading-snug text-[#9a958c]">
-                  Select an identity to rename it, or type a new unique name and choose whether
-                  it is a Floor Station or Admin Identity. Stable ids never change.
-                </p>
-                <div className="mt-2 space-y-2">
-                  <IdentityCombobox
-                    label="Manage identities"
-                    entries={settings.stations}
-                    value={identityDraft}
-                    disabled={pageBusy}
-                    allowCreate
-                    placeholder="Search, rename, or add an identity"
-                    onValueChange={(name) => {
-                      setIdentityDraft(name);
-                      if (catalogCreate) {
-                        setCatalogCreate({ ...catalogCreate, name });
-                      }
-                      if (!managedIdentityId) return;
-                      const stations = settings.stations.map((entry) =>
-                        entry.id === managedIdentityId ? { ...entry, name } : entry,
-                      );
-                      updateSettings({
-                        stations,
-                        station_name:
-                          settings.station_id === managedIdentityId
-                            ? name
-                            : settings.station_name,
-                      });
-                      if (settings.station_id === managedIdentityId) {
-                        setThisPcIdentityQuery(name);
-                      }
-                    }}
-                    onSelect={(identity) => {
-                      setManagedIdentityId(identity.id);
-                      setIdentityDraft(identity.name);
-                      setCatalogCreate(null);
-                    }}
-                    onCreate={(name, role) => {
-                      setManagedIdentityId(null);
-                      setIdentityDraft(name);
-                      setCatalogCreate({ name, role, select_for_this_pc: false });
-                    }}
-                  />
-                  {managedIdentityId ? (
-                    <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-[#454542] bg-[#242423] px-3 py-2 text-[7.5pt] text-[#9a958c]">
-                      <span>{managedIdentityId}</span>
-                      <span>
-                        {identityRoleLabel(
-                          settings.stations.find((entry) => entry.id === managedIdentityId)?.role ??
-                            "floor",
-                        )}
-                      </span>
-                    </div>
-                  ) : null}
-                  {catalogCreate ? (
-                    <div className="rounded border border-[#1f74ae]/50 bg-[#1f74ae]/10 px-3 py-2">
-                      <div className="flex flex-wrap items-center justify-between gap-2 text-[7.5pt] text-[#b8ddf5]">
-                        <span>New {identityRoleLabel(catalogCreate.role)}</span>
-                        <span>Stable id assigned on Save</span>
-                      </div>
-                      <label className="mt-2 flex items-center gap-2 text-[8pt] font-semibold text-[#d8d2c8]">
+              {selectedIdentity && !catalogCreate ? (
+                <div className="space-y-2 rounded border border-[#454542] bg-[#242423] px-3 py-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[7.5pt] text-[#9a958c]">
+                    <span>{selectedIdentity.id}</span>
+                    <span>{identityRoleLabel(selectedIdentity.role)}</span>
+                  </div>
+                  {managedIdentityId === selectedIdentity.id ? (
+                    <div className="space-y-2">
+                      <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
+                        Rename selected identity
                         <input
-                          type="checkbox"
-                          checked={catalogCreate.select_for_this_pc}
+                          value={identityDraft}
                           disabled={pageBusy}
-                          onChange={(event) =>
-                            setCatalogCreate({
-                              ...catalogCreate,
-                              select_for_this_pc: event.target.checked,
-                            })
-                          }
-                          className="h-4 w-4 accent-[#1f74ae]"
+                          maxLength={64}
+                          aria-label="Rename selected identity"
+                          onChange={(event) => {
+                            const name = event.target.value;
+                            setIdentityDraft(name);
+                            setThisPcIdentityQuery(name);
+                            updateSettings({
+                              stations: settings.stations.map((entry) =>
+                                entry.id === selectedIdentity.id ? { ...entry, name } : entry,
+                              ),
+                              station_name: name,
+                            });
+                          }}
+                          className={inputClassName}
                         />
-                        Use on this PC
                       </label>
+                      <button
+                        type="button"
+                        disabled={pageBusy}
+                        onClick={() => {
+                          setIdentityDraft("");
+                          setManagedIdentityId(null);
+                          setThisPcIdentityQuery(renameOriginalName);
+                          updateSettings({
+                            stations: settings.stations.map((entry) =>
+                              entry.id === selectedIdentity.id
+                                ? { ...entry, name: renameOriginalName }
+                                : entry,
+                            ),
+                            station_name: renameOriginalName,
+                          });
+                          setRenameOriginalName("");
+                        }}
+                        className="rounded border border-[#454542] bg-[#3a3a38] px-2 py-1 text-[7.5pt] font-semibold text-[#d8d2c8]"
+                      >
+                        Cancel rename
+                      </button>
                     </div>
-                  ) : null}
+                  ) : (
+                    <button
+                      type="button"
+                      aria-label={`Rename ${selectedIdentity.name}`}
+                      disabled={pageBusy}
+                      onClick={() => {
+                        setManagedIdentityId(selectedIdentity.id);
+                        setIdentityDraft(selectedIdentity.name);
+                        setRenameOriginalName(selectedIdentity.name);
+                        setCatalogCreate(null);
+                      }}
+                      className="rounded border border-[#454542] bg-[#3a3a38] px-2 py-1 text-[7.5pt] font-semibold text-[#d8d2c8]"
+                    >
+                      Rename
+                    </button>
+                  )}
                 </div>
-              </div>
+              ) : null}
+              {catalogCreate ? (
+                <div className="rounded border border-[#1f74ae]/50 bg-[#1f74ae]/10 px-3 py-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[7.5pt] text-[#b8ddf5]">
+                    <span>New {identityRoleLabel(catalogCreate.role)}</span>
+                    <span>Stable id assigned on Save</span>
+                  </div>
+                  <p className="mt-2 text-[8pt] font-semibold text-[#d8d2c8]">
+                    Will be used on this PC
+                  </p>
+                </div>
+              ) : null}
               <div>
                 <div className="text-[8pt] font-semibold text-[#d8d2c8]">Shared OneDrive folder</div>
                 <div className="mt-1 flex gap-1.5">

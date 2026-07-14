@@ -220,17 +220,16 @@ describe("NotificationSettingsPage", () => {
     expect(screen.queryByLabelText("Shared OneDrive folder")).not.toBeInTheDocument();
   });
 
-  it("shows searchable identity controls with immutable id and role details", async () => {
+  it("uses one searchable identity control with immutable id and role details", async () => {
     renderSettingsPage();
     await unlockAdvancedStationTeams();
 
     expect(screen.getByRole("combobox", { name: "This PC identity" })).toHaveValue(
       "Test Station 3",
     );
-    expect(screen.getByRole("combobox", { name: "Manage identities" })).toBeInTheDocument();
-
-    fireEvent.focus(screen.getByRole("combobox", { name: "Manage identities" }));
-    fireEvent.click(screen.getByRole("option", { name: /Test Station 3.*Floor Station/i }));
+    expect(
+      screen.queryByRole("combobox", { name: "Manage identities" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("test-station-3")).toBeInTheDocument();
     expect(screen.getByText("Floor Station")).toBeInTheDocument();
   });
@@ -240,10 +239,10 @@ describe("NotificationSettingsPage", () => {
     renderSettingsPage({ saveSettings });
     await unlockAdvancedStationTeams();
 
-    const manager = screen.getByRole("combobox", { name: "Manage identities" });
-    fireEvent.focus(manager);
-    fireEvent.click(screen.getByRole("option", { name: /Test Station 3.*Floor Station/i }));
-    fireEvent.change(manager, { target: { value: "Test Station 2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Rename Test Station 3" }));
+    fireEvent.change(screen.getByLabelText("Rename selected identity"), {
+      target: { value: "Test Station 2" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
@@ -271,17 +270,19 @@ describe("NotificationSettingsPage", () => {
     renderSettingsPage({ saveSettings });
     await unlockAdvancedStationTeams();
 
-    const manager = screen.getByRole("combobox", { name: "Manage identities" });
-    fireEvent.change(manager, { target: { value: "Syed Admin" } });
+    const identity = screen.getByRole("combobox", { name: "This PC identity" });
+    fireEvent.change(identity, { target: { value: "Syed Admin" } });
     fireEvent.click(
       screen.getByRole("option", { name: /Add Syed Admin as Admin Identity/i }),
     );
-    fireEvent.click(screen.getByRole("checkbox", { name: "Use on this PC" }));
+    expect(screen.getByText("Will be used on this PC")).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Use on this PC" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(saveSettings).toHaveBeenCalledWith(
         expect.objectContaining({
+          scope: "identity",
           catalog_create: {
             name: "Syed Admin",
             role: "admin",
@@ -298,6 +299,8 @@ describe("NotificationSettingsPage", () => {
   it("adds a floor station and includes it in operator summary controls", async () => {
     const saveSettings = vi.fn(async () => ({
       ...settingsFixture(),
+      station_id: "identity-floor-1",
+      station_name: "Bay Five",
       stations: [
         ...settingsFixture().stations,
         { id: "identity-floor-1", name: "Bay Five", role: "floor" as const },
@@ -310,8 +313,8 @@ describe("NotificationSettingsPage", () => {
     renderSettingsPage({ saveSettings });
     await unlockAdvancedStationTeams();
 
-    const manager = screen.getByRole("combobox", { name: "Manage identities" });
-    fireEvent.change(manager, { target: { value: "Bay Five" } });
+    const identity = screen.getByRole("combobox", { name: "This PC identity" });
+    fireEvent.change(identity, { target: { value: "Bay Five" } });
     fireEvent.click(screen.getByRole("option", { name: /Add Bay Five as Floor Station/i }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -321,7 +324,7 @@ describe("NotificationSettingsPage", () => {
           catalog_create: {
             name: "Bay Five",
             role: "floor",
-            select_for_this_pc: false,
+            select_for_this_pc: true,
           },
         }),
       ),
@@ -334,7 +337,7 @@ describe("NotificationSettingsPage", () => {
     expect(screen.getByLabelText("Include Bay Five")).toBeInTheDocument();
   });
 
-  it("supports keyboard selection and Escape on identity comboboxes", async () => {
+  it("supports keyboard selection and Escape on the identity combobox", async () => {
     renderSettingsPage();
     await unlockAdvancedStationTeams();
 
@@ -344,11 +347,10 @@ describe("NotificationSettingsPage", () => {
     fireEvent.keyDown(thisPc, { key: "Enter" });
     expect(thisPc).toHaveValue("Test Station 1");
 
-    const manager = screen.getByRole("combobox", { name: "Manage identities" });
-    fireEvent.focus(manager);
-    expect(manager).toHaveAttribute("aria-expanded", "true");
-    fireEvent.keyDown(manager, { key: "Escape" });
-    expect(manager).toHaveAttribute("aria-expanded", "false");
+    fireEvent.focus(thisPc);
+    expect(thisPc).toHaveAttribute("aria-expanded", "true");
+    fireEvent.keyDown(thisPc, { key: "Escape" });
+    expect(thisPc).toHaveAttribute("aria-expanded", "false");
   });
 
   it("keeps a staged identity search intact instead of applying the open-settings poll", async () => {
@@ -357,15 +359,15 @@ describe("NotificationSettingsPage", () => {
     renderSettingsPage({ loadSettings });
     await unlockAdvancedStationTeams();
 
-    const manager = screen.getByRole("combobox", { name: "Manage identities" });
-    fireEvent.change(manager, { target: { value: "Unfinished Admin" } });
+    const identity = screen.getByRole("combobox", { name: "This PC identity" });
+    fireEvent.change(identity, { target: { value: "Unfinished Admin" } });
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(45_000);
     });
 
     expect(loadSettings).toHaveBeenCalledTimes(1);
-    expect(manager).toHaveValue("Unfinished Admin");
+    expect(identity).toHaveValue("Unfinished Admin");
   });
 
   it("saves PDU Lab as this PC identity with identity scope", async () => {
@@ -389,7 +391,7 @@ describe("NotificationSettingsPage", () => {
     });
   });
 
-  it("uses renamed station names on operator summary labels", async () => {
+  it("shows Admin identities in Advanced but not on operator summary labels", async () => {
     renderSettingsPage({
       loadSettings: vi.fn(async () =>
         settingsFixture({
@@ -411,6 +413,14 @@ describe("NotificationSettingsPage", () => {
     expect(screen.getByLabelText("Include Main Desk")).toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: "Syed Admin main poster" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Include Syed Admin")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to settings menu" }));
+    await unlockAdvancedStationTeams();
+    const identity = screen.getByRole("combobox", { name: "This PC identity" });
+    fireEvent.focus(identity);
+    expect(
+      screen.getByRole("option", { name: /Syed Admin.*Admin Identity/i }),
+    ).toBeInTheDocument();
   });
 
   it("lets operators set main poster and included stations with operator scope", async () => {

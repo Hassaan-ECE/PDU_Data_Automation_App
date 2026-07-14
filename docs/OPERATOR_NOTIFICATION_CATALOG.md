@@ -191,7 +191,7 @@ It can be checked after a successful pass (or after saving Transformer SN when t
 
 | Open (no password) | Password-locked (Advanced) |
 |--------------------|----------------------------|
-| **Shift & summary options** — windows, who posts, which Floor Stations appear on the card, enable/disable summary | **Station & Identities** — searchable this-PC identity, shared folder, add/rename identities |
+| **Shift & summary options** — windows, who posts, which Floor Stations appear on the card, enable/disable summary | **Station & Identities** — one searchable this-PC identity control, shared folder, add/rename identities |
 |  | **Teams & Notifications** — destination, webhook, enable/disable notifications, Changeover toggle, test ping |
 | **End of shift** — preview / post (if this PC is the poster) | **Change password** (shared across PCs when the shared folder is set) |
 
@@ -200,8 +200,9 @@ If the usual poster PC is down, any operator can open **Shift & summary options*
 ## Identity notes (current floor)
 
 - The original stable ids remain: `test-station-1`, `test-station-3`, `test-station-4`, `pdu-lab`
-- Advanced → **Manage identities** can rename an existing identity or add a new **Floor Station** / **Admin Identity**; generated stable ids do not change when names change
-- A Floor Station may be Main and appear in summary controls. An Admin Identity may identify a desk PC but never appears in Main/summary choices
+- Advanced → **Station & Identities** uses one identity field: choose an existing identity, or type a unique name and add a new **Floor Station** / **Admin Identity**. A new identity is automatically assigned to that PC. Use **Rename** on the selected identity to change its display name; generated stable ids do not change
+- A Floor Station may be Main and appear in summary controls. An Admin Identity may identify a desk PC and remains selectable in password-locked Advanced, but never appears in password-free Main/summary choices
+- If the shared folder is configured and reachable but `floor_settings.json` is missing, an intentional Identity Save recreates it before applying the add/rename. Normal loading and unrelated saves do not recreate it
 - **Upgrade every PC that uses the shared floor before adding the first new identity.** That first add upgrades `floor_settings.json` to schema 2
 - Lab PC can keep the **pdu-lab** identity; end-of-shift poster defaults to it
 - Phones only ring if that person is in **PDU Testing** and has Teams notifications enabled for the chat
