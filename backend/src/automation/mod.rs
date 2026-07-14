@@ -663,7 +663,12 @@ pub fn process_task(
     process_task_at(unit_folder, task_id, current_time_millis())
 }
 
-fn process_task_at(
+/// Deterministic-clock entry point used by integration tests.
+///
+/// Production Tauri commands call [`process_task`], which always supplies the
+/// current system clock and cannot bypass readiness.
+#[doc(hidden)]
+pub fn process_task_at(
     unit_folder: String,
     task_id: String,
     now_ms: u64,

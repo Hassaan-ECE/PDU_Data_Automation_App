@@ -2,7 +2,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use pdu_data_automation_app_lib::automation::{process_task, scan_unit_folder};
+use pdu_data_automation_app_lib::automation::{process_task_at, scan_unit_folder};
 use tempfile::TempDir;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -31,9 +31,10 @@ fn transformer_csv_required_value_errors_fail_clearly_without_zero_fallback() {
         fs::create_dir_all(&unit_folder).expect("unit folder");
         copy_csv_fixture(&unit_folder, case.fixture);
 
-        let result = process_task(
+        let result = process_task_at(
             unit_folder.display().to_string(),
             "208v-transformer".to_string(),
+            u64::MAX,
         )
         .expect("known task should process to a task result");
 
@@ -59,15 +60,17 @@ fn system_burn_in_step72_fixture_writes_report_capture_values() {
     let temp = TempDir::new().expect("temp dir");
     let unit_folder = temp.path().join("262343000072");
     fs::create_dir_all(&unit_folder).expect("unit folder");
+    copy_csv_fixture(&unit_folder, "sample_STEP71_SYSTEM_BURN_IN_SOAK.csv");
     copy_csv_fixture(
         &unit_folder,
         "valid_STEP72_SYSTEM_ACCURACY_TEST_DATA_AVG_report_capture.csv",
     );
     write_burn_in_workbooks(&unit_folder);
 
-    let result = process_task(
+    let result = process_task_at(
         unit_folder.display().to_string(),
         "system-burn-in".to_string(),
+        u64::MAX,
     )
     .expect("known task should process");
 
@@ -100,16 +103,17 @@ fn system_burn_in_step71_alone_is_detected_but_not_used_for_report_capture() {
 
     assert_eq!(burn_in.detected_steps, vec![71]);
 
-    let result = process_task(
+    let result = process_task_at(
         unit_folder.display().to_string(),
         "system-burn-in".to_string(),
+        u64::MAX,
     )
     .expect("known task should process to a task result");
 
-    assert_eq!(result.state, "warning", "{}", result.message);
-    assert_eq!(result.code, 3);
+    assert_eq!(result.state, "waiting", "{}", result.message);
+    assert_eq!(result.code, 2);
     assert!(
-        result.message.contains("no matching STEP72 CSV"),
+        result.message.contains("waiting for matching STEP72"),
         "STEP71 soak data must not satisfy STEP72 report capture: {}",
         result.message
     );
@@ -137,9 +141,10 @@ fn system_burn_in_uses_step72_values_when_step71_and_step72_exist() {
 
     assert_eq!(burn_in.detected_steps, vec![71, 72]);
 
-    let result = process_task(
+    let result = process_task_at(
         unit_folder.display().to_string(),
         "system-burn-in".to_string(),
+        u64::MAX,
     )
     .expect("known task should process");
 
