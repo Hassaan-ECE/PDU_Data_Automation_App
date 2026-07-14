@@ -105,6 +105,7 @@ export function OperatorPanel() {
   const [scrollCue, setScrollCue] = useState({ top: false, bottom: false });
   const [currentStepFollowMode, setCurrentStepFollowMode] = useState(false);
   const [taskStates, setTaskStates] = useState<Record<string, TaskState>>({});
+  const [latestTaskStatuses, setLatestTaskStatuses] = useState<BackendTaskStatusMap>({});
   const [failureNotices, setFailureNotices] = useState<Record<string, TaskFailureNotice>>({});
   const [processDetectedBacklog, setProcessDetectedBacklog] = useState<boolean | null>(null);
   const [reportPath, setReportPath] = useState("");
@@ -145,12 +146,12 @@ export function OperatorPanel() {
         ? remainingSecondsForTasks(
             allTaskOrder,
             taskStates,
-            latestTaskStatusesRef.current,
+            latestTaskStatuses,
             currentTaskId,
             nowMs,
           )
         : 0,
-    [allTaskOrder, currentTaskId, nowMs, taskStates, unitFolder],
+    [allTaskOrder, currentTaskId, latestTaskStatuses, nowMs, taskStates, unitFolder],
   );
   const announceUpdateStatus = useCallback((message: string) => setLastMessage(message), []);
   const { handleUpdateAction, updateState } = useDesktopUpdates({
@@ -473,7 +474,9 @@ export function OperatorPanel() {
     detectedCountRef.current = summary.detected_count;
     setDetectedCount(summary.detected_count);
     setSetupWarnings(summary.warnings);
-    latestTaskStatusesRef.current = backendTaskStatusMap(summary.tasks);
+    const taskStatuses = backendTaskStatusMap(summary.tasks);
+    latestTaskStatusesRef.current = taskStatuses;
+    setLatestTaskStatuses(taskStatuses);
     setNowMs(Date.now());
 
     if (replace) {
@@ -860,6 +863,7 @@ export function OperatorPanel() {
     setProcessDetectedBacklog(null);
     processDetectedBacklogRef.current = null;
     latestTaskStatusesRef.current = {};
+    setLatestTaskStatuses({});
     setFailureNotices({});
     setPrintReadinessBlockers([]);
     resetTransformerSnState();
@@ -1003,6 +1007,7 @@ export function OperatorPanel() {
       setProcessDetectedBacklog(null);
       processDetectedBacklogRef.current = null;
       latestTaskStatusesRef.current = {};
+      setLatestTaskStatuses({});
       setResetClearsSelectionNext(false);
       resetTransformerSnState();
       setLastMessage("");
@@ -1026,6 +1031,7 @@ export function OperatorPanel() {
     }
     setCurrentStepFollowMode(false);
     latestTaskStatusesRef.current = {};
+    setLatestTaskStatuses({});
     setFailureNotices({});
     activateTask(null);
     setExpandedIds(new Set());
