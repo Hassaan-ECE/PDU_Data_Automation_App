@@ -93,7 +93,7 @@ export function OperatorPanel() {
   const allTaskOrder = useMemo(() => flattenTasks(legacyPanelItems), []);
   const [unitFolder, setUnitFolder] = useState("");
   const [serialNumber, setSerialNumber] = useState("");
-  const [remainingSeconds, setRemainingSeconds] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [isRunning, setIsRunning] = useState(false);
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
@@ -138,6 +138,19 @@ export function OperatorPanel() {
   const detectedTaskCount = useMemo(
     () => detectedTaskCountFromStates(taskStates),
     [taskStates],
+  );
+  const remainingSeconds = useMemo(
+    () =>
+      unitFolder
+        ? remainingSecondsForTasks(
+            allTaskOrder,
+            taskStates,
+            latestTaskStatusesRef.current,
+            currentTaskId,
+            nowMs,
+          )
+        : 0,
+    [allTaskOrder, currentTaskId, nowMs, taskStates, unitFolder],
   );
   const announceUpdateStatus = useCallback((message: string) => setLastMessage(message), []);
   const { handleUpdateAction, updateState } = useDesktopUpdates({
@@ -259,10 +272,7 @@ export function OperatorPanel() {
       return;
     }
 
-    const handle = window.setInterval(
-      () => setRemainingSeconds((value) => Math.max(0, value - 1)),
-      1000,
-    );
+    const handle = window.setInterval(() => setNowMs(Date.now()), 1000);
 
     return () => window.clearInterval(handle);
   }, [isRunning]);
@@ -430,36 +440,19 @@ export function OperatorPanel() {
         setCurrentStepFollowMode(false);
       }
 
-      setRemainingSeconds(
-        remainingSecondsForTasks(
-          allTaskOrder,
-          taskStatesRef.current,
-          latestTaskStatusesRef.current,
-          taskId,
-        ),
-      );
-
       if (taskId) {
         expandForTask(taskId);
       }
     },
-    [allTaskOrder, expandForTask],
+    [expandForTask],
   );
 
   const replaceTaskStates = useCallback(
     (states: Record<string, TaskState>) => {
       taskStatesRef.current = states;
       setTaskStates(states);
-      setRemainingSeconds(
-        remainingSecondsForTasks(
-          allTaskOrder,
-          states,
-          latestTaskStatusesRef.current,
-          currentTaskIdRef.current,
-        ),
-      );
     },
-    [allTaskOrder],
+    [],
   );
 
   const updateTaskState = useCallback(
@@ -481,6 +474,7 @@ export function OperatorPanel() {
     setDetectedCount(summary.detected_count);
     setSetupWarnings(summary.warnings);
     latestTaskStatusesRef.current = backendTaskStatusMap(summary.tasks);
+    setNowMs(Date.now());
 
     if (replace) {
       setFailureNotices({});
@@ -861,7 +855,6 @@ export function OperatorPanel() {
     setRunnerActive(false);
     stopAfterCurrentTaskRef.current = false;
     setResetClearsSelectionNext(false);
-    setRemainingSeconds(0);
     setReportPath("");
     setPrintReportPath("");
     setProcessDetectedBacklog(null);
@@ -978,7 +971,6 @@ export function OperatorPanel() {
       setTaskStates({});
       setFailureNotices({});
       setExpandedIds(new Set());
-      setRemainingSeconds(0);
       setReportPath("");
       setPrintReportPath("");
       setResetClearsSelectionNext(false);
@@ -1026,7 +1018,6 @@ export function OperatorPanel() {
 
     stopAfterCurrentTaskRef.current = false;
     setRunnerActive(false);
-    setRemainingSeconds(0);
     setProcessDetectedBacklog(null);
     processDetectedBacklogRef.current = null;
     setConfirmedSetupFolder("");

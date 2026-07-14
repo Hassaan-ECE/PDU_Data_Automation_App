@@ -139,7 +139,7 @@ export function findNextTaskForRunner(
   const inProgressDetectedTask = tasks.find((task) => {
     const state = states[task.id] ?? task.state;
 
-    return state === "detected" && detectedCsvStillInProgress(task.id, backendTasks[task.id]);
+    return state === "detected" && detectedCsvStillInProgress(backendTasks[task.id]);
   });
 
   if (inProgressDetectedTask) {
@@ -165,24 +165,45 @@ export function taskDurationSeconds(taskId: string) {
   return DEFAULT_LOAD_DURATION_SECONDS;
 }
 
-export function csvWaitSecondsRemaining(taskId: string, task: BackendTaskStatus | undefined) {
-  const timerStartMs = task?.timer_start_ms ?? task?.latest_csv_created_ms;
-
-  if (!timerStartMs) {
+export function taskSecondsRemaining(task: BackendTaskStatus | undefined, nowMs: number) {
+  if (!task || task.process_ready || task.wait_phase === "ready") {
     return 0;
   }
 
-  const elapsedSeconds = Math.floor(Math.max(0, Date.now() - timerStartMs) / 1000);
+  if (task.phase_deadline_ms === null) {
+    return task.pending_duration_seconds;
+  }
 
-  return Math.max(0, taskDurationSeconds(taskId) - elapsedSeconds);
+  const deadlineSeconds = Math.max(0, Math.ceil((task.phase_deadline_ms - nowMs) / 1000));
+
+  return deadlineSeconds + task.pending_duration_seconds;
 }
 
-export function detectedCsvStillInProgress(taskId: string, task: BackendTaskStatus | undefined) {
-  return csvWaitSecondsRemaining(taskId, task) > 0 || task?.latest_csv_readable === false;
+export function readinessMessage(task: BackendTaskStatus) {
+  switch (task.wait_phase) {
+    case "soaking":
+      return "System Burn-In STEP71 soak in progress";
+    case "waiting_step72":
+      return "Waiting for STEP72 burn-in capture";
+    case "capturing":
+      return "STEP72 burn-in capture stabilizing";
+    case "waiting_unlock":
+      return `Waiting for ${task.label} CSV to unlock`;
+    case "timing":
+      return `Waiting for ${task.label} CSV timer`;
+    case "awaiting_csv":
+      return `Waiting for ${task.label} CSV`;
+    case "ready":
+      return `${task.label} ready`;
+  }
 }
 
-export function shouldProcessDetectedCsv(taskId: string, task: BackendTaskStatus | undefined) {
-  return csvWaitSecondsRemaining(taskId, task) <= 0 && task?.latest_csv_readable !== false;
+export function detectedCsvStillInProgress(task: BackendTaskStatus | undefined) {
+  return task?.process_ready !== true;
+}
+
+export function shouldProcessDetectedCsv(task: BackendTaskStatus | undefined) {
+  return task?.process_ready === true;
 }
 
 export function readyDetectedBacklogTaskIds(
@@ -194,7 +215,10 @@ export function readyDetectedBacklogTaskIds(
     .filter((task) => {
       const state = states[task.id] ?? task.state;
 
-      return state === "detected" && shouldProcessDetectedCsv(task.id, backendTasks[task.id]);
+      return (
+        (state === "detected" || state === "waiting") &&
+        shouldProcessDetectedCsv(backendTasks[task.id])
+      );
     })
     .map((task) => task.id);
 }
@@ -208,16 +232,14 @@ function taskRemainingSeconds(
   state: TaskState,
   backendTask: BackendTaskStatus | undefined,
   isCurrentTask: boolean,
+  nowMs: number,
 ) {
   if (isTerminalState(state)) {
     return 0;
   }
 
-  const csvRemaining = csvWaitSecondsRemaining(task.id, backendTask);
-  const hasDetectedCsv = state === "detected" || backendTask?.state === "detected";
-
-  if (hasDetectedCsv) {
-    return csvRemaining;
+  if (backendTask) {
+    return taskSecondsRemaining(backendTask, nowMs);
   }
 
   if (isCurrentTask || state === "off" || state === "waiting" || state === "warning") {
@@ -232,11 +254,18 @@ export function remainingSecondsForTasks(
   states: Record<string, TaskState>,
   backendTasks: BackendTaskStatusMap,
   currentTaskId: string | null,
+  nowMs: number,
 ) {
   return tasks.reduce((total, task) => {
     const state = states[task.id] ?? task.state;
 
-    return total + taskRemainingSeconds(task, state, backendTasks[task.id], task.id === currentTaskId);
+    return total + taskRemainingSeconds(
+      task,
+      state,
+      backendTasks[task.id],
+      task.id === currentTaskId,
+      nowMs,
+    );
   }, 0);
 }
 

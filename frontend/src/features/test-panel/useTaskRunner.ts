@@ -19,6 +19,7 @@ import {
   detectedTaskCountFromStates,
   findNextTaskForRunner,
   messageFromUnknownError,
+  readinessMessage,
   readyDetectedBacklogTaskIds,
   shouldProcessDetectedCsv,
 } from "./panelLogic";
@@ -372,7 +373,7 @@ export function useTaskRunner({
               const hasDetectedBacklogRemaining = allTaskOrder.some((task) => {
                 const state = taskStatesRef.current[task.id] ?? task.state;
 
-                return state === "detected";
+                return state === "detected" || state === "waiting";
               });
 
               if (!hasDetectedBacklogRemaining) {
@@ -410,7 +411,10 @@ export function useTaskRunner({
         activateTask(nextTask.id);
         const state = taskStatesRef.current[nextTask.id] ?? nextTask.state;
 
-        if (state === "detected" && shouldProcessDetectedCsv(nextTask.id, latestTaskStatusesRef.current[nextTask.id])) {
+        if (
+          (state === "detected" || state === "waiting") &&
+          shouldProcessDetectedCsv(latestTaskStatusesRef.current[nextTask.id])
+        ) {
           const resultState = await runTask(nextTask.id, true);
 
           if (
@@ -444,7 +448,10 @@ export function useTaskRunner({
           const latestTask = summary.tasks.find((task) => task.task_id === nextTask.id);
           const latestState = latestTask?.state;
 
-          if (latestState === "detected" && shouldProcessDetectedCsv(nextTask.id, latestTask)) {
+          if (
+            (latestState === "detected" || latestState === "waiting") &&
+            shouldProcessDetectedCsv(latestTask)
+          ) {
             const resultState = await runTask(nextTask.id, true);
 
             if (
@@ -463,8 +470,8 @@ export function useTaskRunner({
           } else {
             updateTaskState(nextTask.id, "waiting");
 
-            if (latestState === "detected") {
-              setLastMessage(`Waiting for ${nextTask.label} CSV to finish`);
+            if (latestTask) {
+              setLastMessage(readinessMessage(latestTask));
             }
           }
 

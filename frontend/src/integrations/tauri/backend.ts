@@ -23,6 +23,14 @@ export interface LayoutLoadResponse {
 }
 
 export type BackendTaskState = "off" | "detected" | "waiting" | "processing" | "pass" | "warning" | "fail";
+export type TaskWaitPhase =
+  | "awaiting_csv"
+  | "timing"
+  | "soaking"
+  | "waiting_step72"
+  | "capturing"
+  | "waiting_unlock"
+  | "ready";
 const AUTOMATION_TASK_BATCH_PROGRESS_EVENT = "automation-task-batch-progress";
 
 export interface BackendTaskStatus {
@@ -36,6 +44,11 @@ export interface BackendTaskStatus {
   latest_csv_readable: boolean | null;
   timer_start_ms: number | null;
   processable: boolean;
+  process_ready: boolean;
+  wait_phase: TaskWaitPhase;
+  phase_deadline_ms: number | null;
+  pending_duration_seconds: number;
+  nominal_duration_seconds: number;
   match_reason: string;
   source_csv_path: string | null;
   csv_fingerprint: string | null;

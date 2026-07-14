@@ -60,10 +60,17 @@ type MockTask = {
   latest_csv: string | null;
   latest_csv_created_ms: number | null;
   latest_csv_readable: boolean | null;
+  match_reason: string;
+  nominal_duration_seconds: number;
+  pending_duration_seconds: number;
+  phase_deadline_ms: number | null;
+  process_ready: boolean;
+  processable: boolean;
   state: "off" | "detected" | "waiting" | "processing" | "pass" | "warning" | "fail";
   step: string;
   task_id: string;
   timer_start_ms: number | null;
+  wait_phase: "awaiting_csv" | "timing" | "soaking" | "waiting_step72" | "capturing" | "waiting_unlock" | "ready";
 };
 
 function unitSummary(unitFolder: string, serialNumber: string, tasks: MockTask[] = []) {
@@ -85,10 +92,17 @@ function detectedSystemTask(): MockTask {
     latest_csv: "C:\\PDU500\\262343000072\\STEP15.csv",
     latest_csv_created_ms: Date.now(),
     latest_csv_readable: true,
+    match_reason: "matched fixture CSV",
+    nominal_duration_seconds: 180,
+    pending_duration_seconds: 0,
+    phase_deadline_ms: Date.now() + 180_000,
+    process_ready: false,
+    processable: true,
     state: "detected",
     step: "15",
     task_id: "208v-system-100% Load",
     timer_start_ms: Date.now(),
+    wait_phase: "timing",
   };
 }
 
@@ -99,10 +113,17 @@ function detectedTransformerTask(): MockTask {
     latest_csv: "C:\\PDU500\\262343000072\\STEP14.csv",
     latest_csv_created_ms: Date.now() - 60_000,
     latest_csv_readable: true,
+    match_reason: "matched fixture CSV",
+    nominal_duration_seconds: 60,
+    pending_duration_seconds: 0,
+    phase_deadline_ms: Date.now() - 1,
+    process_ready: true,
+    processable: true,
     state: "detected",
     step: "14",
     task_id: "208v-transformer",
     timer_start_ms: null,
+    wait_phase: "ready",
   };
 }
 

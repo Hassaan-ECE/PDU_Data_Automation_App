@@ -64,10 +64,17 @@ type MockTask = {
   latest_csv: string | null;
   latest_csv_created_ms: number | null;
   latest_csv_readable: boolean | null;
+  match_reason: string;
+  nominal_duration_seconds: number;
+  pending_duration_seconds: number;
+  phase_deadline_ms: number | null;
+  process_ready: boolean;
+  processable: boolean;
   state: "off" | "detected" | "waiting" | "processing" | "pass" | "warning" | "fail";
   step: string;
   task_id: string;
   timer_start_ms: number | null;
+  wait_phase: "awaiting_csv" | "timing" | "soaking" | "waiting_step72" | "capturing" | "waiting_unlock" | "ready";
 };
 
 function unitSummary(unitFolder: string, serialNumber: string, tasks: MockTask[] = []) {
@@ -89,10 +96,27 @@ function detectedTransformerTask(): MockTask {
     latest_csv: "C:\\PDU500\\262343000072\\STEP14.csv",
     latest_csv_created_ms: Date.now() - 60_000,
     latest_csv_readable: true,
+    match_reason: "matched fixture CSV",
+    nominal_duration_seconds: 60,
+    pending_duration_seconds: 0,
+    phase_deadline_ms: Date.now() - 1,
+    process_ready: true,
+    processable: true,
     state: "detected",
     step: "14",
     task_id: "208v-transformer",
     timer_start_ms: null,
+    wait_phase: "ready",
+  };
+}
+
+function waitingTransformerTask(processReady: boolean): MockTask {
+  return {
+    ...detectedTransformerTask(),
+    phase_deadline_ms: processReady ? Date.now() - 1 : Date.now() + 30_000,
+    process_ready: processReady,
+    state: "waiting",
+    wait_phase: processReady ? "ready" : "timing",
   };
 }
 
@@ -345,6 +369,47 @@ describe("OperatorPanel inline Transformer SN setup", () => {
       ]);
     });
     expect(mocks.processAutomationTask).not.toHaveBeenCalled();
+  });
+
+  it("processes a waiting task once a later scan marks it ready", async () => {
+    const waitingSummary = unitSummary("C:\\PDU500\\262343000072", "262343000072", [
+      waitingTransformerTask(false),
+    ]);
+    const readySummary = unitSummary("C:\\PDU500\\262343000072", "262343000072", [
+      waitingTransformerTask(true),
+    ]);
+    mocks.setupUnitFolder.mockResolvedValue(waitingSummary);
+    mocks.scanUnitFolder.mockResolvedValue(readySummary);
+    mocks.processAutomationTask.mockResolvedValue({
+      code: 0,
+      csv_fingerprint: "fixture",
+      failure: null,
+      log: [],
+      message: "208V Transformer Check processed",
+      print_report_path: null,
+      report_path: "C:\\PDU500\\262343000072\\main.xlsx",
+      source_csv_path: "STEP14.csv",
+      state: "pass",
+      task_id: "208v-transformer",
+    });
+
+    render(<App />);
+    await selectUnit("C:\\PDU500\\262343000072", "262343000072", waitingSummary);
+    fireEvent.change(screen.getByLabelText("Transformer SN"), {
+      target: { value: "TX-WAITING" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    await waitFor(() => {
+      expect(mocks.scanUnitFolder).toHaveBeenCalledWith("C:\\PDU500\\262343000072");
+    });
+    await waitFor(() => {
+      expect(mocks.processAutomationTask).toHaveBeenCalledTimes(1);
+      expect(mocks.processAutomationTask).toHaveBeenCalledWith(
+        "C:\\PDU500\\262343000072",
+        "208v-transformer",
+      );
+    });
   });
 
   it("can cancel the previous-tests prompt without starting", async () => {
