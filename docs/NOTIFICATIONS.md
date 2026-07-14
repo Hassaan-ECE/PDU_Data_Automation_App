@@ -7,8 +7,9 @@ The standalone `PDU_Notifier` pilot established the Teams Workflow and Adaptive 
 ## Current event scope
 
 - **Problem:** sent after a committed task result enters `fail` or a blocking `warning`.
+- **Changeover:** sent once after `208v-breaker-8-20% Load` (STEP41) commits a pass, prompting the STEP42 shutdown/tap change before STEP43.
 - **Complete:** sent only after the Rust print-readiness gate confirms that the print report exists, the Transformer SN is saved, and every task is passed or explicitly accepted.
-- Successful receipts are stored in the unit's `unit_state.json` to reduce duplicate cards. A Problem receipt is cleared after that task passes; Complete is sent once per unit state.
+- Successful receipts are stored in the unit's `unit_state.json` to reduce duplicate cards. A Problem receipt is cleared after that task passes; Changeover and Complete are each sent once per unit state.
 - Delivery runs on the notification worker, outside the CSV/Excel command path. Missing settings, a full queue, a timeout, a shared-log error, or a Teams failure must never change the automation result.
 
 This first production slice does not convert top-level setup, scan, layout/configuration, Transformer-SN-write, or print-dialog command errors into Teams cards. Those errors remain visible in the app. Delivery is best effort and has no automatic HTTP retry: a timeout can happen after Teams accepted a card, so an immediate retry could create a duplicate. A failed delivery leaves no receipt and can be attempted again when a later qualifying task or Transformer SN event rechecks the unit.
@@ -29,15 +30,16 @@ The cog is disabled while report setup or task automation is active so station a
 
 | Setting | Behavior |
 |---------|----------|
-| Station (this PC) | Selects which fixed station slot this PC is (`test-station-1` / `3` / `4` / `pdu-lab`). Local only — does not change other PCs. |
-| Station display names | Advanced only. Editable labels for the fixed slots (e.g. renumber “Test Station 3” → “Test Station 2”). Shared via `floor_settings.json` when a shared folder is set. |
+| This PC identity | Searchable Advanced combobox containing Floor Stations and Admin Identities. The selection is local to this PC; selecting an Admin Identity is allowed. |
+| Manage identities | Advanced only. Select an existing identity to rename it without changing its stable id, or type a unique name and add it as a **Floor Station** or **Admin Identity**. New identities require a configured shared floor. Delete and role conversion are intentionally unavailable. |
 | Destination name | Defaults to `PDU Testing` and labels the configured destination in the UI/status. Shared when floor sync is on. It does not route the message; the Workflow URL determines the actual Teams chat. |
 | Teams webhook URL | Masked in the UI. Paste a non-empty URL to set or replace it. Leaving the edit blank preserves an already stored URL; disable notifications if delivery should stop. Shared when floor sync is on. |
 | Notifications enabled | Master switch for automatic cards and test delivery. Save the enabled state before testing. Shared when floor sync is on. |
+| Changeover card | Advanced toggle, default on. Controls the one-time STEP42 action card after the committed STEP41 pass. It does not change automation or STEP43 readiness. |
 | Shared OneDrive folder | Optional. Use **Browse** on each PC to pick that machine’s local sync of the same org OneDrive folder (confirmed name: `.PDU_Notifications` under the org OneDrive root). Never hard-code the absolute path — usernames and OneDrive roots differ per PC. On first Connect the app seeds `floor_settings.json` if missing, or adopts an existing floor (requires the floor Settings password). Creates `shift_log.json` and `stations/*` as needed. Leave empty / clear for local-only mode. |
 | Main poster / included stations / shifts | Operator-open controls (no password). Shared when floor sync is on so every PC agrees who posts and which windows apply. Saved with **operator** scope only. |
 | Change password | Enter the current password, a new non-empty password, and matching confirmation. Shared when floor sync is on so every PC uses the same Advanced unlock. Uses the dedicated change-password API (not a full settings save). |
-| Save (scoped) | Saves only the fields for the current form section so a stale open Settings page cannot overwrite peer edits. **operator** = shifts / summary / Main / included stations; **advanced** = webhook, destination, toggles, idle timeout, display names, this-PC station id; **connect** = set shared path and adopt or seed floor (does not write form policy over an existing floor; needs `connect_password` when the floor already exists); **local** = this-PC station id and clearing the shared path without writing floor policy. |
+| Save (scoped) | Saves only the fields for the current form section so a stale open Settings page cannot overwrite peer edits. **operator** = shifts / summary / Main / included Floor Stations; **advanced** = webhook, destination, toggles, idle timeout, identity rename/create, this-PC identity; **connect** = set shared path and adopt or seed floor (does not write form policy over an existing floor; needs `connect_password` when the floor already exists); **local** = this-PC identity and clearing the shared path without writing floor policy. |
 | Test ping | Uses the saved, enabled configuration and posts a blue connection card through the same Workflow. Its asynchronous result is correlated to the test event, so a concurrent Problem or Complete result is not mistaken for the ping. |
 
 ## Settings persistence
@@ -68,7 +70,7 @@ When Advanced → **Browse** points at a shared OneDrive/network folder, floor-w
 
 alongside the existing `shift_log.json` and `stations/*` layout.
 
-**Shared fields:** Settings password, Teams webhook, destination name, notification enable/event toggles, shift windows, Main poster, stations included on the summary card, and **station display names** (stable ids stay fixed: `test-station-1`, `test-station-3`, `test-station-4`, `pdu-lab`).
+**Shared fields:** Settings password, Teams webhook, destination name, notification enable/event toggles, shift windows, Main poster, Floor Stations included on the summary card, and the shared identity catalog. The historical ids remain valid; new ids are generated by the backend and are never derived from editable display names.
 
 - First PC to **Connect** when `floor_settings.json` is missing **seeds** it from that PC’s local settings (explicit connect only — ordinary loads never reseed a missing file).
 - Later PCs that Browse the same folder and **Save** with **connect** scope **adopt** the existing floor after the floor password matches (they keep only their own station id). Connect does **not** write the rest of the form over peer policy.
@@ -76,6 +78,15 @@ alongside the existing `shift_log.json` and `stations/*` layout.
 - Multi-PC OneDrive concurrency is best-effort: atomic replace + short locks reduce same-machine races; across replicas last writer still wins after sync lag.
 - Confirmed operator shared folder name: `.PDU_Notifications` under org OneDrive. Each PC must Browse its own synced copy — do not hard-code a user-specific absolute path.
 - Admin workflow: install the same app on any machine, Advanced → Browse → Connect (floor password) → edit password-gated or operator-open fields with scoped saves; peers pick them up on the next clean UI poll / delivery poll.
+
+### Dynamic identity compatibility boundary
+
+`floor_settings.json` stays at schema 1 while the historical catalog is only read or renamed. Creating the first new Floor Station or Admin Identity upgrades it to schema 2. **Upgrade every PC that uses this shared floor before creating the first new identity.** A v0.2.14 client rejects schema 2 rather than rewriting it, but it must not remain responsible for settings edits after the upgrade.
+
+- `floor` identities can be Main, appear in summary controls, and receive a `stations/<stable-id>/` directory.
+- `admin` identities can identify a desk/admin copy of the app and appear on its cards/status, but cannot be Main or included in shift summaries.
+- Identity creation and rename run inside the floor read-modify-write lock so a stale partial form cannot omit/delete another client's identity.
+- OneDrive coordination remains best effort across separately synchronized replicas; wait for sync before making simultaneous catalog changes on different PCs.
 
 Without a shared folder path, the app stays fully local (single-PC behavior).
 
@@ -133,21 +144,20 @@ Recommended setup:
     test-station-3/
     test-station-4/
     pdu-lab/
+    identity-.../          # created for additional Floor Stations only
 ```
 
-`shift_log.json` is the floor-wide event ledger. The per-station folders are reserved for future station-local shared state. After Teams accepts a Problem or Complete event, the app appends to `shift_log.json` with short coordination/atomic replacement so multiple stations can contribute. OneDrive sync lag, permissions, or network failures can still occur. A log failure is status-only: it must not change the accepted Teams result or automation outcome.
+`shift_log.json` is the floor-wide Problem/Complete event ledger. Changeover is deliberately excluded. The per-station folders are reserved for future station-local shared state. After Teams accepts a Problem or Complete event, the app appends to `shift_log.json` with short coordination/atomic replacement so multiple stations can contribute. OneDrive sync lag, permissions, or network failures can still occur. A log failure is status-only: it must not change the accepted Teams result or automation outcome.
 
 Legacy settings that stored a direct `*.json` file path still work; the app treats a `.json` path as the log file and creates `stations/*` beside it.
-
-The ledger does not yet post an end-of-shift card. That remains a follow-up after the shared folder and operating procedure are confirmed.
 
 ## Deferred events
 
 - **Stuck:** deferred until the app owns a meaningful-progress clock. The expected STEP71 system burn-in runs for roughly two hours, so a flat 30-minute inactivity timer would generate false alerts.
-- **Summary:** automatic/manual combined shift posting is deferred until the shared path and shift-counter workflow are confirmed.
+- **Summary scheduling:** the operator can preview/post the summary manually; automatic timed posting remains deferred.
 - Two-way Teams commands remain out of scope.
 
-The stored `idle_timeout_minutes`, Stuck toggle, Summary toggle, and shared-log data do not mean Stuck or Summary posting is active in this release.
+The stored `idle_timeout_minutes` and Stuck toggle do not mean Stuck posting is active in this release.
 
 ## Validation required before release
 
@@ -161,8 +171,10 @@ Automated tests and local builds do not establish live floor delivery or install
 6. Induce one safe task failure and confirm exactly one red Problem card with the correct station, unit, and task.
 7. Resolve/rerun the task and confirm a later genuine failure can alert again.
 8. Process a safe fixture unit to the real print-ready state and confirm exactly one green Complete card.
-9. Temporarily use an invalid webhook and confirm CSV processing and workbook writes still finish normally while the UI reports delivery failure.
-10. Leave the shared OneDrive folder blank and confirm there are no log errors. After you create a hidden shared folder, Browse to it on each station, Save, and confirm `shift_log.json` plus `stations/test-station-*` appear under that folder.
-11. Confirm the app-owned settings survive an application update.
+9. On a fresh fixture unit, pass `208v-breaker-8-20% Load` and confirm exactly one yellow Changeover card names the STEP42 action and STEP43 next step; rerun STEP41 and confirm it does not duplicate.
+10. Temporarily use an invalid webhook and confirm CSV processing and workbook writes still finish normally while the UI reports delivery failure.
+11. Leave the shared OneDrive folder blank and confirm there are no log errors. After you create a hidden shared folder, Browse to it on each station, Save, and confirm `shift_log.json` plus `stations/test-station-*` appear under that folder.
+12. Upgrade all test clients, add one Admin Identity and one Floor Station, and confirm Admin is absent from Main/summary while the Floor Station appears there and receives a stable-id directory.
+13. Confirm the app-owned settings survive an application update.
 
 No live webhook, phone-notification, shared-path, or installer validation is claimed by this document.

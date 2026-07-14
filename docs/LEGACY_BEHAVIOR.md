@@ -40,8 +40,10 @@ Keep the familiar test panel layout:
 - **Transformer SN**: Written as text to `Test Summary!D1` (must preserve leading zeros and exact value).
 - **Final operator name**: Written to `Test Report #2!E39` in the print report.
 - **STEP71 vs STEP72 (system burn-in)**:
-  - STEP71 = long soak / burn-in period.
-  - STEP72 = the short data-capture step used for report values.
+  - STEP71 = mandatory long soak / burn-in period (7,200 seconds).
+  - STEP72 = mandatory matching `SYSTEM_ACCURACY_TEST_DATA_AVG` capture used for report values; it has its own 60-second stabilization period.
+  - A new burn-in result is process-ready only after both boundaries have elapsed: `max(STEP71 + 2h, matching STEP72 + 1m)`.
+  - STEP71-only, STEP72-only, unrelated STEP72, or a locked matching STEP72 remains waiting and must never enter the report processor.
 - **Verification thresholds** (from upgraded legacy):
   - Voltage / Current: ±0.3%
   - Active/Apparent Power: ±0.6%
@@ -67,7 +69,10 @@ Keep the familiar test panel layout:
 - Strict CSV parsing with no silent zero fallback (tests cover blank/malformed/missing column cases).
 - `validate_ready_for_print` gate before writing operator name or opening print dialog.
 - Verification runs before any Excel patch for system/breaker tasks.
-- CSV stability wait before processing.
+- Backend-owned, timestamp-based CSV readiness; rescans do not restart a countdown while a CSV is locked or still being written.
+- Direct and batch processors repeat the readiness preflight, and retryable waits do not become persisted processor outcomes.
+- Strict STEP71 soak plus matching STEP72 capture gating for System Burn-In.
 - `unit_state.json` sidecar for restart resilience and idempotency.
+- One-time Changeover receipt/card after the committed STEP41 (`208V Breaker 8 – 20% Load`) pass, naming STEP42 as the manual action and STEP43 as the next test.
 - Transformer tasks are now driven from `config/report-layouts/pdu500.rev02.layout.json`.
 - System, breaker, and burn-in tasks still use built-in processors (progressively moving to mappings).

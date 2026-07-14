@@ -1,4 +1,4 @@
-# Operator notification catalog (v0.2.12)
+# Operator notification catalog
 
 What Teams can notify you about **today** while using PDU Data Automation on the test stations.
 
@@ -12,6 +12,7 @@ Destination: the operators **PDU Testing** Teams group chat (and phone push if T
 |--------------|--------------|------------|---------------|-----------|
 | **Test ping** | 🔵 Blue | Manual only | You press **Send test ping** in Settings | Each press |
 | **Problem** | 🔴 Red | Automatic | A test step finishes as **fail** or **warning** | That step until it passes (then can alert again) |
+| **Changeover** | 🟡 Yellow | Automatic | STEP41 (`208V Breaker 8 – 20% Load`) passes | That unit (one time) |
 | **Complete** | 🟢 Green | Automatic | Unit is **print-ready** (all steps done + Transformer SN saved) | That unit (one time) |
 | **Stuck** | 🟠 Orange | **Not active** | — | Deferred (burn-in risk) |
 | **End of shift summary** | 📊 Blue-ish | **Manual only** | Designated station posts from Settings → End of shift | After successful post, shared log clears |
@@ -50,9 +51,9 @@ Destination: the operators **PDU Testing** Teams group chat (and phone push if T
 | Timestamp | Local time |
 
 **When it fires**
-- After a step is **processed and committed** and the result is **`fail`** or **`warning`**  
+- After a step is **processed and committed** and the result is **`fail`** or a blocking **`warning`**
   - Fail: real failure (bad reading, verification fail, etc.)  
-  - Warning: includes cases like missing / not-ready CSV for that step  
+  - A CSV that is still timing, locked, or waiting for the required STEP72 burn-in capture remains **waiting** and does not send a false Problem card
 - Only if **Notifications enabled** and the Problem toggle is on (defaults on)
 
 **Spam control**
@@ -70,7 +71,31 @@ Destination: the operators **PDU Testing** Teams group chat (and phone push if T
 
 ---
 
-## 3. Complete (automatic) — “unit is ready for print / sign-off”
+## 3. Changeover (automatic) — “perform the STEP42 tap change”
+
+**Title example:** `🟡 Changeover · Test Station 1`
+
+**Body:**
+
+| Field | Text |
+|-------|------|
+| **UNIT** | Unit serial |
+| **ACTION** | `208V testing complete — shut down the PDU and change transformer taps for 415V` |
+| **NEXT STEP** | `STEP43 · 415V Transformer Check` |
+
+**When it fires**
+
+- Only after `208v-breaker-8-20% Load` (STEP41) is processed and commits a **pass**
+- STEP42 is the operator's physical shutdown/tap-change action; STEP43 is the next automated test
+- Only if Notifications and the Advanced **Changeover card** toggle are enabled
+
+**Spam and safety behavior**
+
+- One accepted Changeover card per unit; rerunning STEP41 does not send another
+- A Teams failure stores no receipt, so a later committed STEP41 pass can retry
+- Delivery failure never changes the task result and never blocks moving to STEP43
+
+## 4. Complete (automatic) — “unit is ready for print / sign-off”
 
 **Title example:** `🟢 Complete · Test Station 1`
 
@@ -98,10 +123,10 @@ It can be checked after a successful pass (or after saving Transformer SN when t
 
 ---
 
-## 4. Not active yet (do not expect these cards)
+## 5. Not active yet (do not expect these cards)
 
 ### Stuck (idle)
-- **Not automatic in v0.2.12**  
+- **Not automatic**
 - Planned later so we don’t false-alarm during long **system burn-in** (~2 hours)
 
 ### End-of-shift summary (manual, designated station)
@@ -134,7 +159,14 @@ It can be checked after a successful pass (or after saving Transformer SN when t
 2. Confirm **one** green Complete card  
 3. Repeat processing should **not** send another Complete for that unit  
 
-### D. Shared folder (optional)
+### D. Changeover (safe)
+
+1. Use a fixture/copy without an existing Changeover receipt
+2. Process `208V Breaker 8 – 20% Load` to a committed pass
+3. Confirm one yellow card with the STEP42 action and STEP43 next step
+4. Rerun STEP41 and confirm no duplicate card
+
+### E. Shared folder (optional)
 1. Same OneDrive shared folder selected on Stations 1, 3, 4  
 2. After Problem/Complete, check that folder for activity under `shift_log.json` / `stations/…`  
 3. This does **not** post a summary card by itself yet  
@@ -148,6 +180,7 @@ It can be checked after a successful pass (or after saving Transformer SN when t
 | App opens / folder selected | No |
 | Step fails or warns after processing | **Yes — Problem** |
 | Same step fails again without having passed | No (deduped) |
+| STEP41 / 208V Breaker 8 – 20% Load passes | **Yes — Changeover** (once) |
 | Unit becomes fully print-ready | **Yes — Complete** (once) |
 | Want to check chat still works | **Test ping** from Settings |
 | Stuck / idle / end of shift rollup | Not yet |
@@ -158,16 +191,18 @@ It can be checked after a successful pass (or after saving Transformer SN when t
 
 | Open (no password) | Password-locked (Advanced) |
 |--------------------|----------------------------|
-| **Shift & summary options** — windows, who posts, which stations appear on the card, enable/disable summary | **Station & Teams** — this PC identity, webhook, shared folder, station display names, test ping |
+| **Shift & summary options** — windows, who posts, which Floor Stations appear on the card, enable/disable summary | **Station & Teams** — searchable this-PC identity, webhook, shared folder, add/rename identities, Changeover toggle, test ping |
 | **End of shift** — preview / post (if this PC is the poster) | **Change password** (shared across PCs when the shared folder is set) |
 
 If the usual poster PC is down, any operator can open **Shift & summary options** and reassign the poster station (no password). With a shared folder configured, that Main assignment syncs to other PCs within about 45 seconds.
 
-## Station notes (current floor)
+## Identity notes (current floor)
 
-- **Stable slots:** `test-station-1`, `test-station-3`, `test-station-4`, `pdu-lab` (Station 2 still not used)
-- **Display names** are editable in Advanced (password) and sync via the shared folder — renumber labels without an app update
-- Lab PC selects the **pdu-lab** slot; end-of-shift poster defaults to that slot
+- The original stable ids remain: `test-station-1`, `test-station-3`, `test-station-4`, `pdu-lab`
+- Advanced → **Manage identities** can rename an existing identity or add a new **Floor Station** / **Admin Identity**; generated stable ids do not change when names change
+- A Floor Station may be Main and appear in summary controls. An Admin Identity may identify a desk PC but never appears in Main/summary choices
+- **Upgrade every PC that uses the shared floor before adding the first new identity.** That first add upgrades `floor_settings.json` to schema 2
+- Lab PC can keep the **pdu-lab** identity; end-of-shift poster defaults to it
 - Phones only ring if that person is in **PDU Testing** and has Teams notifications enabled for the chat
 - Admin can point any copy of the app at the same shared folder and change floor settings from a desk PC
 
@@ -176,4 +211,4 @@ If the usual poster PC is down, any operator can open **Shift & summary options*
 ## Related docs
 
 - Setup / settings detail: [NOTIFICATIONS.md](./NOTIFICATIONS.md)  
-- Release notes: [../release/v0.2.12.md](../release/v0.2.12.md)  
+- Latest released baseline notes: [../release/v0.2.14.md](../release/v0.2.14.md)
