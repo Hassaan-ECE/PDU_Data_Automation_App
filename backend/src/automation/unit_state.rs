@@ -446,7 +446,7 @@ pub fn now_string() -> String {
 }
 
 fn should_refresh_from_scan(state: &str) -> bool {
-    matches!(state, "off" | "detected")
+    matches!(state, "off" | "detected" | "waiting")
 }
 
 struct UnitStateLock {
@@ -755,6 +755,29 @@ mod tests {
 
         assert!(reloaded.tasks.contains_key("first"));
         assert!(reloaded.tasks.contains_key("second"));
+    }
+
+    #[test]
+    fn persisted_waiting_is_refreshed_from_readable_scan() {
+        let mut state = UnitState::default();
+        state.tasks.insert(
+            "208v-transformer".to_string(),
+            task_state("208v-transformer", "waiting"),
+        );
+
+        let changed = ensure_task_entries(
+            &mut state,
+            &[TaskStateSeed {
+                task_id: "208v-transformer".to_string(),
+                state: "detected".to_string(),
+                source_csv_path: Some("STEP14.csv".to_string()),
+                csv_fingerprint: None,
+            }],
+        );
+
+        assert!(changed);
+        assert_eq!(state.tasks["208v-transformer"].state, "detected");
+        assert_eq!(state.tasks["208v-transformer"].code, None);
     }
 
     fn processor_result(index: usize) -> ProcessorResult {

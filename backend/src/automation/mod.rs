@@ -288,12 +288,38 @@ pub struct TaskStatus {
     pub latest_csv_readable: Option<bool>,
     pub timer_start_ms: Option<u64>,
     pub processable: bool,
+    pub process_ready: bool,
+    pub wait_phase: TaskWaitPhase,
+    pub phase_deadline_ms: Option<u64>,
+    pub pending_duration_seconds: u64,
+    pub nominal_duration_seconds: u64,
     pub match_reason: String,
     pub source_csv_path: Option<String>,
     pub csv_fingerprint: Option<String>,
     pub processed_at: Option<String>,
     pub result: Option<String>,
     pub accepted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskWaitPhase {
+    AwaitingCsv,
+    Timing,
+    Soaking,
+    WaitingStep72,
+    Capturing,
+    WaitingUnlock,
+    Ready,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TaskReadiness {
+    process_ready: bool,
+    wait_phase: TaskWaitPhase,
+    phase_deadline_ms: Option<u64>,
+    pending_duration_seconds: u64,
+    nominal_duration_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -634,6 +660,14 @@ pub fn process_task(
     unit_folder: String,
     task_id: String,
 ) -> Result<TaskProcessResult, AutomationError> {
+    process_task_at(unit_folder, task_id, current_time_millis())
+}
+
+fn process_task_at(
+    unit_folder: String,
+    task_id: String,
+    now_ms: u64,
+) -> Result<TaskProcessResult, AutomationError> {
     let unit_folder = PathBuf::from(unit_folder);
     let task = find_task(&task_id).ok_or_else(|| AutomationError::UnknownTask(task_id.clone()))?;
     let state = unit_state::load_or_default(&unit_folder)?;
@@ -644,6 +678,9 @@ pub fn process_task(
     }
 
     let profile = load_layout_profile()?;
+    if let Some(waiting) = process_preflight(&task, &profile, &unit_folder, now_ms)? {
+        return Ok(waiting);
+    }
     let report_config = report_file_config(&profile);
     let already_processed_fingerprint = state
         .tasks
@@ -674,12 +711,32 @@ pub fn process_tasks(
     unit_folder: String,
     task_ids: Vec<String>,
 ) -> Result<TaskBatchProcessResult, AutomationError> {
-    process_tasks_with_progress(unit_folder, task_ids, |_| {})
+    process_tasks_at(unit_folder, task_ids, current_time_millis())
+}
+
+fn process_tasks_at(
+    unit_folder: String,
+    task_ids: Vec<String>,
+    now_ms: u64,
+) -> Result<TaskBatchProcessResult, AutomationError> {
+    process_tasks_with_progress_at(unit_folder, task_ids, now_ms, |_| {})
 }
 
 pub fn process_tasks_with_progress<F>(
     unit_folder: String,
     task_ids: Vec<String>,
+    on_progress: F,
+) -> Result<TaskBatchProcessResult, AutomationError>
+where
+    F: FnMut(TaskBatchProgress),
+{
+    process_tasks_with_progress_at(unit_folder, task_ids, current_time_millis(), on_progress)
+}
+
+fn process_tasks_with_progress_at<F>(
+    unit_folder: String,
+    task_ids: Vec<String>,
+    now_ms: u64,
     mut on_progress: F,
 ) -> Result<TaskBatchProcessResult, AutomationError>
 where
@@ -705,6 +762,33 @@ where
         {
             ProcessorTaskOutput::result_only(result)
         } else {
+            if let Some(waiting) = process_preflight(&task, &profile, &unit_folder, now_ms)? {
+                if let Some(stopped) = flush_pending_task_outputs(
+                    &unit_folder,
+                    &mut pending,
+                    &mut results,
+                    &mut on_progress,
+                    &unit_folder_display,
+                    total,
+                )? {
+                    stopped_task_id = Some(stopped);
+                    committed = false;
+                    break;
+                }
+
+                stopped_task_id = Some(task_id.clone());
+                results.push(waiting.clone());
+                on_progress(TaskBatchProgress {
+                    unit_folder: unit_folder_display.clone(),
+                    task_id: waiting.task_id,
+                    state: waiting.state,
+                    message: waiting.message,
+                    index: results.len(),
+                    total,
+                });
+                break;
+            }
+
             let already_processed_fingerprint = state
                 .tasks
                 .get(&task_id)
@@ -1000,6 +1084,7 @@ fn build_summary_with_profile(
     profile: &ReportLayoutProfile,
 ) -> Result<UnitFolderSummary, AutomationError> {
     let mut detected_task_ids = HashSet::<String>::new();
+    let now_ms = system_time_millis(SystemTime::now()).unwrap_or_default();
     let csv_index = CsvScanIndex::scan(unit_folder);
     let automation_tasks = automation_tasks();
     let csv_matches = automation_tasks
@@ -1055,6 +1140,7 @@ fn build_summary_with_profile(
             let csv_match = csv_matches
                 .get(&task.id)
                 .expect("csv match should exist for task");
+            let readiness = evaluate_task_readiness(&task, &csv_index, csv_match, now_ms);
             let persisted = state.tasks.get(&task.id);
             let state = persisted
                 .map(|entry| merged_summary_state(entry, detected_state))
@@ -1071,6 +1157,11 @@ fn build_summary_with_profile(
                 latest_csv_readable,
                 timer_start_ms,
                 processable: csv_match.processable,
+                process_ready: readiness.process_ready,
+                wait_phase: readiness.wait_phase,
+                phase_deadline_ms: readiness.phase_deadline_ms,
+                pending_duration_seconds: readiness.pending_duration_seconds,
+                nominal_duration_seconds: readiness.nominal_duration_seconds,
                 match_reason: csv_match.reason.clone(),
                 source_csv_path: persisted.and_then(|entry| entry.source_csv_path.clone()),
                 csv_fingerprint: persisted.and_then(|entry| entry.csv_fingerprint.clone()),
@@ -1120,8 +1211,187 @@ fn report_file_config(profile: &ReportLayoutProfile) -> ReportFileConfig {
 #[derive(Debug, Clone)]
 struct TaskCsvMatch {
     path: Option<PathBuf>,
+    created_ms: Option<u64>,
     processable: bool,
     reason: String,
+}
+
+const TRANSFORMER_DURATION_SECONDS: u64 = 60;
+const DEFAULT_TASK_DURATION_SECONDS: u64 = 180;
+const SYSTEM_BURN_IN_SOAK_SECONDS: u64 = 7_200;
+const SYSTEM_BURN_IN_CAPTURE_SECONDS: u64 = 60;
+
+fn duration_ms(seconds: u64) -> u64 {
+    seconds.saturating_mul(1_000)
+}
+
+fn task_nominal_duration_seconds(task: &tasks::AutomationTask) -> u64 {
+    match task.kind {
+        tasks::TaskKind::Transformer { .. } => TRANSFORMER_DURATION_SECONDS,
+        tasks::TaskKind::SystemBurnIn => {
+            SYSTEM_BURN_IN_SOAK_SECONDS + SYSTEM_BURN_IN_CAPTURE_SECONDS
+        }
+        _ => DEFAULT_TASK_DURATION_SECONDS,
+    }
+}
+
+fn generic_readiness(
+    task: &tasks::AutomationTask,
+    csv_match: &TaskCsvMatch,
+    now_ms: u64,
+) -> TaskReadiness {
+    let nominal_duration_seconds = task_nominal_duration_seconds(task);
+    let Some(start_ms) = csv_match.created_ms else {
+        return TaskReadiness {
+            process_ready: false,
+            wait_phase: TaskWaitPhase::AwaitingCsv,
+            phase_deadline_ms: None,
+            pending_duration_seconds: nominal_duration_seconds,
+            nominal_duration_seconds,
+        };
+    };
+    let phase_deadline_ms = start_ms.saturating_add(duration_ms(nominal_duration_seconds));
+    let (process_ready, wait_phase) = if now_ms < phase_deadline_ms {
+        (false, TaskWaitPhase::Timing)
+    } else if !csv_match.processable {
+        (false, TaskWaitPhase::WaitingUnlock)
+    } else {
+        (true, TaskWaitPhase::Ready)
+    };
+
+    TaskReadiness {
+        process_ready,
+        wait_phase,
+        phase_deadline_ms: Some(phase_deadline_ms),
+        pending_duration_seconds: 0,
+        nominal_duration_seconds,
+    }
+}
+
+fn burn_in_readiness(csv_index: &CsvScanIndex, now_ms: u64) -> TaskReadiness {
+    let nominal_duration_seconds = SYSTEM_BURN_IN_SOAK_SECONDS + SYSTEM_BURN_IN_CAPTURE_SECONDS;
+    let Some(step71) = csv_index.latest_for_step(71) else {
+        return TaskReadiness {
+            process_ready: false,
+            wait_phase: TaskWaitPhase::AwaitingCsv,
+            phase_deadline_ms: None,
+            pending_duration_seconds: nominal_duration_seconds,
+            nominal_duration_seconds,
+        };
+    };
+    let Some(step71_start_ms) = step71.created_ms else {
+        return TaskReadiness {
+            process_ready: false,
+            wait_phase: TaskWaitPhase::AwaitingCsv,
+            phase_deadline_ms: None,
+            pending_duration_seconds: nominal_duration_seconds,
+            nominal_duration_seconds,
+        };
+    };
+    let soak_deadline_ms = step71_start_ms.saturating_add(duration_ms(SYSTEM_BURN_IN_SOAK_SECONDS));
+    let step72 =
+        csv_index.latest_for_step_fragments(72, &["SYSTEM_ACCURACY_TEST_DATA_AVG".to_string()]);
+    let Some(step72) = step72 else {
+        return TaskReadiness {
+            process_ready: false,
+            wait_phase: if now_ms < soak_deadline_ms {
+                TaskWaitPhase::Soaking
+            } else {
+                TaskWaitPhase::WaitingStep72
+            },
+            phase_deadline_ms: (now_ms < soak_deadline_ms).then_some(soak_deadline_ms),
+            pending_duration_seconds: SYSTEM_BURN_IN_CAPTURE_SECONDS,
+            nominal_duration_seconds,
+        };
+    };
+    let Some(step72_start_ms) = step72.created_ms else {
+        return TaskReadiness {
+            process_ready: false,
+            wait_phase: TaskWaitPhase::WaitingStep72,
+            phase_deadline_ms: None,
+            pending_duration_seconds: SYSTEM_BURN_IN_CAPTURE_SECONDS,
+            nominal_duration_seconds,
+        };
+    };
+    let capture_deadline_ms =
+        step72_start_ms.saturating_add(duration_ms(SYSTEM_BURN_IN_CAPTURE_SECONDS));
+    let phase_deadline_ms = soak_deadline_ms.max(capture_deadline_ms);
+    let wait_phase = if now_ms < phase_deadline_ms {
+        if soak_deadline_ms >= capture_deadline_ms {
+            TaskWaitPhase::Soaking
+        } else {
+            TaskWaitPhase::Capturing
+        }
+    } else if !step72.readable {
+        TaskWaitPhase::WaitingUnlock
+    } else {
+        TaskWaitPhase::Ready
+    };
+
+    TaskReadiness {
+        process_ready: wait_phase == TaskWaitPhase::Ready,
+        wait_phase,
+        phase_deadline_ms: Some(phase_deadline_ms),
+        pending_duration_seconds: 0,
+        nominal_duration_seconds,
+    }
+}
+
+fn evaluate_task_readiness(
+    task: &tasks::AutomationTask,
+    csv_index: &CsvScanIndex,
+    csv_match: &TaskCsvMatch,
+    now_ms: u64,
+) -> TaskReadiness {
+    if matches!(task.kind, tasks::TaskKind::SystemBurnIn) {
+        burn_in_readiness(csv_index, now_ms)
+    } else {
+        generic_readiness(task, csv_match, now_ms)
+    }
+}
+
+fn readiness_wait_message(task: &tasks::AutomationTask, readiness: TaskReadiness) -> String {
+    match readiness.wait_phase {
+        TaskWaitPhase::AwaitingCsv => format!("Waiting for {} CSV.", task.label),
+        TaskWaitPhase::Timing => format!("Waiting for {} CSV timer.", task.label),
+        TaskWaitPhase::Soaking => "System Burn-In STEP71 soak is still running.".to_string(),
+        TaskWaitPhase::WaitingStep72 => {
+            "STEP71 soak is complete; waiting for matching STEP72 burn-in data.".to_string()
+        }
+        TaskWaitPhase::Capturing => {
+            "STEP72 burn-in capture is stabilizing for one minute.".to_string()
+        }
+        TaskWaitPhase::WaitingUnlock => "Required CSV is still locked or unreadable.".to_string(),
+        TaskWaitPhase::Ready => "Ready.".to_string(),
+    }
+}
+
+fn process_preflight(
+    task: &tasks::AutomationTask,
+    profile: &ReportLayoutProfile,
+    unit_folder: &Path,
+    now_ms: u64,
+) -> Result<Option<TaskProcessResult>, AutomationError> {
+    let csv_index = CsvScanIndex::scan(unit_folder);
+    let csv_match = task_csv_match(task, profile, &csv_index);
+    let readiness = evaluate_task_readiness(task, &csv_index, &csv_match, now_ms);
+
+    if readiness.process_ready {
+        return Ok(None);
+    }
+
+    Ok(Some(TaskProcessResult {
+        task_id: task.id.clone(),
+        state: "waiting".to_string(),
+        code: 2,
+        message: readiness_wait_message(task, readiness),
+        log: vec![csv_match.reason],
+        report_path: None,
+        print_report_path: None,
+        failure: None,
+        source_csv_path: csv_match.path.map(|path| path.display().to_string()),
+        csv_fingerprint: None,
+    }))
 }
 
 #[derive(Debug, Clone)]
@@ -1286,6 +1556,7 @@ fn task_csv_match(
                 )
             },
             processable: mapped_csv.readable,
+            created_ms: mapped_csv.created_ms,
             path: Some(mapped_csv.path.clone()),
         };
     }
@@ -1293,6 +1564,7 @@ fn task_csv_match(
     let Some((step, fragments)) = built_in_csv_requirement(task) else {
         return TaskCsvMatch {
             path: None,
+            created_ms: None,
             processable: false,
             reason: "task has no CSV processor requirement".to_string(),
         };
@@ -1309,10 +1581,12 @@ fn task_csv_match(
                 )
             },
             processable: csv.readable,
+            created_ms: csv.created_ms,
             path: Some(csv.path.clone()),
         },
         None => TaskCsvMatch {
             path: None,
+            created_ms: None,
             processable: false,
             reason: format!(
                 "no processable STEP{step} CSV found with required fragment(s): {}",
@@ -1411,6 +1685,10 @@ fn system_time_millis(time: SystemTime) -> Option<u64> {
     let millis = time.duration_since(UNIX_EPOCH).ok()?.as_millis();
 
     u64::try_from(millis).ok()
+}
+
+fn current_time_millis() -> u64 {
+    system_time_millis(SystemTime::now()).unwrap_or_default()
 }
 
 fn to_task_process_result(task_id: String, result: ProcessorResult) -> TaskProcessResult {
@@ -1911,6 +2189,131 @@ mod smoke_tests {
     }
 
     #[test]
+    fn generic_readiness_keeps_the_csv_creation_deadline_across_rescans() {
+        let task = find_task("208v-transformer").expect("transformer task");
+        let csv_match = TaskCsvMatch {
+            path: Some(PathBuf::from("STEP14.csv")),
+            created_ms: Some(1_000),
+            processable: true,
+            reason: "test CSV".to_string(),
+        };
+        let empty_index = CsvScanIndex {
+            entries: Vec::new(),
+        };
+
+        let first = evaluate_task_readiness(&task, &empty_index, &csv_match, 2_000);
+        let rescanned = evaluate_task_readiness(&task, &empty_index, &csv_match, 5_000);
+
+        assert_eq!(first.phase_deadline_ms, Some(61_000));
+        assert_eq!(rescanned.phase_deadline_ms, first.phase_deadline_ms);
+        assert_eq!(rescanned.wait_phase, TaskWaitPhase::Timing);
+        assert!(!rescanned.process_ready);
+    }
+
+    #[test]
+    fn burn_in_requires_step72_after_the_two_hour_soak() {
+        let index = CsvScanIndex {
+            entries: vec![scan_entry(71, "UNIT_STEP71_SYSTEM.csv", 1_000, true)],
+        };
+        let task = find_task("system-burn-in").expect("burn-in task");
+        let csv_match = TaskCsvMatch {
+            path: None,
+            created_ms: None,
+            processable: false,
+            reason: "STEP72 missing".to_string(),
+        };
+
+        let readiness = evaluate_task_readiness(&task, &index, &csv_match, 7_202_000);
+
+        assert_eq!(readiness.wait_phase, TaskWaitPhase::WaitingStep72);
+        assert_eq!(readiness.phase_deadline_ms, None);
+        assert_eq!(readiness.pending_duration_seconds, 60);
+        assert!(!readiness.process_ready);
+    }
+
+    #[test]
+    fn burn_in_waits_for_both_the_step71_soak_and_step72_capture() {
+        let index = CsvScanIndex {
+            entries: vec![
+                scan_entry(71, "UNIT_STEP71_SYSTEM.csv", 1_000, true),
+                scan_entry(
+                    72,
+                    "UNIT_STEP72_SYSTEM_ACCURACY_TEST_DATA_AVG.csv",
+                    7_191_000,
+                    true,
+                ),
+            ],
+        };
+        let task = find_task("system-burn-in").expect("burn-in task");
+        let csv_match = TaskCsvMatch {
+            path: None,
+            created_ms: None,
+            processable: false,
+            reason: "test match".to_string(),
+        };
+
+        let readiness = evaluate_task_readiness(&task, &index, &csv_match, 7_205_000);
+
+        assert_eq!(readiness.wait_phase, TaskWaitPhase::Capturing);
+        assert_eq!(readiness.phase_deadline_ms, Some(7_251_000));
+        assert!(!readiness.process_ready);
+    }
+
+    #[test]
+    fn burn_in_preflight_returns_retryable_wait_without_unit_state_write() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        fs::write(unit_folder.join("UNIT_STEP71_SYSTEM.csv"), "a,b\n1,2\n").expect("write STEP71");
+        let profile = load_layout_profile().expect("layout profile");
+        let task = find_task("system-burn-in").expect("burn-in task");
+
+        let result = process_preflight(&task, &profile, &unit_folder, u64::MAX)
+            .expect("preflight")
+            .expect("STEP72 should still be required");
+
+        assert_eq!(result.state, "waiting");
+        assert_eq!(result.code, 2);
+        assert!(result.message.contains("STEP72"));
+        assert!(unit_state::load_unit_state(&unit_folder)
+            .expect("load unit state")
+            .is_none());
+    }
+
+    #[test]
+    fn batch_stops_at_not_ready_burn_in_without_persisting_wait() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        fs::write(unit_folder.join("UNIT_STEP71_SYSTEM.csv"), "a,b\n1,2\n").expect("write STEP71");
+
+        let batch = process_tasks(
+            unit_folder.display().to_string(),
+            vec!["system-burn-in".to_string()],
+        )
+        .expect("batch should return a retryable wait");
+
+        assert_eq!(batch.committed_count, 0);
+        assert_eq!(batch.stopped_task_id.as_deref(), Some("system-burn-in"));
+        assert_eq!(batch.results.len(), 1);
+        assert_eq!(batch.results[0].state, "waiting");
+        assert!(unit_state::load_unit_state(&unit_folder)
+            .expect("load unit state")
+            .is_none());
+    }
+
+    fn scan_entry(step: u16, file_name: &str, created_ms: u64, readable: bool) -> CsvScanEntry {
+        CsvScanEntry {
+            path: PathBuf::from(file_name),
+            step: Some(step),
+            file_name_upper: file_name.to_ascii_uppercase(),
+            modified: UNIX_EPOCH + std::time::Duration::from_millis(created_ms),
+            created_ms: Some(created_ms),
+            readable,
+        }
+    }
+
+    #[test]
     fn csv_scan_index_matches_configured_patterns_without_rescanning() {
         let temp = TempDir::new().expect("temp dir");
         let unit_folder = temp.path().join("262343000072");
@@ -2146,9 +2549,10 @@ mod smoke_tests {
             true,
         );
 
-        let result = process_task(
+        let result = process_task_at(
             unit_folder.display().to_string(),
             "208v-system-100% Load".to_string(),
+            u64::MAX,
         )
         .expect("task should return result");
 
@@ -2350,12 +2754,13 @@ mod smoke_tests {
             false,
         );
 
-        let batch = process_tasks(
+        let batch = process_tasks_at(
             unit_folder.display().to_string(),
             vec![
                 "208v-system-50% Load".to_string(),
                 "208v-system-20% Load".to_string(),
             ],
+            u64::MAX,
         )
         .expect("batch should process");
 
@@ -2402,12 +2807,13 @@ mod smoke_tests {
             false,
         );
 
-        let batch = process_tasks(
+        let batch = process_tasks_at(
             unit_folder.display().to_string(),
             vec![
                 "208v-system-50% Load".to_string(),
                 "208v-system-20% Load".to_string(),
             ],
+            u64::MAX,
         )
         .expect("batch should return commit failure result");
 
@@ -2467,12 +2873,13 @@ mod smoke_tests {
         );
         unit_state::save_unit_state(&unit_folder, &state).expect("write state");
 
-        let batch = process_tasks(
+        let batch = process_tasks_at(
             unit_folder.display().to_string(),
             vec![
                 "208v-system-50% Load".to_string(),
                 "208v-system-20% Load".to_string(),
             ],
+            u64::MAX,
         )
         .expect("batch should return commit failure result");
 
@@ -2524,12 +2931,13 @@ mod smoke_tests {
             true,
         );
 
-        let batch = process_tasks(
+        let batch = process_tasks_at(
             unit_folder.display().to_string(),
             vec![
                 "208v-system-50% Load".to_string(),
                 "208v-system-20% Load".to_string(),
             ],
+            u64::MAX,
         )
         .expect("batch should stop on failed verification");
 
@@ -2596,8 +3004,12 @@ mod smoke_tests {
             "system-burn-in",
             "breaker-burn-in-1",
         ] {
-            let result =
-                process_task(unit_copy.display().to_string(), task_id.to_string()).unwrap();
+            let result = process_task_at(
+                unit_copy.display().to_string(),
+                task_id.to_string(),
+                u64::MAX,
+            )
+            .unwrap();
 
             assert_ne!(result.code, 2, "{task_id}: {}", result.message);
         }
