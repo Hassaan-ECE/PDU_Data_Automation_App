@@ -170,10 +170,10 @@ describe("OperatorPanel inline Transformer SN setup", () => {
       ],
       is_summary_poster: false,
       stations: [
-        { id: "test-station-1", name: "Test Station 1" },
-        { id: "test-station-3", name: "Test Station 3" },
-        { id: "test-station-4", name: "Test Station 4" },
-        { id: "pdu-lab", name: "PDU Lab" },
+        { id: "test-station-1", name: "Test Station 1", role: "floor" },
+        { id: "test-station-3", name: "Test Station 3", role: "floor" },
+        { id: "test-station-4", name: "Test Station 4", role: "floor" },
+        { id: "pdu-lab", name: "PDU Lab", role: "floor" },
       ],
       floor_sync: {
         configured: false,
@@ -188,10 +188,10 @@ describe("OperatorPanel inline Transformer SN setup", () => {
       webhook_configured: Boolean(request.teams_webhook_url),
       is_summary_poster: request.station_id === (request.summary_poster_station_id || "pdu-lab"),
       stations: request.stations ?? [
-        { id: "test-station-1", name: "Test Station 1" },
-        { id: "test-station-3", name: "Test Station 3" },
-        { id: "test-station-4", name: "Test Station 4" },
-        { id: "pdu-lab", name: "PDU Lab" },
+        { id: "test-station-1", name: "Test Station 1", role: "floor" },
+        { id: "test-station-3", name: "Test Station 3", role: "floor" },
+        { id: "test-station-4", name: "Test Station 4", role: "floor" },
+        { id: "pdu-lab", name: "PDU Lab", role: "floor" },
       ],
       floor_sync: {
         configured: Boolean(request.shared_shift_log_path?.trim()),

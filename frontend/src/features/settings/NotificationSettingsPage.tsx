@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   ArrowLeft,
   CalendarClock,
-  ChevronDown,
   ChevronRight,
   ClipboardList,
   FolderOpen,
@@ -22,6 +21,7 @@ import { ScrollRegion } from "@/shared/ui/ScrollRegion";
 import { SettingsPasswordModal } from "./SettingsPasswordModal";
 import { ShiftRangePicker } from "./ShiftRangePicker";
 import { shiftScheduleError } from "./shiftTime";
+import { IdentityCombobox } from "./IdentityCombobox";
 import {
   NOTIFICATION_STATIONS,
   createDefaultNotificationSettings,
@@ -30,6 +30,7 @@ import {
   shouldApplySettingsReload,
   stationNameForId,
   type AppNotificationSettingsView,
+  type CatalogCreateRequest,
   type ChangeSettingsPassword,
   type ChooseSharedNotificationsFolder,
   type GetNotificationStatus,
@@ -48,10 +49,6 @@ import {
 
 const inputClassName =
   "mt-1 h-9 w-full rounded-md border border-[#454542] bg-[#1f1f1e] px-2.5 text-[8.5pt] text-white placeholder:text-[#777772] outline-none transition focus:border-[#1f74ae] focus:ring-2 focus:ring-cyan-200/25 disabled:cursor-not-allowed disabled:opacity-60";
-const selectClassName = cn(
-  inputClassName,
-  "cursor-pointer appearance-none pr-9 font-medium",
-);
 const PING_POLL_ATTEMPTS = 45;
 const PING_POLL_INTERVAL_MS = 500;
 /** Reload floor/local settings while Settings is open and the form is clean. */
@@ -107,6 +104,10 @@ export function NotificationSettingsPage({
    */
   const [floorConnectPassword, setFloorConnectPassword] = useState("");
   const [floorPasswordPromptOpen, setFloorPasswordPromptOpen] = useState(false);
+  const [thisPcIdentityQuery, setThisPcIdentityQuery] = useState("");
+  const [identityDraft, setIdentityDraft] = useState("");
+  const [managedIdentityId, setManagedIdentityId] = useState<string | null>(null);
+  const [catalogCreate, setCatalogCreate] = useState<CatalogCreateRequest | null>(null);
 
   const [settings, setSettings] = useState<AppNotificationSettingsView | null>(null);
   const [savedSettings, setSavedSettings] = useState<AppNotificationSettingsView | null>(null);
@@ -143,6 +144,7 @@ export function NotificationSettingsPage({
         setSettings(loaded);
         setSavedSettings(loaded);
         setSavedFingerprint(settingsFingerprint(loaded));
+        setThisPcIdentityQuery(loaded.station_name);
         setSummaryShiftLabel(loaded.shifts[0]?.label ?? "");
       })
       .catch((error) => {
@@ -189,7 +191,13 @@ export function NotificationSettingsPage({
   const passwordDirty = Boolean(
     passwordFields.current || passwordFields.next || passwordFields.confirm,
   );
-  const isDirty = settingsDirty || passwordDirty;
+  const identityUiDirty = Boolean(
+    catalogCreate ||
+      identityDraft.trim() ||
+      (settings && thisPcIdentityQuery !== settings.station_name),
+  );
+  const stationSettingsDirty = settingsDirty || identityUiDirty;
+  const isDirty = stationSettingsDirty || passwordDirty;
   const shiftValidationError = settings ? shiftScheduleError(settings.shifts) : "";
 
   // Keep latest dirty/saving/saved snapshots for the open Settings poll (do not read in render).
@@ -216,6 +224,7 @@ export function NotificationSettingsPage({
         setSettings(loaded);
         setSavedSettings(loaded);
         setSavedFingerprint(settingsFingerprint(loaded));
+        setThisPcIdentityQuery(loaded.station_name);
         if (
           prevUpdatedAt &&
           nextUpdatedAt &&
@@ -270,7 +279,11 @@ export function NotificationSettingsPage({
     if (savedSettings) {
       setSettings(savedSettings);
       setSavedFingerprint(settingsFingerprint(savedSettings));
+      setThisPcIdentityQuery(savedSettings.station_name);
     }
+    setIdentityDraft("");
+    setManagedIdentityId(null);
+    setCatalogCreate(null);
     setPasswordFields(emptyPasswordFields);
     setSaveResult(null);
     setPasswordResult(null);
@@ -311,6 +324,20 @@ export function NotificationSettingsPage({
       setSaveResult({ tone: "error", text: shiftValidationError });
       return false;
     }
+    if (view === "station" && thisPcIdentityQuery !== settings.station_name) {
+      setSaveResult({
+        tone: "error",
+        text: "Choose an identity from the This PC identity list before saving.",
+      });
+      return false;
+    }
+    if (view === "station" && identityDraft.trim() && !managedIdentityId && !catalogCreate) {
+      setSaveResult({
+        tone: "error",
+        text: "Choose an existing identity or use an Add as Floor/Admin option before saving.",
+      });
+      return false;
+    }
     const { scope, connect_password } = resolveSaveScope(
       view,
       settings,
@@ -318,7 +345,12 @@ export function NotificationSettingsPage({
       advancedUnlockPassword,
       floorConnectPassword,
     );
-    const request = saveRequestFromSettings(settings, scope, connect_password);
+    const request = saveRequestFromSettings(
+      settings,
+      scope,
+      connect_password,
+      catalogCreate ?? undefined,
+    );
     setIsSaving(true);
     setSaveResult(null);
     try {
@@ -327,6 +359,10 @@ export function NotificationSettingsPage({
       setSettings(nextSettings);
       setSavedSettings(nextSettings);
       setSavedFingerprint(settingsFingerprint(nextSettings));
+      setThisPcIdentityQuery(nextSettings.station_name);
+      setIdentityDraft("");
+      setManagedIdentityId(null);
+      setCatalogCreate(null);
       setFloorConnectPassword("");
       setFloorPasswordPromptOpen(false);
       setSaveResult({ tone: "success", text: "Settings saved." });
@@ -388,7 +424,7 @@ export function NotificationSettingsPage({
       }
     }
 
-    if (settingsDirty) {
+    if (stationSettingsDirty) {
       const saved = await handleSave();
       if (!saved) {
         setLeaveTarget(null);
@@ -611,6 +647,9 @@ export function NotificationSettingsPage({
 
   function toggleIncludedStation(stationId: string) {
     if (!settings) return;
+    const floorStationIds = settings.stations
+      .filter((station) => station.role === "floor")
+      .map((station) => station.id);
     const current = new Set(settings.summary_included_station_ids);
     if (current.has(stationId)) {
       if (current.size <= 1) return;
@@ -618,7 +657,7 @@ export function NotificationSettingsPage({
     } else {
       current.add(stationId);
     }
-    const included = settings.stations.map((s) => s.id).filter((id) => current.has(id));
+    const included = floorStationIds.filter((id) => current.has(id));
     let poster = settings.summary_poster_station_id;
     if (!current.has(poster)) {
       poster = included[0] ?? poster;
@@ -632,16 +671,22 @@ export function NotificationSettingsPage({
 
   function setMainStation(stationId: string) {
     if (!settings || pageBusy) return;
+    if (!settings.stations.some((station) => station.id === stationId && station.role === "floor")) {
+      return;
+    }
     const current = new Set(settings.summary_included_station_ids);
     current.add(stationId);
     updateSettings({
       summary_poster_station_id: stationId,
       is_summary_poster: settings.station_id === stationId,
       summary_included_station_ids: settings.stations
+        .filter((station) => station.role === "floor")
         .map((s) => s.id)
         .filter((id) => current.has(id)),
     });
   }
+
+  const floorStations = settings?.stations.filter((station) => station.role === "floor") ?? [];
 
   return (
     <main className="flex h-screen min-h-[400px] w-full min-w-[360px] max-w-full flex-col overflow-hidden bg-[#20201f] text-white">
@@ -881,7 +926,7 @@ export function NotificationSettingsPage({
                   <span className="font-medium text-[#9a958c]">Main poster</span>
                 </div>
                 <div className="mt-2 space-y-1.5" role="list" aria-label="Stations in summary">
-                  {settings.stations.map((station) => {
+                  {floorStations.map((station) => {
                     const checked = settings.summary_included_station_ids.includes(station.id);
                     const isMain = settings.summary_poster_station_id === station.id;
                     return (
@@ -978,18 +1023,21 @@ export function NotificationSettingsPage({
           {view === "station" && advancedUnlocked ? (
             <form onSubmit={(e) => void handleSave(e)} className="space-y-3 rounded-md border border-[#454542] bg-[#292928] p-4">
               <div className="grid gap-3 sm:grid-cols-2">
-                <FieldSelect
-                  label="This PC station"
-                  value={settings.station_id}
+                <IdentityCombobox
+                  label="This PC identity"
+                  entries={settings.stations}
+                  value={thisPcIdentityQuery}
                   disabled={pageBusy}
-                  onChange={(stationId) => {
+                  onValueChange={setThisPcIdentityQuery}
+                  onSelect={(identity) => {
+                    setThisPcIdentityQuery(identity.name);
                     updateSettings({
-                      station_id: stationId,
-                      station_name: stationNameForId(stationId, settings.stations),
-                      is_summary_poster: stationId === settings.summary_poster_station_id,
+                      station_id: identity.id,
+                      station_name: identity.name,
+                      is_summary_poster: identity.id === settings.summary_poster_station_id,
                     });
                   }}
-                  options={settings.stations.map((s) => ({ value: s.id, label: s.name }))}
+                  onCreate={() => undefined}
                 />
                 <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
                   Destination name
@@ -1008,39 +1056,84 @@ export function NotificationSettingsPage({
                     : "Shared folder not set — settings stay on this PC only.")}
               </div>
               <div>
-                <div className="text-[8pt] font-semibold text-[#d8d2c8]">Station display names</div>
+                <div className="text-[8pt] font-semibold text-[#d8d2c8]">Manage identities</div>
                 <p className="mt-1 text-[7.5pt] leading-snug text-[#9a958c]">
-                  Rename labels used on Teams cards and Settings. Stable ids stay fixed so history does not break.
-                  Changes sync to other PCs that share this folder.
+                  Select an identity to rename it, or type a new unique name and choose whether
+                  it is a Floor Station or Admin Identity. Stable ids never change.
                 </p>
                 <div className="mt-2 space-y-2">
-                  {settings.stations.map((station) => (
-                    <label key={station.id} className="block text-[8pt] font-semibold text-[#d8d2c8]">
-                      <span className="flex items-baseline justify-between gap-2">
-                        <span>Display name</span>
-                        <span className="font-normal text-[#777772]">{station.id}</span>
+                  <IdentityCombobox
+                    label="Manage identities"
+                    entries={settings.stations}
+                    value={identityDraft}
+                    disabled={pageBusy}
+                    allowCreate
+                    placeholder="Search, rename, or add an identity"
+                    onValueChange={(name) => {
+                      setIdentityDraft(name);
+                      if (catalogCreate) {
+                        setCatalogCreate({ ...catalogCreate, name });
+                      }
+                      if (!managedIdentityId) return;
+                      const stations = settings.stations.map((entry) =>
+                        entry.id === managedIdentityId ? { ...entry, name } : entry,
+                      );
+                      updateSettings({
+                        stations,
+                        station_name:
+                          settings.station_id === managedIdentityId
+                            ? name
+                            : settings.station_name,
+                      });
+                      if (settings.station_id === managedIdentityId) {
+                        setThisPcIdentityQuery(name);
+                      }
+                    }}
+                    onSelect={(identity) => {
+                      setManagedIdentityId(identity.id);
+                      setIdentityDraft(identity.name);
+                      setCatalogCreate(null);
+                    }}
+                    onCreate={(name, role) => {
+                      setManagedIdentityId(null);
+                      setIdentityDraft(name);
+                      setCatalogCreate({ name, role, select_for_this_pc: false });
+                    }}
+                  />
+                  {managedIdentityId ? (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-[#454542] bg-[#242423] px-3 py-2 text-[7.5pt] text-[#9a958c]">
+                      <span>{managedIdentityId}</span>
+                      <span>
+                        {identityRoleLabel(
+                          settings.stations.find((entry) => entry.id === managedIdentityId)?.role ??
+                            "floor",
+                        )}
                       </span>
-                      <input
-                        value={station.name}
-                        disabled={pageBusy}
-                        maxLength={64}
-                        onChange={(e) => {
-                          const name = e.target.value;
-                          const stations = settings.stations.map((entry) =>
-                            entry.id === station.id ? { ...entry, name } : entry,
-                          );
-                          updateSettings({
-                            stations,
-                            station_name:
-                              settings.station_id === station.id
-                                ? name
-                                : settings.station_name,
-                          });
-                        }}
-                        className={inputClassName}
-                      />
-                    </label>
-                  ))}
+                    </div>
+                  ) : null}
+                  {catalogCreate ? (
+                    <div className="rounded border border-[#1f74ae]/50 bg-[#1f74ae]/10 px-3 py-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[7.5pt] text-[#b8ddf5]">
+                        <span>New {identityRoleLabel(catalogCreate.role)}</span>
+                        <span>Stable id assigned on Save</span>
+                      </div>
+                      <label className="mt-2 flex items-center gap-2 text-[8pt] font-semibold text-[#d8d2c8]">
+                        <input
+                          type="checkbox"
+                          checked={catalogCreate.select_for_this_pc}
+                          disabled={pageBusy}
+                          onChange={(event) =>
+                            setCatalogCreate({
+                              ...catalogCreate,
+                              select_for_this_pc: event.target.checked,
+                            })
+                          }
+                          className="h-4 w-4 accent-[#1f74ae]"
+                        />
+                        Use on this PC
+                      </label>
+                    </div>
+                  ) : null}
                 </div>
               </div>
               <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
@@ -1067,6 +1160,20 @@ export function NotificationSettingsPage({
                   className="h-4 w-4 accent-[#1f74ae]"
                 />
                 Notifications enabled
+              </label>
+              <label className="flex min-h-9 items-center gap-2 rounded border border-[#454542] bg-[#242423] px-3 text-[8.5pt]">
+                <input
+                  type="checkbox"
+                  checked={settings.events.changeover}
+                  disabled={pageBusy}
+                  onChange={(event) =>
+                    updateSettings({
+                      events: { ...settings.events, changeover: event.target.checked },
+                    })
+                  }
+                  className="h-4 w-4 accent-[#1f74ae]"
+                />
+                Changeover card after 208V Breaker 8 – 20% Load
               </label>
               <div>
                 <div className="text-[8pt] font-semibold text-[#d8d2c8]">Shared OneDrive folder</div>
@@ -1125,7 +1232,7 @@ export function NotificationSettingsPage({
               <div className="flex flex-wrap justify-between gap-2 border-t border-[#454542] pt-3">
                 <button
                   type="button"
-                  disabled={pageBusy || settingsDirty}
+                  disabled={pageBusy || stationSettingsDirty}
                   onClick={() => void handleTestPing()}
                   className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#3a3a38] px-3 text-[8.5pt] font-semibold disabled:opacity-60"
                 >
@@ -1133,7 +1240,7 @@ export function NotificationSettingsPage({
                 </button>
                 <button
                   type="submit"
-                  disabled={pageBusy || !settingsDirty}
+                  disabled={pageBusy || !stationSettingsDirty}
                   className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#1d7f47] px-3 text-[8.5pt] font-semibold text-white disabled:opacity-60"
                 >
                   <Save className="h-3.5 w-3.5" /> Save
@@ -1275,44 +1382,6 @@ export function NotificationSettingsPage({
   );
 }
 
-function FieldSelect({
-  label,
-  value,
-  options,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: { value: string; label: string }[];
-  disabled?: boolean;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="block text-[8pt] font-semibold text-[#d8d2c8]">
-      {label}
-      <span className="relative mt-1 block">
-        <select
-          value={value}
-          disabled={disabled}
-          onChange={(event) => onChange(event.target.value)}
-          className={selectClassName}
-        >
-          {options.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-        <ChevronDown
-          className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#9a958c]"
-          aria-hidden="true"
-        />
-      </span>
-    </label>
-  );
-}
-
 function MenuButton({
   icon: Icon,
   title,
@@ -1353,16 +1422,29 @@ function ResultLine({ result }: { result: ResultMessage }) {
   );
 }
 
+function identityRoleLabel(role: "floor" | "admin") {
+  return role === "admin" ? "Admin Identity" : "Floor Station";
+}
+
 function normalizeLoaded(settings: AppNotificationSettingsView): AppNotificationSettingsView {
   const stations =
     settings.stations?.length > 0
-      ? settings.stations.map((s) => ({ id: s.id, name: s.name }))
-      : NOTIFICATION_STATIONS.map((s) => ({ id: s.id, name: s.name }));
-  const knownIds = new Set(stations.map((s) => s.id));
+      ? settings.stations.map((s) => ({
+          id: s.id,
+          name: s.name,
+          role: s.role === "admin" ? "admin" as const : "floor" as const,
+        }))
+      : NOTIFICATION_STATIONS.map((s) => ({ ...s }));
+  const floorStations = stations.filter((station) => station.role === "floor");
+  const knownFloorIds = new Set(floorStations.map((s) => s.id));
   const included =
     settings.summary_included_station_ids?.length > 0
-      ? settings.summary_included_station_ids.filter((id) => knownIds.has(id))
-      : stations.map((s) => s.id);
+      ? settings.summary_included_station_ids.filter((id) => knownFloorIds.has(id))
+      : floorStations.map((s) => s.id);
+  const fallbackPosterId = floorStations[0]?.id ?? "pdu-lab";
+  const posterId = knownFloorIds.has(settings.summary_poster_station_id)
+    ? settings.summary_poster_station_id
+    : fallbackPosterId;
   return {
     ...settings,
     shifts: settings.shifts ?? [],
@@ -1376,11 +1458,11 @@ function normalizeLoaded(settings: AppNotificationSettingsView): AppNotification
         ? "Syncing via shared folder."
         : "Shared folder not set — settings stay on this PC only.",
     },
-    summary_poster_station_id: settings.summary_poster_station_id || "pdu-lab",
+    summary_poster_station_id: posterId,
     summary_included_station_ids:
-      included.length > 0 ? included : stations.map((s) => s.id),
+      included.length > 0 ? included : floorStations.map((s) => s.id),
     is_summary_poster:
-      settings.station_id === (settings.summary_poster_station_id || "pdu-lab"),
+      settings.station_id === posterId,
     station_name: stationNameForId(settings.station_id, stations),
     events: {
       problem: settings.events?.problem ?? true,
@@ -1413,6 +1495,7 @@ function saveRequestFromSettings(
   settings: AppNotificationSettingsView,
   scope: SettingsSaveScope,
   connectPassword?: string,
+  catalogCreate?: CatalogCreateRequest,
 ): SaveNotificationSettingsRequest {
   const request: SaveNotificationSettingsRequest = {
     enabled: settings.enabled,
@@ -1433,11 +1516,18 @@ function saveRequestFromSettings(
     stations: settings.stations.map((s) => ({
       id: s.id,
       name: s.name.trim(),
+      role: s.role,
     })),
     scope,
   };
   if (connectPassword) {
     request.connect_password = connectPassword;
+  }
+  if (catalogCreate) {
+    request.catalog_create = {
+      ...catalogCreate,
+      name: catalogCreate.name.trim(),
+    };
   }
   return request;
 }

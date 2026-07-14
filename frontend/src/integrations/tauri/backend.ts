@@ -130,9 +130,18 @@ export interface ShiftWindow {
   end_time: string;
 }
 
+export type StationRole = "floor" | "admin";
+
 export interface StationCatalogEntry {
   id: string;
   name: string;
+  role: StationRole;
+}
+
+export interface CatalogCreateRequest {
+  name: string;
+  role: StationRole;
+  select_for_this_pc: boolean;
 }
 
 export interface FloorSyncStatus {
@@ -171,6 +180,7 @@ export type SaveAppNotificationSettingsRequest = Omit<
   scope: SettingsSaveScope;
   /** Required when Connect targets an existing floor file. */
   connect_password?: string;
+  catalog_create?: CatalogCreateRequest;
 };
 
 export interface ShiftSummaryPreview {
@@ -408,13 +418,27 @@ export async function saveAppNotificationSettings(
       ? request.stations
       : mockNotificationSettings.stations
     ).map((s) => ({ ...s }));
+    let stationId = request.station_id;
+    let stationName = request.station_name;
+    if (request.catalog_create) {
+      const created = {
+        id: `identity-mock-${stations.length + 1}`,
+        name: request.catalog_create.name.trim(),
+        role: request.catalog_create.role,
+      };
+      stations.push(created);
+      if (request.catalog_create.select_for_this_pc) {
+        stationId = created.id;
+        stationName = created.name;
+      }
+    }
     mockNotificationSettings = {
       enabled: request.enabled,
       teams_destination_name: request.teams_destination_name,
       teams_webhook_url: "",
       webhook_configured: Boolean(mockNotificationWebhookUrl),
-      station_id: request.station_id,
-      station_name: request.station_name,
+      station_id: stationId,
+      station_name: stationName,
       idle_timeout_minutes: request.idle_timeout_minutes,
       events: { ...request.events },
       shared_shift_log_path: request.shared_shift_log_path,
@@ -617,10 +641,10 @@ function mockUnitFolderSuggestion(): UnitFolderSuggestion {
 let mockSettingsPassword = "0601";
 let mockNotificationWebhookUrl = "";
 const mockStations: StationCatalogEntry[] = [
-  { id: "test-station-1", name: "Test Station 1" },
-  { id: "test-station-3", name: "Test Station 3" },
-  { id: "test-station-4", name: "Test Station 4" },
-  { id: "pdu-lab", name: "PDU Lab" },
+  { id: "test-station-1", name: "Test Station 1", role: "floor" },
+  { id: "test-station-3", name: "Test Station 3", role: "floor" },
+  { id: "test-station-4", name: "Test Station 4", role: "floor" },
+  { id: "pdu-lab", name: "PDU Lab", role: "floor" },
 ];
 let mockNotificationSettings: AppNotificationSettingsView = {
   enabled: true,

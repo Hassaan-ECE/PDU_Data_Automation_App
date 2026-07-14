@@ -12,9 +12,18 @@ export type ShiftWindow = {
   end_time: string;
 };
 
+export type StationRole = "floor" | "admin";
+
 export type StationCatalogEntry = {
   id: string;
   name: string;
+  role: StationRole;
+};
+
+export type CatalogCreateRequest = {
+  name: string;
+  role: StationRole;
+  select_for_this_pc: boolean;
 };
 
 export type FloorSyncStatus = {
@@ -53,6 +62,8 @@ export type SaveNotificationSettingsRequest = Omit<
   scope: SettingsSaveScope;
   /** Required when Connect targets an existing floor file. */
   connect_password?: string;
+  /** Creates at most one backend-id identity while holding the floor lock. */
+  catalog_create?: CatalogCreateRequest;
 };
 
 export type NotificationRuntimeStatus = {
@@ -100,10 +111,10 @@ export type PostShiftSummary = (shiftLabel: string) => Promise<ShiftSummaryResul
 
 /** Fallback catalog when backend has not returned stations yet (tests / offline). */
 export const NOTIFICATION_STATIONS = [
-  { id: "test-station-1", name: "Test Station 1" },
-  { id: "test-station-3", name: "Test Station 3" },
-  { id: "test-station-4", name: "Test Station 4" },
-  { id: "pdu-lab", name: "PDU Lab" },
+  { id: "test-station-1", name: "Test Station 1", role: "floor" },
+  { id: "test-station-3", name: "Test Station 3", role: "floor" },
+  { id: "test-station-4", name: "Test Station 4", role: "floor" },
+  { id: "pdu-lab", name: "PDU Lab", role: "floor" },
 ] as const;
 
 export type NotificationStationId = (typeof NOTIFICATION_STATIONS)[number]["id"];
@@ -135,7 +146,7 @@ export function defaultFloorSyncLocal(): FloorSyncStatus {
 }
 
 export function createDefaultNotificationSettings(): AppNotificationSettingsView {
-  const stations = NOTIFICATION_STATIONS.map((s) => ({ id: s.id, name: s.name }));
+  const stations = NOTIFICATION_STATIONS.map((s) => ({ ...s }));
   return {
     enabled: true,
     teams_destination_name: "PDU Testing",

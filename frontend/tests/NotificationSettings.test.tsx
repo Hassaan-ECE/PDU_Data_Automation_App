@@ -39,10 +39,10 @@ function settingsFixture(
     ],
     is_summary_poster: false,
     stations: [
-      { id: "test-station-1", name: "Test Station 1" },
-      { id: "test-station-3", name: "Test Station 3" },
-      { id: "test-station-4", name: "Test Station 4" },
-      { id: "pdu-lab", name: "PDU Lab" },
+      { id: "test-station-1", name: "Test Station 1", role: "floor" },
+      { id: "test-station-3", name: "Test Station 3", role: "floor" },
+      { id: "test-station-4", name: "Test Station 4", role: "floor" },
+      { id: "pdu-lab", name: "PDU Lab", role: "floor" },
     ],
     floor_sync: {
       configured: false,
@@ -106,7 +106,7 @@ async function unlockAdvancedStationTeams() {
   fireEvent.change(await screen.findByLabelText("Password"), { target: { value: "0601" } });
   fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
   fireEvent.click(await screen.findByRole("button", { name: /Station & Teams/i }));
-  await screen.findByLabelText("This PC station");
+  await screen.findByRole("combobox", { name: "This PC identity" });
 }
 
 afterEach(() => {
@@ -196,30 +196,30 @@ describe("NotificationSettingsPage", () => {
     expect(await screen.findByLabelText("Teams webhook URL")).toBeInTheDocument();
   });
 
-  it("shows editable station display names with stable ids in Advanced", async () => {
+  it("shows searchable identity controls with immutable id and role details", async () => {
     renderSettingsPage();
     await unlockAdvancedStationTeams();
 
-    expect(screen.getByText("Station display names")).toBeInTheDocument();
-    expect(screen.getByText("test-station-1")).toBeInTheDocument();
-    expect(screen.getByText("test-station-3")).toBeInTheDocument();
-    expect(screen.getByText("test-station-4")).toBeInTheDocument();
-    expect(screen.getByText("pdu-lab")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "This PC identity" })).toHaveValue(
+      "Test Station 3",
+    );
+    expect(screen.getByRole("combobox", { name: "Manage identities" })).toBeInTheDocument();
 
-    const nameInputs = screen.getAllByDisplayValue(/Test Station|PDU Lab/);
-    expect(nameInputs.length).toBeGreaterThanOrEqual(4);
+    fireEvent.focus(screen.getByRole("combobox", { name: "Manage identities" }));
+    fireEvent.click(screen.getByRole("option", { name: /Test Station 3.*Floor Station/i }));
+    expect(screen.getByText("test-station-3")).toBeInTheDocument();
+    expect(screen.getByText("Floor Station")).toBeInTheDocument();
   });
 
-  it("saves Advanced renames with scope advanced", async () => {
+  it("renames an existing identity while preserving its stable id", async () => {
     const saveSettings = vi.fn(async () => null);
     renderSettingsPage({ saveSettings });
     await unlockAdvancedStationTeams();
 
-    const station3Input = screen
-      .getAllByDisplayValue("Test Station 3")
-      .find((el) => el.tagName === "INPUT");
-    expect(station3Input).toBeTruthy();
-    fireEvent.change(station3Input!, { target: { value: "Test Station 2" } });
+    const manager = screen.getByRole("combobox", { name: "Manage identities" });
+    fireEvent.focus(manager);
+    fireEvent.click(screen.getByRole("option", { name: /Test Station 3.*Floor Station/i }));
+    fireEvent.change(manager, { target: { value: "Test Station 2" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
@@ -234,14 +234,124 @@ describe("NotificationSettingsPage", () => {
     });
   });
 
-  it("saves station as PDU Lab from advanced settings with advanced scope", async () => {
+  it("adds an admin identity, selects it locally, and adopts the generated id response", async () => {
+    const saveSettings = vi.fn(async () => ({
+      ...settingsFixture(),
+      station_id: "identity-abcd-1",
+      station_name: "Syed Admin",
+      stations: [
+        ...settingsFixture().stations,
+        { id: "identity-abcd-1", name: "Syed Admin", role: "admin" as const },
+      ],
+    }));
+    renderSettingsPage({ saveSettings });
+    await unlockAdvancedStationTeams();
+
+    const manager = screen.getByRole("combobox", { name: "Manage identities" });
+    fireEvent.change(manager, { target: { value: "Syed Admin" } });
+    fireEvent.click(
+      screen.getByRole("option", { name: /Add Syed Admin as Admin Identity/i }),
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use on this PC" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(saveSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          catalog_create: {
+            name: "Syed Admin",
+            role: "admin",
+            select_for_this_pc: true,
+          },
+        }),
+      );
+    });
+    expect(await screen.findByRole("combobox", { name: "This PC identity" })).toHaveValue(
+      "Syed Admin",
+    );
+  });
+
+  it("adds a floor station and includes it in operator summary controls", async () => {
+    const saveSettings = vi.fn(async () => ({
+      ...settingsFixture(),
+      stations: [
+        ...settingsFixture().stations,
+        { id: "identity-floor-1", name: "Bay Five", role: "floor" as const },
+      ],
+      summary_included_station_ids: [
+        ...settingsFixture().summary_included_station_ids,
+        "identity-floor-1",
+      ],
+    }));
+    renderSettingsPage({ saveSettings });
+    await unlockAdvancedStationTeams();
+
+    const manager = screen.getByRole("combobox", { name: "Manage identities" });
+    fireEvent.change(manager, { target: { value: "Bay Five" } });
+    fireEvent.click(screen.getByRole("option", { name: /Add Bay Five as Floor Station/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(saveSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          catalog_create: {
+            name: "Bay Five",
+            role: "floor",
+            select_for_this_pc: false,
+          },
+        }),
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to settings menu" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to settings menu" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Summary options/i }));
+    expect(screen.getByRole("radio", { name: "Bay Five main poster" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Include Bay Five")).toBeInTheDocument();
+  });
+
+  it("supports keyboard selection and Escape on identity comboboxes", async () => {
+    renderSettingsPage();
+    await unlockAdvancedStationTeams();
+
+    const thisPc = screen.getByRole("combobox", { name: "This PC identity" });
+    fireEvent.focus(thisPc);
+    fireEvent.keyDown(thisPc, { key: "ArrowDown" });
+    fireEvent.keyDown(thisPc, { key: "Enter" });
+    expect(thisPc).toHaveValue("Test Station 1");
+
+    const manager = screen.getByRole("combobox", { name: "Manage identities" });
+    fireEvent.focus(manager);
+    expect(manager).toHaveAttribute("aria-expanded", "true");
+    fireEvent.keyDown(manager, { key: "Escape" });
+    expect(manager).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps a staged identity search intact instead of applying the open-settings poll", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const loadSettings = vi.fn(async () => settingsFixture());
+    renderSettingsPage({ loadSettings });
+    await unlockAdvancedStationTeams();
+
+    const manager = screen.getByRole("combobox", { name: "Manage identities" });
+    fireEvent.change(manager, { target: { value: "Unfinished Admin" } });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(45_000);
+    });
+
+    expect(loadSettings).toHaveBeenCalledTimes(1);
+    expect(manager).toHaveValue("Unfinished Admin");
+  });
+
+  it("saves PDU Lab as this PC identity with advanced scope", async () => {
     const saveSettings = vi.fn(async () => null);
     renderSettingsPage({ saveSettings });
     await unlockAdvancedStationTeams();
 
-    fireEvent.change(screen.getByLabelText("This PC station"), {
-      target: { value: "pdu-lab" },
-    });
+    const thisPc = screen.getByRole("combobox", { name: "This PC identity" });
+    fireEvent.change(thisPc, { target: { value: "PDU Lab" } });
+    fireEvent.click(screen.getByRole("option", { name: /PDU Lab.*Floor Station/i }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
@@ -260,10 +370,11 @@ describe("NotificationSettingsPage", () => {
       loadSettings: vi.fn(async () =>
         settingsFixture({
           stations: [
-            { id: "test-station-1", name: "Bay A" },
-            { id: "test-station-3", name: "Bay B" },
-            { id: "test-station-4", name: "Bay C" },
-            { id: "pdu-lab", name: "Main Desk" },
+            { id: "test-station-1", name: "Bay A", role: "floor" },
+            { id: "test-station-3", name: "Bay B", role: "floor" },
+            { id: "test-station-4", name: "Bay C", role: "floor" },
+            { id: "pdu-lab", name: "Main Desk", role: "floor" },
+            { id: "identity-admin", name: "Syed Admin", role: "admin" },
           ],
         }),
       ),
@@ -274,6 +385,8 @@ describe("NotificationSettingsPage", () => {
     expect(screen.getByRole("radio", { name: "Main Desk main poster" })).toBeInTheDocument();
     expect(screen.getByLabelText("Include Bay B")).toBeInTheDocument();
     expect(screen.getByLabelText("Include Main Desk")).toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: "Syed Admin main poster" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Include Syed Admin")).not.toBeInTheDocument();
   });
 
   it("lets operators set main poster and included stations with operator scope", async () => {
@@ -418,6 +531,28 @@ describe("NotificationSettingsPage", () => {
     });
   });
 
+  it("saves the Changeover notification toggle from Advanced", async () => {
+    const saveSettings = vi.fn(async () => null);
+    renderSettingsPage({ saveSettings });
+    await unlockAdvancedStationTeams();
+
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: "Changeover card after 208V Breaker 8 – 20% Load",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(saveSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: "advanced",
+          events: expect.objectContaining({ changeover: false }),
+        }),
+      ),
+    );
+  });
+
   it("picks shift times with separate five-minute hour and minute wheels", async () => {
     const saveSettings = vi.fn(async () => null);
     renderSettingsPage({ saveSettings });
@@ -558,10 +693,10 @@ describe("NotificationSettingsPage", () => {
       if (loadCount === 1) {
         return settingsFixture({
           stations: [
-            { id: "test-station-1", name: "Test Station 1" },
-            { id: "test-station-3", name: "Test Station 3" },
-            { id: "test-station-4", name: "Test Station 4" },
-            { id: "pdu-lab", name: "PDU Lab" },
+            { id: "test-station-1", name: "Test Station 1", role: "floor" },
+            { id: "test-station-3", name: "Test Station 3", role: "floor" },
+            { id: "test-station-4", name: "Test Station 4", role: "floor" },
+            { id: "pdu-lab", name: "PDU Lab", role: "floor" },
           ],
           floor_sync: {
             configured: true,
@@ -574,10 +709,10 @@ describe("NotificationSettingsPage", () => {
       }
       return settingsFixture({
         stations: [
-          { id: "test-station-1", name: "Renamed From Peer" },
-          { id: "test-station-3", name: "Test Station 3" },
-          { id: "test-station-4", name: "Test Station 4" },
-          { id: "pdu-lab", name: "PDU Lab" },
+          { id: "test-station-1", name: "Renamed From Peer", role: "floor" },
+          { id: "test-station-3", name: "Test Station 3", role: "floor" },
+          { id: "test-station-4", name: "Test Station 4", role: "floor" },
+          { id: "pdu-lab", name: "PDU Lab", role: "floor" },
         ],
         floor_sync: {
           configured: true,
