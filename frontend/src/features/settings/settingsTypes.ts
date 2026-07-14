@@ -1,6 +1,7 @@
 export type NotificationEventToggles = {
   problem: boolean;
   complete: boolean;
+  changeover: boolean;
   stuck: boolean;
   summary: boolean;
 };
@@ -60,7 +61,7 @@ export type NotificationRuntimeStatus = {
   station_name: string | null;
   destination_name: string | null;
   updated_at: string | null;
-  event_kind?: "test_ping" | "problem" | "complete" | "stuck" | "summary" | null;
+  event_kind?: "test_ping" | "problem" | "complete" | "changeover" | "stuck" | "summary" | null;
 };
 
 export type ShiftSummaryPreview = {
@@ -146,6 +147,7 @@ export function createDefaultNotificationSettings(): AppNotificationSettingsView
     events: {
       problem: true,
       complete: true,
+      changeover: true,
       stuck: false,
       summary: true,
     },

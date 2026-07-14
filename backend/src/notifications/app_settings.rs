@@ -1462,6 +1462,7 @@ fn default_app_events() -> EventToggles {
     EventToggles {
         problem: true,
         complete: true,
+        changeover: true,
         stuck: false,
         summary: true,
     }
@@ -1504,6 +1505,7 @@ mod tests {
             events: EventToggles {
                 problem: true,
                 complete: false,
+                changeover: true,
                 stuck: false,
                 summary: true,
             },

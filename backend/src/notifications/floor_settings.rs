@@ -725,6 +725,7 @@ fn default_events() -> EventToggles {
     EventToggles {
         problem: true,
         complete: true,
+        changeover: true,
         stuck: false,
         summary: true,
     }

@@ -1385,6 +1385,7 @@ function normalizeLoaded(settings: AppNotificationSettingsView): AppNotification
     events: {
       problem: settings.events?.problem ?? true,
       complete: settings.events?.complete ?? true,
+      changeover: settings.events?.changeover ?? true,
       stuck: false,
       summary: settings.events?.summary ?? true,
     },

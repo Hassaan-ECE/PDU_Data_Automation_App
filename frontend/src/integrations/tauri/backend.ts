@@ -113,12 +113,13 @@ export interface NotificationRuntimeStatus {
   station_name: string | null;
   destination_name: string | null;
   updated_at: string | null;
-  event_kind?: "test_ping" | "problem" | "complete" | "stuck" | "summary" | null;
+  event_kind?: "test_ping" | "problem" | "complete" | "changeover" | "stuck" | "summary" | null;
 }
 
 export interface NotificationEventToggles {
   problem: boolean;
   complete: boolean;
+  changeover: boolean;
   stuck: boolean;
   summary: boolean;
 }
@@ -625,6 +626,7 @@ let mockNotificationSettings: AppNotificationSettingsView = {
   enabled: true,
   events: {
     complete: true,
+    changeover: true,
     problem: true,
     stuck: false,
     summary: true,

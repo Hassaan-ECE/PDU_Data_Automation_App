@@ -152,7 +152,7 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     mocks.getNotificationStatus.mockResolvedValue(null);
     mocks.getAppNotificationSettings.mockResolvedValue({
       enabled: true,
-      events: { complete: true, problem: true, stuck: false, summary: true },
+      events: { changeover: true, complete: true, problem: true, stuck: false, summary: true },
       idle_timeout_minutes: 30,
       shared_shift_log_path: "",
       station_id: "test-station-1",

@@ -27,6 +27,8 @@ pub struct NotificationReceipts {
     #[serde(default)]
     pub complete: Option<NotificationReceipt>,
     #[serde(default)]
+    pub changeover: Option<NotificationReceipt>,
+    #[serde(default)]
     pub problems: BTreeMap<String, NotificationReceipt>,
 }
 
@@ -181,6 +183,43 @@ pub fn record_complete_notification_receipt(
     }
 
     state.notification_receipts.complete = Some(NotificationReceipt {
+        event_key: event_key.to_string(),
+        accepted_at: now_string(),
+    });
+    save_unit_state_unlocked(unit_folder, &state)?;
+
+    Ok(true)
+}
+
+/// Returns the durable receipt for the unit-level Changeover notification, if one exists.
+pub fn get_changeover_notification_receipt(
+    unit_folder: &Path,
+) -> io::Result<Option<NotificationReceipt>> {
+    let _lock = UnitStateLock::acquire(unit_folder)?;
+    let state = load_or_default_unlocked(unit_folder)?;
+
+    Ok(state.notification_receipts.changeover)
+}
+
+/// Records that the Changeover event was accepted by the notification endpoint.
+/// Re-recording the same event key is an idempotent no-op.
+pub fn record_changeover_notification_receipt(
+    unit_folder: &Path,
+    event_key: &str,
+) -> io::Result<bool> {
+    let _lock = UnitStateLock::acquire(unit_folder)?;
+    let mut state = load_or_default_unlocked(unit_folder)?;
+
+    if state
+        .notification_receipts
+        .changeover
+        .as_ref()
+        .is_some_and(|receipt| receipt.event_key == event_key)
+    {
+        return Ok(false);
+    }
+
+    state.notification_receipts.changeover = Some(NotificationReceipt {
         event_key: event_key.to_string(),
         accepted_at: now_string(),
     });
@@ -544,6 +583,36 @@ mod tests {
         let state = load_or_default(&unit_folder).expect("load old state");
 
         assert_eq!(state.notification_receipts, NotificationReceipts::default());
+    }
+
+    #[test]
+    fn old_unit_state_defaults_changeover_receipt_to_none() {
+        let state: UnitState = serde_json::from_str(r#"{"schema_version":1,"tasks":{}}"#).unwrap();
+
+        assert!(state.notification_receipts.changeover.is_none());
+    }
+
+    #[test]
+    fn changeover_notification_receipt_records_once_and_survives_reload() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("unit");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let event_key = "changeover:262343000072:208v-breaker-8-20% Load";
+
+        assert!(
+            record_changeover_notification_receipt(&unit_folder, event_key).expect("first receipt")
+        );
+        let first = get_changeover_notification_receipt(&unit_folder)
+            .expect("read receipt")
+            .expect("receipt exists");
+        assert!(
+            !record_changeover_notification_receipt(&unit_folder, event_key)
+                .expect("duplicate receipt")
+        );
+
+        let reloaded = load_or_default(&unit_folder).expect("reload state");
+        assert_eq!(first.event_key, event_key);
+        assert_eq!(reloaded.notification_receipts.changeover, Some(first));
     }
 
     #[test]

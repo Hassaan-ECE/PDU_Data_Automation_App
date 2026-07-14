@@ -5,6 +5,7 @@ pub enum EventKind {
     TestPing,
     Problem,
     Complete,
+    Changeover,
     Stuck,
     Summary,
 }
@@ -15,6 +16,7 @@ impl EventKind {
             Self::TestPing => format!("🔵 Connection confirmed · {station_name}"),
             Self::Problem => format!("🔴 Problem · {station_name}"),
             Self::Complete => format!("🟢 Complete · {station_name}"),
+            Self::Changeover => format!("🟡 Changeover · {station_name}"),
             Self::Stuck => format!("🟠 Stuck · {station_name}"),
             Self::Summary => format!("📊 Shift summary · {station_name}"),
         }
@@ -25,6 +27,7 @@ impl EventKind {
             Self::TestPing | Self::Summary => None,
             Self::Problem => Some("ISSUE"),
             Self::Complete => Some("STATUS"),
+            Self::Changeover => Some("ACTION"),
             Self::Stuck => Some("CONDITION"),
         }
     }
@@ -34,6 +37,7 @@ impl EventKind {
             Self::TestPing => "Notification delivery is working.",
             Self::Problem => "Automation requires attention",
             Self::Complete => "Ready for print and operator sign-off",
+            Self::Changeover => "Shut down the PDU and change transformer taps for 415V",
             Self::Stuck => "No meaningful progress was detected",
             Self::Summary => "No events were recorded for this period.",
         }
@@ -42,7 +46,7 @@ impl EventKind {
     fn adaptive_color(self) -> &'static str {
         match self {
             Self::Problem => "Attention",
-            Self::Stuck => "Warning",
+            Self::Changeover | Self::Stuck => "Warning",
             Self::Complete => "Good",
             Self::TestPing | Self::Summary => "Accent",
         }
@@ -133,7 +137,14 @@ pub fn format_event_message(
         sections.push(labeled("DETAIL", detail));
     }
     if let Some(step) = optional_nonempty(event.current_step.as_deref()) {
-        sections.push(labeled("CURRENT STEP", step));
+        sections.push(labeled(
+            if event.kind == EventKind::Changeover {
+                "NEXT STEP"
+            } else {
+                "CURRENT STEP"
+            },
+            step,
+        ));
     }
 
     let headline = event.kind.headline(station_name);
@@ -369,5 +380,28 @@ mod tests {
         assert_eq!(body[1]["items"][0]["text"], "UNIT");
         assert_eq!(body[2]["items"][0]["text"], "STATUS");
         assert_eq!(body[3]["separator"], true);
+    }
+
+    #[test]
+    fn changeover_message_names_manual_and_next_steps() {
+        let event = NotificationEvent {
+            kind: EventKind::Changeover,
+            unit_serial_number: Some("262343000072".to_string()),
+            subject:
+                "208V testing complete — shut down the PDU and change transformer taps for 415V"
+                    .to_string(),
+            detail: None,
+            current_step: Some("STEP43 · 415V Transformer Check".to_string()),
+        };
+        let message = format_event_message("Test Station 1", &event, "Jul 14, 2026 · 1:00 PM");
+
+        assert_eq!(message.headline(), "🟡 Changeover · Test Station 1");
+        assert_eq!(message.sections()[1].label.as_deref(), Some("ACTION"));
+        assert_eq!(message.sections()[2].label.as_deref(), Some("NEXT STEP"));
+        let payload = build_teams_payload(&message);
+        assert_eq!(
+            payload["attachments"][0]["content"]["body"][0]["color"],
+            "Warning"
+        );
     }
 }

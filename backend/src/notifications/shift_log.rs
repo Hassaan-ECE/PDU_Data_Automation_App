@@ -98,7 +98,7 @@ impl LoggedEvent {
         let kind = match kind {
             EventKind::Problem => ShiftLogEventKind::Problem,
             EventKind::Complete => ShiftLogEventKind::Complete,
-            EventKind::TestPing | EventKind::Stuck | EventKind::Summary => {
+            EventKind::TestPing | EventKind::Changeover | EventKind::Stuck | EventKind::Summary => {
                 return Err(ShiftLogError::UnsupportedEventKind)
             }
         };
@@ -729,6 +729,15 @@ mod tests {
                 "test-station-1",
                 "Test Station 1",
                 EventKind::TestPing,
+                "now"
+            ),
+            Err(ShiftLogError::UnsupportedEventKind)
+        );
+        assert_eq!(
+            LoggedEvent::from_notification_kind(
+                "test-station-1",
+                "Test Station 1",
+                EventKind::Changeover,
                 "now"
             ),
             Err(ShiftLogError::UnsupportedEventKind)

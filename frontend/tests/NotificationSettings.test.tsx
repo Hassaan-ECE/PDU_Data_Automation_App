@@ -24,6 +24,7 @@ function settingsFixture(
     events: {
       problem: true,
       complete: true,
+      changeover: true,
       stuck: false,
       summary: true,
     },

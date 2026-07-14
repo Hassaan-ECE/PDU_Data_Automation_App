@@ -14,12 +14,13 @@ use crate::automation::{self, TaskProcessResult};
 use super::{
     append_shift_log_event, can_send, format_event_message_now, load_runtime_resolved_config,
     resolve_floor_settings_file, EventKind, LoggedEvent, NotificationEvent, ResolvedConfig,
-    ShiftLogError, TeamsClient,
+    ShiftLogError, TeamsClient, TeamsError,
 };
 
 const NOTIFICATION_QUEUE_CAPACITY: usize = 16;
 /// How often to re-read `floor_settings.json` while the app is open.
 const FLOOR_SETTINGS_POLL_INTERVAL: Duration = Duration::from_secs(45);
+const CHANGEOVER_TRIGGER_TASK_ID: &str = "208v-breaker-8-20% Load";
 
 #[derive(Debug)]
 enum NotificationJob {
@@ -42,6 +43,9 @@ impl NotificationJob {
                     .any(|result| matches!(result.state.as_str(), "fail" | "warning")) =>
             {
                 Some(EventKind::Problem)
+            }
+            Self::TaskResults { results, .. } if results.iter().any(is_changeover_boundary) => {
+                Some(EventKind::Changeover)
             }
             Self::TaskResults { results, .. }
                 if results.iter().any(|result| result.state == "pass") =>
@@ -248,6 +252,7 @@ fn handle_task_results(
     unit_folder: &Path,
     results: Vec<TaskProcessResult>,
 ) {
+    let has_changeover = results.iter().any(is_changeover_boundary);
     let recovered_task_ids = results
         .iter()
         .filter(|result| result.state == "pass")
@@ -273,18 +278,128 @@ fn handle_task_results(
         .collect::<Vec<_>>();
 
     if !problem_results.is_empty() {
-        let config = match usable_config(EventKind::Problem, status) {
-            Some(config) => config,
-            None => return,
-        };
-        for result in problem_results {
-            handle_problem(client, status, unit_folder, result, &config);
+        if let Some(config) = usable_config(EventKind::Problem, status) {
+            for result in problem_results {
+                handle_problem(client, status, unit_folder, result, &config);
+            }
+        }
+        if has_changeover {
+            handle_changeover(client, status, unit_folder);
         }
         return;
     }
 
+    if has_changeover {
+        handle_changeover(client, status, unit_folder);
+    }
+
     if results.iter().any(|result| result.state == "pass") {
         handle_complete(client, status, unit_folder);
+    }
+}
+
+fn is_changeover_boundary(result: &TaskProcessResult) -> bool {
+    result.task_id == CHANGEOVER_TRIGGER_TASK_ID && result.state == "pass"
+}
+
+fn handle_changeover(
+    client: &TeamsClient,
+    status: &Arc<Mutex<NotificationRuntimeStatus>>,
+    unit_folder: &Path,
+) {
+    match automation::unit_state::get_changeover_notification_receipt(unit_folder) {
+        Ok(Some(_)) => return,
+        Ok(None) => {}
+        Err(error) => {
+            set_event_status(
+                status,
+                "failed",
+                &format!("Changeover notification receipt could not be read: {error}"),
+                None,
+                EventKind::Changeover,
+            );
+            return;
+        }
+    }
+    let config = match usable_config(EventKind::Changeover, status) {
+        Some(config) => config,
+        None => return,
+    };
+
+    deliver_changeover_with(status, unit_folder, &config, |message| {
+        client.post_message(&config.teams_webhook_url, message)
+    });
+}
+
+fn deliver_changeover_with<F>(
+    status: &Arc<Mutex<NotificationRuntimeStatus>>,
+    unit_folder: &Path,
+    config: &ResolvedConfig,
+    post: F,
+) where
+    F: FnOnce(&super::NotificationMessage) -> Result<(), TeamsError>,
+{
+    match automation::unit_state::get_changeover_notification_receipt(unit_folder) {
+        Ok(Some(_)) => return,
+        Ok(None) => {}
+        Err(error) => {
+            set_event_status(
+                status,
+                "failed",
+                &format!("Changeover notification receipt could not be read: {error}"),
+                Some(config),
+                EventKind::Changeover,
+            );
+            return;
+        }
+    }
+
+    let unit_serial_number = serial_number_from_unit_context(unit_folder);
+    let event = NotificationEvent {
+        kind: EventKind::Changeover,
+        unit_serial_number: unit_serial_number.clone(),
+        subject: "208V testing complete — shut down the PDU and change transformer taps for 415V"
+            .to_string(),
+        detail: None,
+        current_step: Some("STEP43 · 415V Transformer Check".to_string()),
+    };
+    let message = format_event_message_now(&config.station_name, &event);
+
+    match post(&message) {
+        Ok(()) => {
+            let event_key = format!(
+                "changeover:{}:{CHANGEOVER_TRIGGER_TASK_ID}",
+                unit_serial_number.as_deref().unwrap_or("unknown-unit")
+            );
+            match automation::unit_state::record_changeover_notification_receipt(
+                unit_folder,
+                &event_key,
+            ) {
+                Ok(_) => set_event_status(
+                    status,
+                    "sent",
+                    "Changeover card accepted by the Workflow.",
+                    Some(config),
+                    EventKind::Changeover,
+                ),
+                Err(error) => set_event_status(
+                    status,
+                    "failed",
+                    &format!(
+                        "Changeover card was accepted, but its receipt could not be saved: {error}"
+                    ),
+                    Some(config),
+                    EventKind::Changeover,
+                ),
+            }
+        }
+        Err(error) => set_event_status(
+            status,
+            "failed",
+            &format!("Changeover card delivery failed: {error}"),
+            Some(config),
+            EventKind::Changeover,
+        ),
     }
 }
 
@@ -564,6 +679,7 @@ fn usable_config(
     let enabled = match kind {
         EventKind::Problem => config.events.problem,
         EventKind::Complete => config.events.complete,
+        EventKind::Changeover => config.events.changeover,
         EventKind::Stuck => config.events.stuck,
         EventKind::Summary => config.events.summary,
         EventKind::TestPing => true,
@@ -720,6 +836,7 @@ fn event_kind_name(kind: EventKind) -> &'static str {
         EventKind::TestPing => "test_ping",
         EventKind::Problem => "problem",
         EventKind::Complete => "complete",
+        EventKind::Changeover => "changeover",
         EventKind::Stuck => "stuck",
         EventKind::Summary => "summary",
     }
@@ -727,6 +844,8 @@ fn event_kind_name(kind: EventKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
 
     #[test]
@@ -750,6 +869,97 @@ mod tests {
         let (subject, step) = task_context("208v-breaker-3-100% Load");
         assert_eq!(subject, "208V Breaker 3 · 100% Load");
         assert_eq!(step.as_deref(), Some("STEP24"));
+    }
+
+    #[test]
+    fn changeover_boundary_is_exactly_208v_breaker_8_20_percent() {
+        let pass = TaskProcessResult {
+            task_id: "208v-breaker-8-20% Load".to_string(),
+            state: "pass".to_string(),
+            code: 0,
+            message: "passed".to_string(),
+            log: Vec::new(),
+            report_path: None,
+            print_report_path: None,
+            failure: None,
+            source_csv_path: None,
+            csv_fingerprint: None,
+        };
+
+        assert!(is_changeover_boundary(&pass));
+        assert!(!is_changeover_boundary(&TaskProcessResult {
+            task_id: "208v-breaker-8-50% Load".to_string(),
+            ..pass.clone()
+        }));
+        assert!(!is_changeover_boundary(&TaskProcessResult {
+            state: "fail".to_string(),
+            ..pass
+        }));
+    }
+
+    #[test]
+    fn changeover_delivery_records_after_success_and_suppresses_repeat() {
+        let temp = tempfile::tempdir().unwrap();
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).unwrap();
+        let status = Arc::new(Mutex::new(NotificationRuntimeStatus::default()));
+        let config = test_config();
+        let posts = Cell::new(0);
+
+        deliver_changeover_with(&status, &unit_folder, &config, |_| {
+            posts.set(posts.get() + 1);
+            Ok(())
+        });
+        deliver_changeover_with(&status, &unit_folder, &config, |_| {
+            posts.set(posts.get() + 1);
+            Ok(())
+        });
+
+        assert_eq!(posts.get(), 1);
+        assert!(
+            automation::unit_state::get_changeover_notification_receipt(&unit_folder)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            status.lock().unwrap().event_kind.as_deref(),
+            Some("changeover")
+        );
+    }
+
+    #[test]
+    fn changeover_delivery_failure_leaves_no_receipt_for_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).unwrap();
+        let status = Arc::new(Mutex::new(NotificationRuntimeStatus::default()));
+
+        deliver_changeover_with(&status, &unit_folder, &test_config(), |_| {
+            Err(TeamsError::Transport(super::super::TransportFailure::Other))
+        });
+
+        assert!(
+            automation::unit_state::get_changeover_notification_receipt(&unit_folder)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(status.lock().unwrap().state, "failed");
+    }
+
+    fn test_config() -> ResolvedConfig {
+        ResolvedConfig {
+            enabled: true,
+            teams_destination_name: "PDU Testing".to_string(),
+            teams_webhook_url: "https://example.invalid/hook".to_string(),
+            station_id: "test-station-1".to_string(),
+            station_name: "Test Station 1".to_string(),
+            idle_timeout_minutes: 30,
+            events: super::super::EventToggles::default(),
+            summary_schedule_times: Vec::new(),
+            shared_shift_log_path: String::new(),
+            settings_path: PathBuf::from("settings.json"),
+            station_path: PathBuf::from("station.json"),
+        }
     }
 
     #[test]

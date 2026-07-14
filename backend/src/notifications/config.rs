@@ -55,6 +55,8 @@ pub struct EventToggles {
     #[serde(default = "default_true")]
     pub complete: bool,
     #[serde(default = "default_true")]
+    pub changeover: bool,
+    #[serde(default = "default_true")]
     pub stuck: bool,
     #[serde(default = "default_true")]
     pub summary: bool,
@@ -65,6 +67,7 @@ impl Default for EventToggles {
         Self {
             problem: true,
             complete: true,
+            changeover: true,
             stuck: true,
             summary: true,
         }
@@ -380,5 +383,13 @@ mod tests {
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("TOP_SECRET"));
         assert!(!debug.contains("example.invalid"));
+    }
+
+    #[test]
+    fn missing_changeover_toggle_defaults_to_enabled() {
+        let toggles: EventToggles =
+            serde_json::from_str(r#"{"problem":false,"complete":false}"#).unwrap();
+
+        assert!(toggles.changeover);
     }
 }
