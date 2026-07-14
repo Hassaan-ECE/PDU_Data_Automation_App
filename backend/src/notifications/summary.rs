@@ -11,8 +11,7 @@ use super::shift_log::{
     format_floor_summary, load_shift_log, mark_summary_and_clear, resolve_shift_log_file,
 };
 use super::stations::{
-    is_known_station_id, known_stations_owned, station_name_for_id,
-    DEFAULT_SUMMARY_POSTER_STATION_ID,
+    known_stations_owned, station_name_for_id, StationRole, DEFAULT_SUMMARY_POSTER_STATION_ID,
 };
 use super::teams::TeamsClient;
 use thiserror::Error;
@@ -167,7 +166,11 @@ pub fn post_shift_summary(
 
 fn poster_station_id(settings: &AppNotificationSettings) -> &str {
     let poster = settings.summary_poster_station_id.trim();
-    if poster.is_empty() || !is_known_station_id(poster) {
+    if poster.is_empty()
+        || !catalog_from_local(settings)
+            .iter()
+            .any(|entry| entry.id == poster && entry.role == StationRole::Floor)
+    {
         DEFAULT_SUMMARY_POSTER_STATION_ID
     } else {
         poster
@@ -186,6 +189,7 @@ fn catalog_pairs(settings: &AppNotificationSettings) -> Vec<(String, String)> {
     if !local.is_empty() {
         return local
             .into_iter()
+            .filter(|entry| entry.role == StationRole::Floor)
             .map(|entry| (entry.id, entry.name))
             .collect();
     }

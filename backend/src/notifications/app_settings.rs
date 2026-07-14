@@ -26,11 +26,12 @@ use thiserror::Error;
 
 use super::config::{EventToggles, ResolvedConfig};
 use super::floor_settings::{
-    try_load_floor_settings, validate_display_name, FloorSettings, FloorSettingsError, FloorStation,
+    generate_identity_id, try_load_floor_settings, validate_display_name, FloorSettings,
+    FloorSettingsError, FloorStation, FLOOR_SETTINGS_SCHEMA_VERSION,
 };
 use super::shift_log;
 use super::stations::{
-    is_known_station_id, known_stations_owned, station_name_for_id,
+    is_known_station_id, known_stations_owned, station_name_for_id, StationRole,
     DEFAULT_SUMMARY_POSTER_STATION_ID,
 };
 
@@ -70,6 +71,8 @@ pub enum AppSettingsError {
     EmptyStationId,
     #[error("Unknown station_id '{0}'")]
     UnknownStation(String),
+    #[error("Connect a shared folder before adding identities")]
+    SharedFolderRequiredForIdentity,
     #[error("Invalid shift window: {0}")]
     InvalidShift(String),
     #[error("{0}")]
@@ -92,7 +95,7 @@ impl From<FloorSettingsError> for AppSettingsError {
 }
 
 /// Which section of settings a save request is allowed to mutate.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingsSaveScope {
     /// Shifts, summary enabled (`events.summary`), Main poster, included stations.
@@ -113,6 +116,17 @@ pub enum SettingsSaveScope {
 pub struct StationCatalogEntry {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub role: StationRole,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug)]
+pub struct CatalogCreateRequest {
+    pub name: String,
+    #[serde(default)]
+    pub role: StationRole,
+    #[serde(default)]
+    pub select_for_this_pc: bool,
 }
 
 /// Whether this PC is reading/writing floor-wide settings via the shared folder.
@@ -321,6 +335,7 @@ fn settings_view_from(
             .map(|s| StationCatalogEntry {
                 id: s.id.clone(),
                 name: s.name.clone(),
+                role: s.role,
             })
             .collect(),
         None => catalog_from_local(settings),
@@ -376,7 +391,11 @@ pub fn catalog_from_local(settings: &AppNotificationSettings) -> Vec<StationCata
                 } else {
                     default_name
                 };
-            StationCatalogEntry { id, name }
+            StationCatalogEntry {
+                id,
+                name,
+                role: StationRole::Floor,
+            }
         })
         .collect()
 }
@@ -385,26 +404,36 @@ fn normalize_catalog_entries(
     catalog: &[StationCatalogEntry],
     settings: &AppNotificationSettings,
 ) -> Vec<StationCatalogEntry> {
-    known_stations_owned()
-        .into_iter()
-        .map(|(id, default_name)| {
-            let name = catalog
-                .iter()
-                .find(|entry| entry.id.trim() == id)
-                .map(|entry| entry.name.trim().to_string())
-                .filter(|name| !name.is_empty())
-                .or_else(|| {
-                    if id == settings.station_id.trim() && !settings.station_name.trim().is_empty()
-                    {
-                        Some(settings.station_name.trim().to_string())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(default_name);
-            StationCatalogEntry { id, name }
+    let mut normalized = catalog
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.id.trim();
+            let name = entry.name.trim();
+            (!id.is_empty() && !name.is_empty()).then(|| StationCatalogEntry {
+                id: id.to_string(),
+                name: if id == settings.station_id.trim()
+                    && !settings.station_name.trim().is_empty()
+                {
+                    settings.station_name.trim().to_string()
+                } else {
+                    name.to_string()
+                },
+                role: entry.role,
+            })
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    if normalized.is_empty() {
+        normalized = known_stations_owned()
+            .into_iter()
+            .map(|(id, name)| StationCatalogEntry {
+                id,
+                name,
+                role: StationRole::Floor,
+            })
+            .collect();
+    }
+    normalized
 }
 
 fn non_empty_opt(value: &str) -> Option<String> {
@@ -443,6 +472,9 @@ pub struct SaveAppNotificationSettingsRequest {
     /// Optional station display-name updates (Advanced). Empty means leave catalog unchanged.
     #[serde(default)]
     pub stations: Vec<StationCatalogEntry>,
+    /// Optional identity creation, applied under the shared floor lock.
+    #[serde(default)]
+    pub catalog_create: Option<CatalogCreateRequest>,
     /// Which fields this request may mutate (default: Operator).
     #[serde(default)]
     pub scope: SettingsSaveScope,
@@ -474,6 +506,7 @@ impl fmt::Debug for SaveAppNotificationSettingsRequest {
                 &self.summary_included_station_ids,
             )
             .field("stations", &self.stations)
+            .field("catalog_create", &self.catalog_create)
             .field("scope", &self.scope)
             .field(
                 "connect_password",
@@ -667,11 +700,19 @@ fn save_connect_unlocked(
     seed.updated_by_station_id = settings.station_id.trim().to_string();
     seed.updated_at = floor_settings_now();
 
+    let mut created_identity: Option<FloorStation> = None;
     let floor = super::floor_settings::update_floor_settings_with_lock(&new_path, |existing| {
         match existing {
             // Race: another station already seeded — keep their floor (adopt under lock).
             Some(existing_floor) => Ok(existing_floor),
-            None => Ok(seed.clone()),
+            None => {
+                let mut next = seed.clone();
+                created_identity =
+                    apply_catalog_patch(&mut next, &[], request.catalog_create.as_ref()).map_err(
+                        |error| super::floor_settings::FloorSettingsError::Write(error.to_string()),
+                    )?;
+                Ok(next)
+            }
         }
     })
     .map_err(AppSettingsError::from)?;
@@ -685,6 +726,19 @@ fn save_connect_unlocked(
     }
 
     floor.apply_to_local(settings);
+    if let Some(created) = &created_identity {
+        if request
+            .catalog_create
+            .as_ref()
+            .is_some_and(|create| create.select_for_this_pc)
+        {
+            settings.station_id = created.id.clone();
+            settings.station_name = created.name.clone();
+        }
+        if created.role == StationRole::Floor {
+            let _ = shift_log::ensure_floor_station_directory(&new_path, &created.id);
+        }
+    }
     settings.shared_shift_log_path = new_path;
     write_settings_unlocked(path, settings)?;
     Ok((settings.clone(), Some(floor)))
@@ -728,6 +782,9 @@ fn save_scoped_policy_unlocked(
     let shared = settings.shared_shift_log_path.trim().to_string();
 
     if shared.is_empty() {
+        if request.catalog_create.is_some() {
+            return Err(AppSettingsError::SharedFolderRequiredForIdentity);
+        }
         apply_scope_to_local(settings, request, scope)?;
         write_settings_unlocked(path, settings)?;
         return Ok((settings.clone(), None));
@@ -738,6 +795,7 @@ fn save_scoped_policy_unlocked(
     }
 
     let station_id = settings.station_id.trim().to_string();
+    let mut created_identity: Option<FloorStation> = None;
     let floor = super::floor_settings::update_floor_settings_with_lock(&shared, |existing| {
         let mut floor = existing.ok_or_else(|| {
             super::floor_settings::FloorSettingsError::Read(
@@ -749,6 +807,14 @@ fn save_scoped_policy_unlocked(
         apply_scope_to_floor(&mut floor, request, scope).map_err(|error| {
             super::floor_settings::FloorSettingsError::Write(error.to_string())
         })?;
+        if scope == SettingsSaveScope::Advanced {
+            created_identity = apply_catalog_patch(
+                &mut floor,
+                &request.stations,
+                request.catalog_create.as_ref(),
+            )
+            .map_err(|error| super::floor_settings::FloorSettingsError::Write(error.to_string()))?;
+        }
         floor.updated_by_station_id = station_id.clone();
         floor.updated_at = floor_settings_now();
         Ok(floor)
@@ -763,6 +829,19 @@ fn save_scoped_policy_unlocked(
     })?;
 
     floor.apply_to_local(settings);
+    if let Some(created) = &created_identity {
+        if request
+            .catalog_create
+            .as_ref()
+            .is_some_and(|create| create.select_for_this_pc)
+        {
+            settings.station_id = created.id.clone();
+            settings.station_name = created.name.clone();
+        }
+        if created.role == StationRole::Floor {
+            let _ = shift_log::ensure_floor_station_directory(&shared, &created.id);
+        }
+    }
     write_settings_unlocked(path, settings)?;
     Ok((settings.clone(), Some(floor)))
 }
@@ -775,7 +854,16 @@ fn apply_station_id_from_request(
     if station_id.is_empty() {
         return Err(AppSettingsError::EmptyStationId);
     }
-    if !is_known_station_id(station_id) {
+    if !is_known_station_id(station_id)
+        && !settings
+            .station_catalog
+            .iter()
+            .any(|entry| entry.id.trim() == station_id)
+        && !request
+            .stations
+            .iter()
+            .any(|entry| entry.id.trim() == station_id)
+    {
         return Err(AppSettingsError::UnknownStation(station_id.to_string()));
     }
     settings.station_id = station_id.to_string();
@@ -820,13 +908,15 @@ fn apply_scope_to_local(
             let poster = request.summary_poster_station_id.trim();
             settings.summary_poster_station_id = if poster.is_empty() {
                 default_summary_poster()
-            } else if is_known_station_id(poster) {
+            } else if is_floor_station_in_local(settings, poster) {
                 poster.to_string()
             } else {
                 return Err(AppSettingsError::UnknownStation(poster.to_string()));
             };
-            settings.summary_included_station_ids =
-                normalize_included_station_ids(&request.summary_included_station_ids)?;
+            settings.summary_included_station_ids = normalize_included_station_ids_local(
+                &request.summary_included_station_ids,
+                settings,
+            )?;
         }
         SettingsSaveScope::Advanced => {
             settings.enabled = request.enabled;
@@ -838,6 +928,7 @@ fn apply_scope_to_local(
             settings.idle_timeout_minutes = request.idle_timeout_minutes;
             settings.events.problem = request.events.problem;
             settings.events.complete = request.events.complete;
+            settings.events.changeover = request.events.changeover;
             settings.events.stuck = request.events.stuck;
             apply_station_id_from_request(settings, request)?;
             apply_station_names_to_catalog(settings, &request.stations)?;
@@ -860,13 +951,13 @@ fn apply_scope_to_floor(
             let poster = request.summary_poster_station_id.trim();
             floor.summary_poster_station_id = if poster.is_empty() {
                 default_summary_poster()
-            } else if is_known_station_id(poster) {
+            } else if floor.is_floor_identity(poster) {
                 poster.to_string()
             } else {
                 return Err(AppSettingsError::UnknownStation(poster.to_string()));
             };
             floor.summary_included_station_ids =
-                normalize_included_station_ids(&request.summary_included_station_ids)?;
+                normalize_included_station_ids_floor(&request.summary_included_station_ids, floor)?;
         }
         SettingsSaveScope::Advanced => {
             floor.enabled = request.enabled;
@@ -878,8 +969,8 @@ fn apply_scope_to_floor(
             floor.idle_timeout_minutes = request.idle_timeout_minutes;
             floor.events.problem = request.events.problem;
             floor.events.complete = request.events.complete;
+            floor.events.changeover = request.events.changeover;
             floor.events.stuck = request.events.stuck;
-            apply_station_names_to_floor(floor, &request.stations)?;
         }
         SettingsSaveScope::Connect | SettingsSaveScope::Local => {}
     }
@@ -904,7 +995,7 @@ fn apply_station_names_to_floor(
     }
     for entry in stations {
         let id = entry.id.trim();
-        if !is_known_station_id(id) {
+        if floor.station(id).is_none() {
             return Err(AppSettingsError::UnknownStation(id.to_string()));
         }
         let name = entry.name.trim();
@@ -913,16 +1004,44 @@ fn apply_station_names_to_floor(
             return Err(FloorSettingsError::EmptyStationName.into());
         }
         validate_display_name(name)?;
-        if let Some(slot) = floor.stations.iter_mut().find(|s| s.id == id) {
-            slot.name = name.to_string();
-        } else {
-            floor.stations.push(FloorStation {
-                id: id.to_string(),
-                name: name.to_string(),
-            });
-        }
+        let slot = floor
+            .stations
+            .iter_mut()
+            .find(|station| station.id == id)
+            .expect("validated floor station exists");
+        slot.name = name.to_string();
     }
     Ok(())
+}
+
+fn apply_catalog_patch(
+    floor: &mut FloorSettings,
+    renames: &[StationCatalogEntry],
+    create: Option<&CatalogCreateRequest>,
+) -> Result<Option<FloorStation>, AppSettingsError> {
+    apply_station_names_to_floor(floor, renames)?;
+
+    let created = if let Some(create) = create {
+        let name = create.name.trim();
+        validate_display_name(name)?;
+        let millis = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default();
+        let station = FloorStation {
+            id: generate_identity_id(&floor.stations, millis),
+            name: name.to_string(),
+            role: create.role,
+        };
+        floor.schema_version = FLOOR_SETTINGS_SCHEMA_VERSION;
+        floor.stations.push(station.clone());
+        Some(station)
+    } else {
+        None
+    };
+
+    super::floor_settings::validate_floor_settings(floor)?;
+    Ok(created)
 }
 
 fn apply_station_names_to_catalog(
@@ -937,7 +1056,12 @@ fn apply_station_names_to_catalog(
     }
     for entry in stations {
         let id = entry.id.trim();
-        if !is_known_station_id(id) {
+        if !is_known_station_id(id)
+            && !settings
+                .station_catalog
+                .iter()
+                .any(|existing| existing.id.trim() == id)
+        {
             return Err(AppSettingsError::UnknownStation(id.to_string()));
         }
         let name = entry.name.trim();
@@ -955,6 +1079,7 @@ fn apply_station_names_to_catalog(
             settings.station_catalog.push(StationCatalogEntry {
                 id: id.to_string(),
                 name: name.to_string(),
+                role: entry.role,
             });
         }
         if id == settings.station_id.trim() {
@@ -1021,19 +1146,33 @@ pub fn change_settings_password_at(
     let mut settings = load_or_create_unlocked(path)?;
     let shared = settings.shared_shift_log_path.trim().to_string();
     if !shared.is_empty() {
-        // Password change hits floor only — never reseed if missing.
-        let mut floor = try_load_floor_settings(&shared)?.ok_or_else(|| {
-            AppSettingsError::Floor(
-                "Floor settings file is missing; cannot change password while a shared folder is configured."
-                    .to_string(),
-            )
+        let station_id = settings.station_id.trim().to_string();
+        let mut wrong_password = false;
+        let floor = super::floor_settings::update_floor_settings_with_lock(&shared, |current| {
+            let mut floor = current.ok_or_else(|| {
+                FloorSettingsError::Read(
+                    "Floor settings file is missing; cannot change password while a shared folder is configured."
+                        .to_string(),
+                )
+            })?;
+            if floor.settings_password != request.current_password {
+                wrong_password = true;
+                return Err(FloorSettingsError::Write(
+                    "current floor password is incorrect".to_string(),
+                ));
+            }
+            floor.settings_password = new_password.to_string();
+            floor.updated_by_station_id = station_id;
+            floor.updated_at = floor_settings_now();
+            Ok(floor)
+        })
+        .map_err(|error| {
+            if wrong_password {
+                AppSettingsError::WrongPassword
+            } else {
+                AppSettingsError::from(error)
+            }
         })?;
-        floor.apply_to_local(&mut settings);
-        change_password(&mut settings, &request.current_password, new_password)?;
-        floor.settings_password = settings.settings_password.clone();
-        floor.updated_by_station_id = settings.station_id.trim().to_string();
-        floor.updated_at = floor_settings_now();
-        super::floor_settings::save_floor_settings(&shared, &floor)?;
         floor.apply_to_local(&mut settings);
     } else {
         change_password(&mut settings, &request.current_password, new_password)?;
@@ -1101,9 +1240,35 @@ fn floor_settings_now() -> String {
     chrono::Local::now().to_rfc3339()
 }
 
-fn normalize_included_station_ids(ids: &[String]) -> Result<Vec<String>, AppSettingsError> {
+fn normalize_included_station_ids_local(
+    ids: &[String],
+    settings: &AppNotificationSettings,
+) -> Result<Vec<String>, AppSettingsError> {
+    let defaults = catalog_from_local(settings)
+        .into_iter()
+        .filter(|entry| entry.role == StationRole::Floor)
+        .map(|entry| entry.id)
+        .collect::<Vec<_>>();
+    normalize_included_station_ids(ids, &defaults)
+}
+
+fn normalize_included_station_ids_floor(
+    ids: &[String],
+    floor: &FloorSettings,
+) -> Result<Vec<String>, AppSettingsError> {
+    let defaults = floor
+        .floor_stations()
+        .map(|entry| entry.id.clone())
+        .collect::<Vec<_>>();
+    normalize_included_station_ids(ids, &defaults)
+}
+
+fn normalize_included_station_ids(
+    ids: &[String],
+    allowed: &[String],
+) -> Result<Vec<String>, AppSettingsError> {
     if ids.is_empty() {
-        return Ok(default_summary_included());
+        return Ok(allowed.to_vec());
     }
     let mut out = Vec::new();
     for id in ids {
@@ -1111,7 +1276,7 @@ fn normalize_included_station_ids(ids: &[String]) -> Result<Vec<String>, AppSett
         if id.is_empty() {
             continue;
         }
-        if !is_known_station_id(id) {
+        if !allowed.iter().any(|allowed_id| allowed_id == id) {
             return Err(AppSettingsError::UnknownStation(id.to_string()));
         }
         if !out.iter().any(|existing| existing == id) {
@@ -1124,6 +1289,12 @@ fn normalize_included_station_ids(ids: &[String]) -> Result<Vec<String>, AppSett
         ));
     }
     Ok(out)
+}
+
+fn is_floor_station_in_local(settings: &AppNotificationSettings, station_id: &str) -> bool {
+    catalog_from_local(settings)
+        .iter()
+        .any(|entry| entry.id == station_id && entry.role == StationRole::Floor)
 }
 
 fn normalize_shifts(shifts: &[ShiftWindow]) -> Result<Vec<ShiftWindow>, AppSettingsError> {
@@ -1483,7 +1654,11 @@ fn default_summary_included() -> Vec<String> {
 fn default_stations_catalog() -> Vec<StationCatalogEntry> {
     known_stations_owned()
         .into_iter()
-        .map(|(id, name)| StationCatalogEntry { id, name })
+        .map(|(id, name)| StationCatalogEntry {
+            id,
+            name,
+            role: StationRole::Floor,
+        })
         .collect()
 }
 
@@ -1518,6 +1693,7 @@ mod tests {
             summary_poster_station_id: "pdu-lab".to_string(),
             summary_included_station_ids: default_summary_included(),
             stations: Vec::new(),
+            catalog_create: None,
             scope: SettingsSaveScope::Operator,
             connect_password: String::new(),
         }
@@ -1669,6 +1845,7 @@ mod tests {
         advanced_a.stations = vec![StationCatalogEntry {
             id: "test-station-3".to_string(),
             name: "Bay Three".to_string(),
+            role: StationRole::Floor,
         }];
         save_app_settings_request_to(&path_a, &advanced_a).unwrap();
         save_app_settings_request_to(&path_a, &connect_request(&shared_path, "test-station-1"))
@@ -1719,6 +1896,7 @@ mod tests {
         advanced.stations = vec![StationCatalogEntry {
             id: "test-station-1".to_string(),
             name: "Bay One".to_string(),
+            role: StationRole::Floor,
         }];
         save_app_settings_request_to(&path, &advanced).unwrap();
         save_app_settings_request_to(&path, &connect_request(&shared_path, "test-station-1"))
@@ -1760,6 +1938,7 @@ mod tests {
         advanced.stations = vec![StationCatalogEntry {
             id: "test-station-1".to_string(),
             name: "Cached Bay".to_string(),
+            role: StationRole::Floor,
         }];
         save_app_settings_request_to(&path, &advanced).unwrap();
         save_app_settings_request_to(&path, &connect_request(&shared_path, "test-station-1"))
@@ -1831,6 +2010,7 @@ mod tests {
         advanced.stations = vec![StationCatalogEntry {
             id: "test-station-3".to_string(),
             name: "Seed Three".to_string(),
+            role: StationRole::Floor,
         }];
         save_app_settings_request_to(&path, &advanced).unwrap();
 
@@ -1864,18 +2044,22 @@ mod tests {
             StationCatalogEntry {
                 id: "test-station-1".to_string(),
                 name: "Bay One".to_string(),
+                role: StationRole::Floor,
             },
             StationCatalogEntry {
                 id: "test-station-3".to_string(),
                 name: "Bay Three".to_string(),
+                role: StationRole::Floor,
             },
             StationCatalogEntry {
                 id: "test-station-4".to_string(),
                 name: "Test Station 4".to_string(),
+                role: StationRole::Floor,
             },
             StationCatalogEntry {
                 id: "pdu-lab".to_string(),
                 name: "PDU Lab".to_string(),
+                role: StationRole::Floor,
             },
         ];
         let seeded = save_app_settings_request_to(&path, &req).unwrap();
@@ -1887,6 +2071,139 @@ mod tests {
         assert_eq!(floor.teams_destination_name, "PDU Lab Chat");
         assert_eq!(floor.station_name_for_id("test-station-1"), "Bay One");
         assert_eq!(floor.station_name_for_id("test-station-3"), "Bay Three");
+    }
+
+    #[test]
+    fn advanced_create_admin_generates_id_selects_locally_and_writes_schema_v2() {
+        let directory = tempdir().unwrap();
+        let app_path = directory.path().join(SETTINGS_FILE_NAME);
+        let shared = directory.path().join("shared");
+        let connect = connect_request(shared.to_str().unwrap(), "pdu-lab");
+        save_app_settings_request_to(&app_path, &connect).unwrap();
+
+        let mut request = advanced_request();
+        request.station_id = "pdu-lab".to_string();
+        request.catalog_create = Some(CatalogCreateRequest {
+            name: "Syed Admin".to_string(),
+            role: StationRole::Admin,
+            select_for_this_pc: true,
+        });
+
+        let saved = save_app_settings_request_to(&app_path, &request).unwrap();
+        let floor = try_load_floor_settings(shared.to_str().unwrap())
+            .unwrap()
+            .unwrap();
+        let admin = floor
+            .stations
+            .iter()
+            .find(|entry| entry.name == "Syed Admin")
+            .unwrap();
+
+        assert_eq!(
+            floor.schema_version,
+            super::super::floor_settings::FLOOR_SETTINGS_SCHEMA_VERSION
+        );
+        assert_eq!(admin.role, StationRole::Admin);
+        assert_eq!(saved.station_id, admin.id);
+        assert!(!shared.join("stations").join(&admin.id).exists());
+    }
+
+    #[test]
+    fn floor_identity_creation_adds_directory_and_is_available_for_summary() {
+        let directory = tempdir().unwrap();
+        let app_path = directory.path().join(SETTINGS_FILE_NAME);
+        let shared = directory.path().join("shared");
+        save_app_settings_request_to(
+            &app_path,
+            &connect_request(shared.to_str().unwrap(), "pdu-lab"),
+        )
+        .unwrap();
+
+        let mut request = advanced_request();
+        request.station_id = "pdu-lab".to_string();
+        request.catalog_create = Some(CatalogCreateRequest {
+            name: "Burn-In Bay".to_string(),
+            role: StationRole::Floor,
+            select_for_this_pc: false,
+        });
+        save_app_settings_request_to(&app_path, &request).unwrap();
+
+        let floor = try_load_floor_settings(shared.to_str().unwrap())
+            .unwrap()
+            .unwrap();
+        let created = floor
+            .stations
+            .iter()
+            .find(|entry| entry.name == "Burn-In Bay")
+            .unwrap();
+        assert!(floor.is_floor_identity(&created.id));
+        assert!(shared.join("stations").join(&created.id).is_dir());
+    }
+
+    #[test]
+    fn identity_creation_requires_a_connected_shared_folder() {
+        let directory = tempdir().unwrap();
+        let app_path = directory.path().join(SETTINGS_FILE_NAME);
+        let mut request = advanced_request();
+        request.catalog_create = Some(CatalogCreateRequest {
+            name: "Desk Admin".to_string(),
+            role: StationRole::Admin,
+            select_for_this_pc: true,
+        });
+
+        assert_eq!(
+            save_app_settings_request_to(&app_path, &request),
+            Err(AppSettingsError::SharedFolderRequiredForIdentity)
+        );
+    }
+
+    #[test]
+    fn partial_rename_and_password_change_preserve_peer_dynamic_identity() {
+        let directory = tempdir().unwrap();
+        let app_path = directory.path().join(SETTINGS_FILE_NAME);
+        let shared = directory.path().join("shared");
+        save_app_settings_request_to(
+            &app_path,
+            &connect_request(shared.to_str().unwrap(), "pdu-lab"),
+        )
+        .unwrap();
+
+        let mut create = advanced_request();
+        create.station_id = "pdu-lab".to_string();
+        create.catalog_create = Some(CatalogCreateRequest {
+            name: "Peer Admin".to_string(),
+            role: StationRole::Admin,
+            select_for_this_pc: false,
+        });
+        save_app_settings_request_to(&app_path, &create).unwrap();
+
+        let mut rename = advanced_request();
+        rename.station_id = "pdu-lab".to_string();
+        rename.stations = vec![StationCatalogEntry {
+            id: "test-station-1".to_string(),
+            name: "Bay One".to_string(),
+            role: StationRole::Floor,
+        }];
+        save_app_settings_request_to(&app_path, &rename).unwrap();
+        change_settings_password_at(
+            &app_path,
+            &ChangeSettingsPasswordRequest {
+                current_password: DEFAULT_SETTINGS_PASSWORD.to_string(),
+                new_password: "4242".to_string(),
+                confirm_password: "4242".to_string(),
+            },
+        )
+        .unwrap();
+
+        let floor = try_load_floor_settings(shared.to_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(floor.settings_password, "4242");
+        assert_eq!(floor.station_name_for_id("test-station-1"), "Bay One");
+        assert!(floor
+            .stations
+            .iter()
+            .any(|entry| entry.name == "Peer Admin" && entry.role == StationRole::Admin));
     }
 
     #[test]

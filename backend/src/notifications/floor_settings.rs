@@ -29,13 +29,15 @@ use super::app_settings::{
 };
 use super::config::EventToggles;
 use super::stations::{
-    is_known_station_id, known_stations_owned, station_name_for_id,
+    is_known_station_id, known_stations_owned, station_name_for_id, StationRole,
     DEFAULT_SUMMARY_POSTER_STATION_ID, KNOWN_STATIONS,
 };
 
-pub const FLOOR_SETTINGS_SCHEMA_VERSION: u32 = 1;
+pub const FLOOR_SETTINGS_SCHEMA_V1: u32 = 1;
+pub const FLOOR_SETTINGS_SCHEMA_VERSION: u32 = 2;
 pub const FLOOR_SETTINGS_FILE_NAME: &str = "floor_settings.json";
 pub const MAX_STATION_DISPLAY_NAME_LEN: usize = 64;
+pub const MAX_STATION_ID_LEN: usize = 64;
 
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 const LOCK_POLL: Duration = Duration::from_millis(20);
@@ -57,6 +59,12 @@ pub enum FloorSettingsError {
     EmptyStationId,
     #[error("Unknown station_id '{0}'")]
     UnknownStation(String),
+    #[error("Invalid station_id '{0}'")]
+    InvalidStationId(String),
+    #[error("Duplicate station_id '{0}'")]
+    DuplicateStationId(String),
+    #[error("Identity '{0}' is not a floor station and cannot be used for Main or summaries")]
+    NonFloorSummaryIdentity(String),
     #[error("Station display name is empty")]
     EmptyStationName,
     #[error("Station display name is too long (max {MAX_STATION_DISPLAY_NAME_LEN} characters)")]
@@ -79,6 +87,8 @@ pub enum FloorSettingsError {
 pub struct FloorStation {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub role: StationRole,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -114,7 +124,7 @@ pub struct FloorSettings {
 impl Default for FloorSettings {
     fn default() -> Self {
         Self {
-            schema_version: FLOOR_SETTINGS_SCHEMA_VERSION,
+            schema_version: FLOOR_SETTINGS_SCHEMA_V1,
             updated_at: String::new(),
             updated_by_station_id: String::new(),
             settings_password: default_password(),
@@ -163,6 +173,24 @@ impl fmt::Debug for FloorSettings {
 }
 
 impl FloorSettings {
+    pub fn station(&self, station_id: &str) -> Option<&FloorStation> {
+        let station_id = station_id.trim();
+        self.stations
+            .iter()
+            .find(|station| station.id == station_id)
+    }
+
+    pub fn is_floor_identity(&self, station_id: &str) -> bool {
+        self.station(station_id)
+            .is_some_and(|station| station.role == StationRole::Floor)
+    }
+
+    pub fn floor_stations(&self) -> impl Iterator<Item = &FloorStation> {
+        self.stations
+            .iter()
+            .filter(|station| station.role == StationRole::Floor)
+    }
+
     /// Build floor settings from a full local settings snapshot (first-seed path).
     pub fn from_local_settings(local: &AppNotificationSettings) -> Self {
         let mut stations = default_stations();
@@ -212,7 +240,7 @@ impl FloorSettings {
         };
 
         Self {
-            schema_version: FLOOR_SETTINGS_SCHEMA_VERSION,
+            schema_version: FLOOR_SETTINGS_SCHEMA_V1,
             updated_at: now_rfc3339(),
             updated_by_station_id: local.station_id.trim().to_string(),
             settings_password: match local.settings_password.trim() {
@@ -244,8 +272,7 @@ impl FloorSettings {
     }
 
     pub fn catalog_pairs(&self) -> Vec<(String, String)> {
-        self.stations
-            .iter()
+        self.floor_stations()
             .map(|s| (s.id.clone(), s.name.clone()))
             .collect()
     }
@@ -268,6 +295,7 @@ impl FloorSettings {
             .map(|s| StationCatalogEntry {
                 id: s.id.clone(),
                 name: s.name.clone(),
+                role: s.role,
             })
             .collect();
         local.station_name = self.station_name_for_id(&local.station_id);
@@ -389,7 +417,10 @@ pub fn load_or_seed_floor_settings(
 }
 
 pub fn validate_floor_settings(settings: &mut FloorSettings) -> Result<(), FloorSettingsError> {
-    if settings.schema_version != FLOOR_SETTINGS_SCHEMA_VERSION {
+    if !matches!(
+        settings.schema_version,
+        FLOOR_SETTINGS_SCHEMA_V1 | FLOOR_SETTINGS_SCHEMA_VERSION
+    ) {
         return Err(FloorSettingsError::UnsupportedSchema(
             settings.schema_version,
         ));
@@ -405,38 +436,59 @@ pub fn validate_floor_settings(settings: &mut FloorSettings) -> Result<(), Floor
     };
     settings.teams_webhook_url = settings.teams_webhook_url.trim().to_string();
 
-    // Normalize catalog: fixed known ids only. Missing ids get defaults; a
-    // provided blank name for a known id is rejected (EmptyStationName).
-    let mut normalized = Vec::with_capacity(KNOWN_STATIONS.len());
-    for (id, default_name) in KNOWN_STATIONS {
-        if let Some(entry) = settings.stations.iter().find(|s| s.id.trim() == *id) {
-            let name = entry.name.trim().to_string();
-            if name.is_empty() {
-                return Err(FloorSettingsError::EmptyStationName);
-            }
+    let mut normalized = if settings.schema_version == FLOOR_SETTINGS_SCHEMA_V1 {
+        let mut stations = Vec::with_capacity(KNOWN_STATIONS.len());
+        for (id, default_name) in KNOWN_STATIONS {
+            let name = settings
+                .stations
+                .iter()
+                .find(|station| station.id.trim() == *id)
+                .map(|station| station.name.trim().to_string())
+                .unwrap_or_else(|| (*default_name).to_string());
             validate_display_name(&name)?;
-            normalized.push(FloorStation {
+            stations.push(FloorStation {
                 id: (*id).to_string(),
                 name,
-            });
-        } else {
-            normalized.push(FloorStation {
-                id: (*id).to_string(),
-                name: (*default_name).to_string(),
+                role: StationRole::Floor,
             });
         }
-    }
+        stations
+    } else {
+        let mut stations = Vec::with_capacity(settings.stations.len());
+        for station in &settings.stations {
+            let id = station.id.trim().to_string();
+            validate_identity_id(&id)?;
+            if stations
+                .iter()
+                .any(|existing: &FloorStation| existing.id == id)
+            {
+                return Err(FloorSettingsError::DuplicateStationId(id));
+            }
+            let name = station.name.trim().to_string();
+            validate_display_name(&name)?;
+            stations.push(FloorStation {
+                id,
+                name,
+                role: station.role,
+            });
+        }
+        stations
+    };
     if normalized.is_empty() {
         return Err(FloorSettingsError::EmptyStationId);
     }
     reject_duplicate_display_names(&normalized)?;
-    settings.stations = normalized;
+    settings.stations = std::mem::take(&mut normalized);
 
     let poster = settings.summary_poster_station_id.trim();
     if poster.is_empty() {
         settings.summary_poster_station_id = default_summary_poster();
-    } else if !is_known_station_id(poster) {
+    } else if settings.station(poster).is_none() {
         return Err(FloorSettingsError::UnknownStation(poster.to_string()));
+    } else if !settings.is_floor_identity(poster) {
+        return Err(FloorSettingsError::NonFloorSummaryIdentity(
+            poster.to_string(),
+        ));
     } else {
         settings.summary_poster_station_id = poster.to_string();
     }
@@ -447,8 +499,11 @@ pub fn validate_floor_settings(settings: &mut FloorSettings) -> Result<(), Floor
         if id.is_empty() {
             continue;
         }
-        if !is_known_station_id(id) {
+        if settings.station(id).is_none() {
             return Err(FloorSettingsError::UnknownStation(id.to_string()));
+        }
+        if !settings.is_floor_identity(id) {
+            return Err(FloorSettingsError::NonFloorSummaryIdentity(id.to_string()));
         }
         if !included.iter().any(|existing: &String| existing == id) {
             included.push(id.to_string());
@@ -493,6 +548,34 @@ pub fn validate_floor_settings(settings: &mut FloorSettings) -> Result<(), Floor
     settings.shifts = normalized_shifts;
 
     Ok(())
+}
+
+fn validate_identity_id(id: &str) -> Result<(), FloorSettingsError> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err(FloorSettingsError::EmptyStationId);
+    }
+    if id.len() > MAX_STATION_ID_LEN
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        || id.starts_with('-')
+        || id.ends_with('-')
+        || id.contains("--")
+    {
+        return Err(FloorSettingsError::InvalidStationId(id.to_string()));
+    }
+    Ok(())
+}
+
+pub(crate) fn generate_identity_id(existing: &[FloorStation], millis: u128) -> String {
+    loop {
+        let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let candidate = format!("identity-{millis:x}-{sequence:x}");
+        if !existing.iter().any(|station| station.id == candidate) {
+            return candidate;
+        }
+    }
 }
 
 /// Validate a station display name that is being set (non-empty, length, controls).
@@ -702,7 +785,7 @@ fn now_rfc3339() -> String {
 }
 
 fn default_schema_version() -> u32 {
-    FLOOR_SETTINGS_SCHEMA_VERSION
+    FLOOR_SETTINGS_SCHEMA_V1
 }
 
 fn default_password() -> String {
@@ -745,7 +828,11 @@ fn default_summary_included() -> Vec<String> {
 fn default_stations() -> Vec<FloorStation> {
     known_stations_owned()
         .into_iter()
-        .map(|(id, name)| FloorStation { id, name })
+        .map(|(id, name)| FloorStation {
+            id,
+            name,
+            role: StationRole::Floor,
+        })
         .collect()
 }
 
@@ -760,6 +847,96 @@ mod tests {
         assert_eq!(floor.stations.len(), 4);
         assert!(floor.stations.iter().any(|s| s.id == "pdu-lab"));
         assert!(!floor.stations.iter().any(|s| s.id == "test-station-2"));
+    }
+
+    #[test]
+    fn schema_v1_catalog_loads_unchanged_as_floor_roles() {
+        let raw = r#"{
+          "schema_version": 1,
+          "settings_password": "0601",
+          "summary_poster_station_id": "pdu-lab",
+          "summary_included_station_ids": ["test-station-1","test-station-3","test-station-4","pdu-lab"],
+          "stations": [
+            {"id":"test-station-1","name":"Test Station 1"},
+            {"id":"test-station-3","name":"Test Station 3"},
+            {"id":"test-station-4","name":"Test Station 4"},
+            {"id":"pdu-lab","name":"PDU Lab"}
+          ]
+        }"#;
+
+        let floor = parse_floor_settings(Path::new("floor_settings.json"), raw).unwrap();
+
+        assert_eq!(floor.schema_version, FLOOR_SETTINGS_SCHEMA_V1);
+        assert!(floor
+            .stations
+            .iter()
+            .all(|station| station.role == StationRole::Floor));
+    }
+
+    #[test]
+    fn schema_v2_preserves_dynamic_roles_and_rejects_admin_summary_assignment() {
+        let mut floor = FloorSettings::default();
+        floor.schema_version = FLOOR_SETTINGS_SCHEMA_VERSION;
+        floor.stations.push(FloorStation {
+            id: "identity-64-0".to_string(),
+            name: "Syed Admin".to_string(),
+            role: StationRole::Admin,
+        });
+        validate_floor_settings(&mut floor).unwrap();
+        assert_eq!(floor.stations.last().unwrap().role, StationRole::Admin);
+
+        floor.summary_poster_station_id = "identity-64-0".to_string();
+        assert_eq!(
+            validate_floor_settings(&mut floor),
+            Err(FloorSettingsError::NonFloorSummaryIdentity(
+                "identity-64-0".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn generated_identity_ids_are_safe_unique_and_not_name_derived() {
+        let existing = vec![FloorStation {
+            id: "identity-64-0".to_string(),
+            name: "Existing".to_string(),
+            role: StationRole::Admin,
+        }];
+
+        let id = generate_identity_id(&existing, 100);
+
+        assert!(id.starts_with("identity-"));
+        assert!(id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'));
+        assert_ne!(id, "identity-64-0");
+        assert!(!id.contains("syed"));
+    }
+
+    #[test]
+    fn schema_v2_rejects_duplicate_and_unsafe_identity_ids() {
+        let mut floor = FloorSettings::default();
+        floor.schema_version = FLOOR_SETTINGS_SCHEMA_VERSION;
+        floor.stations.push(FloorStation {
+            id: "Bad ID".to_string(),
+            name: "Bad".to_string(),
+            role: StationRole::Floor,
+        });
+        assert!(matches!(
+            validate_floor_settings(&mut floor),
+            Err(FloorSettingsError::InvalidStationId(_))
+        ));
+
+        let mut floor = FloorSettings::default();
+        floor.schema_version = FLOOR_SETTINGS_SCHEMA_VERSION;
+        floor.stations.push(FloorStation {
+            id: "pdu-lab".to_string(),
+            name: "Duplicate ID".to_string(),
+            role: StationRole::Floor,
+        });
+        assert!(matches!(
+            validate_floor_settings(&mut floor),
+            Err(FloorSettingsError::DuplicateStationId(_))
+        ));
     }
 
     #[test]

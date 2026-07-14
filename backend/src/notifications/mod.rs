@@ -16,7 +16,7 @@ pub use app_settings::{
     load_app_settings_from, load_app_settings_with_floor, load_runtime_resolved_config,
     save_app_settings, save_app_settings_request, save_app_settings_request_to,
     save_app_settings_to, set_app_config_dir, verify_password, verify_settings_password,
-    AppNotificationSettings, AppNotificationSettingsView, AppSettingsError,
+    AppNotificationSettings, AppNotificationSettingsView, AppSettingsError, CatalogCreateRequest,
     ChangeSettingsPasswordRequest, FloorSyncStatus, SaveAppNotificationSettingsRequest,
     SettingsSaveScope, ShiftWindow, StationCatalogEntry, APP_SETTINGS_SCHEMA_VERSION,
     DEFAULT_SETTINGS_PASSWORD, SETTINGS_FILE_NAME,
@@ -24,10 +24,10 @@ pub use app_settings::{
 pub use floor_settings::{
     load_or_seed_floor_settings, resolve_floor_settings_file, try_load_floor_settings,
     update_floor_settings_with_lock, FloorSettings, FloorSettingsError, FloorStation,
-    FLOOR_SETTINGS_FILE_NAME,
+    FLOOR_SETTINGS_FILE_NAME, FLOOR_SETTINGS_SCHEMA_V1, FLOOR_SETTINGS_SCHEMA_VERSION,
 };
 pub use stations::{
-    is_known_station_id, known_stations_owned, station_name_for_id,
+    is_known_station_id, known_stations_owned, station_name_for_id, StationRole,
     DEFAULT_SUMMARY_POSTER_STATION_ID, KNOWN_STATIONS,
 };
 pub use summary::{
@@ -45,10 +45,11 @@ pub use message::{
     now_timestamp, EventKind, MessageSection, NotificationEvent, NotificationMessage,
 };
 pub use shift_log::{
-    append_event as append_shift_log_event, ensure_shared_root_layout, format_floor_summary,
-    load_shift_log, mark_summary_and_clear, resolve_shift_log_file, shared_root_directory,
-    shared_station_ids, LoggedEvent, ShiftLog, ShiftLogError, ShiftLogEventKind,
-    SHIFT_LOG_FILE_NAME, SHIFT_LOG_SCHEMA_VERSION, STATIONS_DIR_NAME,
+    append_event as append_shift_log_event, ensure_floor_station_directory,
+    ensure_shared_root_layout, format_floor_summary, load_shift_log, mark_summary_and_clear,
+    resolve_shift_log_file, shared_root_directory, shared_station_ids, LoggedEvent, ShiftLog,
+    ShiftLogError, ShiftLogEventKind, SHIFT_LOG_FILE_NAME, SHIFT_LOG_SCHEMA_VERSION,
+    STATIONS_DIR_NAME,
 };
 pub use teams::{TeamsClient, TeamsError, TransportFailure};
 pub use worker::{NotificationRuntimeStatus, NotificationService};

@@ -9,6 +9,14 @@ pub const KNOWN_STATIONS: &[(&str, &str)] = &[
     ("pdu-lab", "PDU Lab"),
 ];
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StationRole {
+    #[default]
+    Floor,
+    Admin,
+}
+
 pub const DEFAULT_SUMMARY_POSTER_STATION_ID: &str = "pdu-lab";
 
 pub fn is_known_station_id(station_id: &str) -> bool {
@@ -53,3 +61,4 @@ mod tests {
         assert_eq!(KNOWN_STATIONS.len(), 4);
     }
 }
+use serde::{Deserialize, Serialize};

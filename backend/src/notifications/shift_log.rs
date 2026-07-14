@@ -26,6 +26,17 @@ pub use super::stations::known_station_ids;
 pub fn shared_station_ids() -> Vec<&'static str> {
     known_station_ids()
 }
+
+pub fn ensure_floor_station_directory(
+    configured: &str,
+    station_id: &str,
+) -> Result<PathBuf, ShiftLogError> {
+    let root = ensure_shared_root_layout(configured)?;
+    let directory = root.join(STATIONS_DIR_NAME).join(station_id);
+    fs::create_dir_all(&directory)
+        .map_err(|error| ShiftLogError::Write(format!("{}: {error}", directory.display())))?;
+    Ok(directory)
+}
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 const LOCK_POLL: Duration = Duration::from_millis(20);
 const STALE_LOCK_AGE: Duration = Duration::from_secs(30);
