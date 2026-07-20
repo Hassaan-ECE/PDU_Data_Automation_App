@@ -1,4 +1,8 @@
-# PDU Data Automation
+<div align="center">
+
+# Data Automation App
+
+</div>
 
 <table>
 <tr>
