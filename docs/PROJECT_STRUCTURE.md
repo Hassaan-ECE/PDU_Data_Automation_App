@@ -33,7 +33,7 @@ PDU_Data_Automation_App/
 - `frontend/` — owns operator interaction only. Currently the majority of the UI lives in `OperatorPanel.tsx` (will be split as complexity grows).
 - `config/report-layouts/` — the production `pdu500.rev02.layout.json` and accuracy thresholds. Prefer editing here over code.
 - `fixtures/` — deliberately small, safe data. Tests copy them to temp dirs.
-- `docs/` — living documentation. Historical plans and old detailed notes live in `old-docs/`.
+- `docs/` — living documentation (overview, architecture, legacy constraints, notifications, design specs under `docs/superpowers/`).
 - `scripts/` — validation scripts, version checks, and local release helpers. Use `bun run validate` (and other `bun run` commands) directly. See `scripts/README.md` for details.
 
 ## What Belongs Where

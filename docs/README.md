@@ -40,11 +40,9 @@ bun run validate         # full local validation (lint + test + build + checks +
 
 Some helper scripts are still executed via Node (version checks, schema validation), but you invoke everything through `bun run <script>`.
 
-## Historical / Detailed Planning Material
+## Design history
 
-Detailed historical documents (old migration plans, full audit notes, previous structure cleanup work) are preserved in the sibling `old-docs/` folder.
-
-They are useful for understanding how the project evolved but are **not** the current source of truth for day-to-day work or constraints. Prefer the documents in this folder.
+Feature design specs and implementation plans for shipped work live under `docs/superpowers/` (specs + plans). Prefer the top-level docs in this folder for day-to-day constraints; use `superpowers/` when you need the decision trail for a specific feature.
 
 ## Documentation Principles
 
