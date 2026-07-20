@@ -6,39 +6,41 @@
 [![Stack](https://img.shields.io/badge/stack-Tauri%202%20%7C%20React%20%7C%20Rust-111827)](https://github.com/Hassaan-ECE/PDU_Data_Automation_App)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases)
 
-## Screenshots
+<p align="center">
+  <img src="docs/images/pdu-app-screenshot.png" alt="PDU Data Automation operator panel with countdown, unit serial, transformer SN, color-coded 415V breakers, and Resume controls" width="380" />
+</p>
 
-<table>
-  <tr>
-    <td align="center" width="50%" valign="top">
-      <img src="docs/images/pdu-app-screenshot.png" alt="PDU Data Automation operator panel — timer, unit serial, 415V breaker progress, and resume controls" width="360" /><br />
-      <sub><b>Operator panel</b> — countdown, unit / transformer SN, color-coded breakers, Open / Print Report (v0.2.15)</sub>
-    </td>
-    <td align="center" width="50%" valign="top">
-      <img src="docs/images/teams-notifications.png" alt="Microsoft Teams channel with Complete and Changeover Adaptive Cards from PDU stations" width="360" /><br />
-      <sub><b>Teams on the floor</b> — Complete and Changeover cards from multiple test stations in the shared channel</sub>
-    </td>
-  </tr>
-</table>
-
----
+<p align="center">
+  <sub>Operator panel in production use — large countdown, unit / transformer SN, expandable breakers, Open Report / Print Report.</sub>
+</p>
 
 ## What it does
 
 PDU Data Automation is the pilot replacement for the legacy Python test-panel scripts. Operators pick a unit folder; the app:
 
-1. **Detects** STEP-numbered CSV files from the test instruments  
-2. **Waits** until files are ready (no half-written scrapes)  
-3. **Validates** readings against accuracy thresholds before writing  
-4. **Patches** the Excel test report (Open XML — formatting and formulas stay intact)  
-5. **Tracks** progress with a large timer, section status, and expandable breaker groups  
-6. **Notifies** the floor over Microsoft Teams (Complete, Problem, Changeover) so stations stay in sync without chasing people down the aisle  
+1. **Detects** STEP-numbered CSV files from the test instruments
+2. **Waits** until files are ready (no half-written scrapes)
+3. **Validates** readings against accuracy thresholds before writing
+4. **Patches** the Excel test report (Open XML — formatting and formulas stay intact)
+5. **Tracks** progress with a large timer, section status, and expandable breaker groups
 
 It ships as a **current-user Windows installer** with **signed in-app updates** via GitHub Releases.
 
 **Current pilot release:** [v0.2.15](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.15)
 
----
+## Floor notifications (Microsoft Teams)
+
+Stations also post Adaptive Cards into a shared Teams channel so the floor sees **Complete**, **Problem**, and **Changeover** events without walking the aisle — for example when 208V work is done and the unit needs to shut down and retap for 415V.
+
+<p align="center">
+  <img src="docs/images/teams-notifications.png" alt="Microsoft Teams PDU Testing channel with Complete cards from multiple stations and a Changeover card for 208V-to-415V retap" width="520" />
+</p>
+
+<p align="center">
+  <sub>Live channel cards — unit complete / ready for print, and changeover guidance with next STEP.</sub>
+</p>
+
+Setup uses password-gated in-app settings and a shared `.PDU_Notifications` folder so every PC on the floor stays on the same identities and webhook config. See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
 
 ## Highlights
 
@@ -48,10 +50,8 @@ It ships as a **current-user Windows installer** with **signed in-app updates** 
 | **CSV pipeline** | STEP-based detection, readiness waiting, strict parsing (missing values never become silent zeros) |
 | **Excel reports** | Template copy + transactional patch; transformer mappings driven by config under `config/report-layouts/` |
 | **Print Report** | Final operator name capture, then Excel’s native print UI |
-| **Teams notifications** | Adaptive cards for **Complete**, **Problem**, and **Changeover** (e.g. 208V done → shut down and retap for 415V), station identity, shared floor settings |
+| **Teams notifications** | Adaptive cards for Complete, Problem, and Changeover; station identity; shared floor settings |
 | **Updates** | Signed Tauri updater + NSIS installer; floor PCs can pull newer pilots in-app |
-
----
 
 ## Stack
 
@@ -63,19 +63,15 @@ It ships as a **current-user Windows installer** with **signed in-app updates** 
 | Tooling | Bun |
 | Install / update | NSIS current-user installer · signed GitHub Releases updater |
 
----
-
 ## For operators
 
-1. Install the latest setup EXE from [Releases](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases) (or your site’s S-drive package if you use that channel).  
-2. Browse to the unit’s data folder.  
-3. Confirm / save Transformer SN, then **Start** or **Resume**.  
-4. Let the panel follow the active step; use **Open Report** / **Print Report** when the unit is complete.  
+1. Install the latest setup EXE from [Releases](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases) (or your site’s S-drive package if you use that channel).
+2. Browse to the unit’s data folder.
+3. Confirm / save Transformer SN, then **Start** or **Resume**.
+4. Let the panel follow the active step; use **Open Report** / **Print Report** when the unit is complete.
 5. For multi-PC Teams / floor identity settings, point every station at the **same** shared `.PDU_Notifications` folder (do not hard-code different paths per machine).
 
 > **Note:** Keep the legacy automation app available until your team has processed several production units and compared reports. Pilot does not mean full cutover.
-
----
 
 ## For developers
 
@@ -120,17 +116,13 @@ scripts/                 Validation and release helpers
 | [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md) | Teams / floor notification setup |
 | [release/](release/) | Version-by-version release notes |
 
----
-
 ## Design principles
 
-- **Preserve the floor workflow** unless a change is explicitly documented.  
-- **Config over hardcoding** for report cell maps (`config/report-layouts/`).  
-- **Fail honestly** — bad or missing CSV data must not look like a valid zero.  
-- **Excel fidelity** — generated workbooks must open without repair prompts.  
+- **Preserve the floor workflow** unless a change is explicitly documented.
+- **Config over hardcoding** for report cell maps (`config/report-layouts/`).
+- **Fail honestly** — bad or missing CSV data must not look like a valid zero.
+- **Excel fidelity** — generated workbooks must open without repair prompts.
 - **No secrets in git** — updater private keys and installers stay out of source control.
-
----
 
 ## Project status
 
@@ -141,8 +133,6 @@ This is a **production pilot**. Core workflow, report writing, installer, and up
 | **Latest** | [v0.2.15](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.15) |
 | **Repo** | https://github.com/Hassaan-ECE/PDU_Data_Automation_App |
 | **Author** | Syed Hassaan Shah |
-
----
 
 ## License / internal use
 
