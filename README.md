@@ -2,7 +2,7 @@
 
 <table>
 <tr>
-<td width="55%" valign="middle">
+<td width="52%" valign="middle">
 
 **Test-floor automation for PDU stations** — CSVs in, Excel reports out, Teams in the loop.
 
@@ -24,9 +24,10 @@ Built for the real floor: wait for instrument files to finish writing, never tur
 **[Download v0.2.15 →](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.15)** · [All releases](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases)
 
 </td>
-<td width="45%" valign="middle" align="center">
+<td width="48%" valign="middle" align="center">
 
-<img alt="PDU Data Automation operator panel" src="docs/images/pdu-app-screenshot.png" width="78%" />
+<!-- Width tuned so the tall panel roughly matches the left-column text height on GitHub -->
+<img alt="PDU Data Automation operator panel" src="docs/images/pdu-app-screenshot.png" width="100%" />
 
 </td>
 </tr>
