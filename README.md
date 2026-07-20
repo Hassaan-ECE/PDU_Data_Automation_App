@@ -1,26 +1,32 @@
+# PDU Data Automation
+
 <table>
 <tr>
-<td width="42%" valign="middle">
-
-# PDU Data Automation
+<td width="55%" valign="middle">
 
 **Test-floor automation for PDU stations** — CSVs in, Excel reports out, Teams in the loop.
 
 Windows desktop app for production test stations. Operators pick a unit folder; the app watches instrument CSVs, tracks every step on a familiar panel, validates readings, and writes the Excel test report without hand-editing spreadsheets.
 
-Pilot replacement for the legacy Python automation scripts. Same workflow on the floor — cleaner stack underneath (Tauri 2, React, Rust), data-driven report mappings, and signed in-app updates.
+It is the pilot replacement for the legacy Python automation scripts. Same workflow operators already know — unit selection, large countdown, 208V / 415V sections, expandable breakers, burn-in, manual rerun, Open Report, and Print Report — with a cleaner stack underneath (Tauri 2, React, Rust), data-driven report mappings, and signed in-app updates from GitHub Releases.
 
-- Detects STEP CSVs and waits until files are ready  
-- Validates accuracy before any Excel write  
-- Color-coded breakers, burn-in, Open / Print Report  
-- Optional Teams Complete / Problem / Changeover cards  
+Built for the real floor: wait for instrument files to finish writing, never turn missing values into silent zeros, check accuracy before patching Excel, and keep workbook formatting and formulas intact.
+
+**What operators get**
+
+- STEP CSV detection with readiness waiting (no half-written scrapes)
+- Accuracy validation before any report write
+- Color-coded task states, mid-test resume, and remaining-time countdown
+- Transformer SN save, Open Report, and Print Report with operator sign-off
+- Optional Teams **Complete**, **Problem**, and **Changeover** cards across stations
+- Current-user Windows installer + signed updater path
 
 **[Download v0.2.15 →](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.15)** · [All releases](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases)
 
 </td>
-<td width="58%" valign="middle" align="center">
+<td width="45%" valign="middle" align="center">
 
-<img alt="PDU Data Automation operator panel" src="docs/images/pdu-app-screenshot.png" width="100%" />
+<img alt="PDU Data Automation operator panel" src="docs/images/pdu-app-screenshot.png" width="78%" />
 
 </td>
 </tr>
@@ -50,24 +56,15 @@ For multi-PC Teams and floor identity settings, point every station at the **sam
 
 ## Teams on the floor
 
-<table>
-<tr>
-<td width="42%" valign="middle">
-
 Stations post Adaptive Cards into a shared Microsoft Teams channel so the floor sees **Complete**, **Problem**, and **Changeover** events without walking the aisle — for example when 208V work is finished and the unit needs to shut down and retap for 415V.
 
 Setup is password-gated in Advanced Settings. Every PC on the floor should browse to the same shared `.PDU_Notifications` folder.
 
+<p align="center">
+  <img alt="Teams Complete and Changeover cards from PDU test stations" src="docs/images/teams-notifications.png" width="640" />
+</p>
+
 Details: [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)
-
-</td>
-<td width="58%" valign="middle" align="center">
-
-<img alt="Teams Complete and Changeover cards from PDU test stations" src="docs/images/teams-notifications.png" width="100%" />
-
-</td>
-</tr>
-</table>
 
 ## How it works
 
