@@ -1,139 +1,105 @@
+<div align="center">
+
 # PDU Data Automation
 
-**Windows desktop app for PDU test-floor operators** — watch instrument CSVs, track every step, and write Excel test reports without fighting spreadsheets by hand.
+**Test-floor automation for PDU stations** — CSVs in, Excel reports out, Teams in the loop.
 
-[![Release](https://img.shields.io/github/v/release/Hassaan-ECE/PDU_Data_Automation_App?label=release&color=0ea5e9)](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases)
-[![Stack](https://img.shields.io/badge/stack-Tauri%202%20%7C%20React%20%7C%20Rust-111827)](https://github.com/Hassaan-ECE/PDU_Data_Automation_App)
-[![Platform](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases)
+<br>
 
-<p align="center">
-  <img src="docs/images/pdu-app-screenshot.png" alt="PDU Data Automation operator panel with countdown, unit serial, transformer SN, color-coded 415V breakers, and Resume controls" width="380" />
-</p>
+<img height="560" alt="PDU Data Automation operator panel" src="docs/images/pdu-app-screenshot.png" />
 
-<p align="center">
-  <sub>Operator panel in production use — large countdown, unit / transformer SN, expandable breakers, Open Report / Print Report.</sub>
-</p>
+</div>
 
-## What it does
+<br>
 
-PDU Data Automation is the pilot replacement for the legacy Python test-panel scripts. Operators pick a unit folder; the app:
+PDU Data Automation is a Windows desktop app for the production test floor. Operators pick a unit folder; the app watches instrument CSVs, tracks every step on a familiar panel, validates readings, and writes the Excel test report without hand-editing spreadsheets.
 
-1. **Detects** STEP-numbered CSV files from the test instruments
-2. **Waits** until files are ready (no half-written scrapes)
-3. **Validates** readings against accuracy thresholds before writing
-4. **Patches** the Excel test report (Open XML — formatting and formulas stay intact)
-5. **Tracks** progress with a large timer, section status, and expandable breaker groups
+It is the pilot replacement for the legacy Python automation scripts. Same workflow on the floor — cleaner stack underneath (Tauri 2, React, Rust), data-driven report mappings, and signed in-app updates.
 
-It ships as a **current-user Windows installer** with **signed in-app updates** via GitHub Releases.
+## Download
 
-**Current pilot release:** [v0.2.15](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.15)
+Get the current pilot installer from the [latest GitHub release](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/latest), or use the S-drive package your site already stages for operators.
 
-## Floor notifications (Microsoft Teams)
+| | |
+| --- | --- |
+| **Current release** | [v0.2.15](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.15) |
+| **Platform** | Windows · current-user NSIS installer |
+| **Updates** | Signed in-app updater (after the first install from the matching key era) |
 
-Stations also post Adaptive Cards into a shared Teams channel so the floor sees **Complete**, **Problem**, and **Changeover** events without walking the aisle — for example when 208V work is done and the unit needs to shut down and retap for 415V.
+The app can check for updates when the station is ready. Keep the legacy tool available until your team has run several production units side by side.
 
-<p align="center">
-  <img src="docs/images/teams-notifications.png" alt="Microsoft Teams PDU Testing channel with Complete cards from multiple stations and a Changeover card for 208V-to-415V retap" width="520" />
-</p>
+## Get started
 
-<p align="center">
-  <sub>Live channel cards — unit complete / ready for print, and changeover guidance with next STEP.</sub>
-</p>
-
-Setup uses password-gated in-app settings and a shared `.PDU_Notifications` folder so every PC on the floor stays on the same identities and webhook config. See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
-
-## Highlights
-
-| Area | Capability |
-|------|------------|
-| **Operator workflow** | Familiar panel layout: unit folder, timer/status, 208V / 415V sections, burn-in, expandable breakers, manual rerun |
-| **CSV pipeline** | STEP-based detection, readiness waiting, strict parsing (missing values never become silent zeros) |
-| **Excel reports** | Template copy + transactional patch; transformer mappings driven by config under `config/report-layouts/` |
-| **Print Report** | Final operator name capture, then Excel’s native print UI |
-| **Teams notifications** | Adaptive cards for Complete, Problem, and Changeover; station identity; shared floor settings |
-| **Updates** | Signed Tauri updater + NSIS installer; floor PCs can pull newer pilots in-app |
-
-## Stack
-
-| Layer | Tech |
-|-------|------|
-| Desktop shell | [Tauri 2](https://tauri.app/) |
-| UI | React 19, TypeScript, Vite, Tailwind CSS |
-| Backend | Rust (CSV, Open XML zip patching, file scan, notifications) |
-| Tooling | Bun |
-| Install / update | NSIS current-user installer · signed GitHub Releases updater |
-
-## For operators
-
-1. Install the latest setup EXE from [Releases](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases) (or your site’s S-drive package if you use that channel).
+1. Install the setup EXE and open **PDU Data Automation**.
 2. Browse to the unit’s data folder.
-3. Confirm / save Transformer SN, then **Start** or **Resume**.
-4. Let the panel follow the active step; use **Open Report** / **Print Report** when the unit is complete.
-5. For multi-PC Teams / floor identity settings, point every station at the **same** shared `.PDU_Notifications` folder (do not hard-code different paths per machine).
+3. Confirm / save the Transformer SN, then **Start** or **Resume**.
+4. Let the panel follow the active step — green for pass, amber for in progress, expandable breakers for load steps.
+5. When the unit is done, use **Open Report** or **Print Report** (final operator name, then Excel’s print UI).
 
-> **Note:** Keep the legacy automation app available until your team has processed several production units and compared reports. Pilot does not mean full cutover.
+For multi-PC Teams and floor identity settings, point every station at the **same** shared `.PDU_Notifications` folder. Do not hard-code different paths per machine.
 
-## For developers
+## Teams on the floor
+
+Stations post Adaptive Cards into a shared Microsoft Teams channel so the floor sees **Complete**, **Problem**, and **Changeover** events without walking the aisle — for example when 208V work is finished and the unit needs to shut down and retap for 415V.
+
+<div align="center">
+  <img height="480" alt="Teams Complete and Changeover cards from PDU test stations" src="docs/images/teams-notifications.png" />
+</div>
+
+<br>
+
+Setup is password-gated in Advanced Settings. Details live in [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
+
+## How it works
+
+1. **Detect** STEP-numbered CSVs from the instruments  
+2. **Wait** until files are stable and ready to read  
+3. **Validate** against accuracy thresholds before any write  
+4. **Patch** the Excel workbook (Open XML — formatting and formulas stay intact)  
+5. **Track** remaining time, section status, and breaker progress on the panel  
+
+Missing or bad values never become silent zeros. Report cell maps prefer config under `config/report-layouts/` over hardcoding in source.
+
+## Develop
 
 ```powershell
 bun install
-bun run desktop          # Tauri desktop (frontend + Rust backend)
+bun run desktop          # full Tauri desktop app
 bun run dev:frontend     # UI only
-bun run build
 bun run test
 bun run lint
 bun run validate         # full local check before a release
 ```
 
-Backend:
-
 ```powershell
 cargo test --manifest-path backend\Cargo.toml
-cargo fmt --manifest-path backend\Cargo.toml --check
 ```
 
-### Repository layout
+| Path | Role |
+| --- | --- |
+| `backend/` | Tauri + Rust (scan, CSV, reports, notifications) |
+| `frontend/` | React operator UI |
+| `config/report-layouts/` | Excel / CSV mappings |
+| `docs/` | Architecture, legacy notes, release process |
+| `fixtures/` | Synthetic test data |
+| `release/` | Per-version release notes |
 
-```text
-backend/                 Tauri + Rust (scan, CSV, reports, notifications)
-frontend/                React operator UI
-config/report-layouts/   Data-driven Excel / CSV mappings
-docs/                    Architecture, legacy notes, release process
-fixtures/                Synthetic CSV / workbook test data
-release/                 Per-version release notes
-scripts/                 Validation and release helpers
-```
+## Learn more
 
-### Documentation
+- [Overview](docs/OVERVIEW.md) — status and remaining pilot work  
+- [Architecture](docs/ARCHITECTURE.md) — runtime shape and data flow  
+- [Legacy behavior](docs/LEGACY_BEHAVIOR.md) — what to preserve or correct  
+- [Configuration model](docs/CONFIGURATION_MODEL.md) — report layout profiles  
+- [Release & deployment](docs/RELEASE_AND_DEPLOYMENT.md) — signing, GitHub, S-drive  
+- [Notifications](docs/NOTIFICATIONS.md) — Teams and floor settings  
+- [Release notes](release/) — version-by-version history  
 
-| Doc | Purpose |
-|-----|---------|
-| [docs/OVERVIEW.md](docs/OVERVIEW.md) | Status, features, remaining work |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Runtime shape and data flow |
-| [docs/LEGACY_BEHAVIOR.md](docs/LEGACY_BEHAVIOR.md) | Behaviors to preserve or correct |
-| [docs/CONFIGURATION_MODEL.md](docs/CONFIGURATION_MODEL.md) | Report layout profiles |
-| [docs/RELEASE_AND_DEPLOYMENT.md](docs/RELEASE_AND_DEPLOYMENT.md) | Signing, GitHub, S-drive practice |
-| [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md) | Teams / floor notification setup |
-| [release/](release/) | Version-by-version release notes |
+## Status
 
-## Design principles
+**Production pilot.** Core workflow, report writing, installer, and updater path are in use on the floor. Full cutover waits on more report comparisons against the legacy pipeline and broader station rollout.
 
-- **Preserve the floor workflow** unless a change is explicitly documented.
-- **Config over hardcoding** for report cell maps (`config/report-layouts/`).
-- **Fail honestly** — bad or missing CSV data must not look like a valid zero.
-- **Excel fidelity** — generated workbooks must open without repair prompts.
-- **No secrets in git** — updater private keys and installers stay out of source control.
+Built by Syed Hassaan Shah.
 
-## Project status
-
-This is a **production pilot**. Core workflow, report writing, installer, and updater path are in use on the floor. Full cutover waits on more side-by-side report checks against the legacy pipeline and broader station rollout.
-
-| | |
-|--|--|
-| **Latest** | [v0.2.15](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.15) |
-| **Repo** | https://github.com/Hassaan-ECE/PDU_Data_Automation_App |
-| **Author** | Syed Hassaan Shah |
-
-## License / internal use
+## License
 
 Internal engineering tool for TE lab / production test use. Contact the maintainer for distribution outside that context.
