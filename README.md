@@ -123,4 +123,10 @@ Built by Syed Hassaan Shah.
 
 ## License
 
-Internal engineering tool for TE lab / production test use. Contact the maintainer for distribution outside that context.
+This project is open source under the [MIT License](LICENSE).
+
+```
+Copyright (c) 2026 Syed Hassaan Shah
+```
+
+You are free to use, modify, and distribute the software, including commercially, provided the copyright and license notice are included.
