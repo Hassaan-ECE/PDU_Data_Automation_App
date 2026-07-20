@@ -1,20 +1,30 @@
-<div align="center">
+<table>
+<tr>
+<td width="42%" valign="middle">
 
 # PDU Data Automation
 
 **Test-floor automation for PDU stations** — CSVs in, Excel reports out, Teams in the loop.
 
-<br>
+Windows desktop app for production test stations. Operators pick a unit folder; the app watches instrument CSVs, tracks every step on a familiar panel, validates readings, and writes the Excel test report without hand-editing spreadsheets.
 
-<img height="560" alt="PDU Data Automation operator panel" src="docs/images/pdu-app-screenshot.png" />
+Pilot replacement for the legacy Python automation scripts. Same workflow on the floor — cleaner stack underneath (Tauri 2, React, Rust), data-driven report mappings, and signed in-app updates.
 
-</div>
+- Detects STEP CSVs and waits until files are ready  
+- Validates accuracy before any Excel write  
+- Color-coded breakers, burn-in, Open / Print Report  
+- Optional Teams Complete / Problem / Changeover cards  
 
-<br>
+**[Download v0.2.15 →](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.15)** · [All releases](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases)
 
-PDU Data Automation is a Windows desktop app for the production test floor. Operators pick a unit folder; the app watches instrument CSVs, tracks every step on a familiar panel, validates readings, and writes the Excel test report without hand-editing spreadsheets.
+</td>
+<td width="58%" valign="middle" align="center">
 
-It is the pilot replacement for the legacy Python automation scripts. Same workflow on the floor — cleaner stack underneath (Tauri 2, React, Rust), data-driven report mappings, and signed in-app updates.
+<img alt="PDU Data Automation operator panel" src="docs/images/pdu-app-screenshot.png" width="100%" />
+
+</td>
+</tr>
+</table>
 
 ## Download
 
@@ -40,15 +50,24 @@ For multi-PC Teams and floor identity settings, point every station at the **sam
 
 ## Teams on the floor
 
+<table>
+<tr>
+<td width="42%" valign="middle">
+
 Stations post Adaptive Cards into a shared Microsoft Teams channel so the floor sees **Complete**, **Problem**, and **Changeover** events without walking the aisle — for example when 208V work is finished and the unit needs to shut down and retap for 415V.
 
-<div align="center">
-  <img height="480" alt="Teams Complete and Changeover cards from PDU test stations" src="docs/images/teams-notifications.png" />
-</div>
+Setup is password-gated in Advanced Settings. Every PC on the floor should browse to the same shared `.PDU_Notifications` folder.
 
-<br>
+Details: [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)
 
-Setup is password-gated in Advanced Settings. Details live in [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
+</td>
+<td width="58%" valign="middle" align="center">
+
+<img alt="Teams Complete and Changeover cards from PDU test stations" src="docs/images/teams-notifications.png" width="100%" />
+
+</td>
+</tr>
+</table>
 
 ## How it works
 
