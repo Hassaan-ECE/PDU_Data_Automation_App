@@ -819,6 +819,30 @@ where
             continue;
         }
 
+        if !output.patches.is_empty() {
+            let stopped_after_commit = task_id.clone();
+            pending.push(PendingTaskOutput {
+                task_id,
+                result: output.result,
+                patches: output.patches,
+            });
+
+            if let Some(stopped) = flush_pending_task_outputs(
+                &unit_folder,
+                &mut pending,
+                &mut results,
+                &mut on_progress,
+                &unit_folder_display,
+                total,
+            )? {
+                stopped_task_id = Some(stopped);
+                committed = false;
+            } else {
+                stopped_task_id = Some(stopped_after_commit);
+            }
+            break;
+        }
+
         if let Some(stopped) = flush_pending_task_outputs(
             &unit_folder,
             &mut pending,
@@ -2540,7 +2564,7 @@ mod smoke_tests {
     }
 
     #[test]
-    fn verification_failure_does_not_patch_workbook() {
+    fn system_verification_failure_writes_values_and_remains_failed() {
         let temp = TempDir::new().expect("temp dir");
         let unit_folder = temp.path().join("262343000072");
         fs::create_dir_all(&unit_folder).expect("unit folder");
@@ -2548,21 +2572,78 @@ mod smoke_tests {
             "{}262343000072.xlsx",
             reports::MAIN_REPORT_SN_PREFIX
         ));
-        fs::write(&report, b"ORIGINAL REPORT").expect("write sentinel report");
+        write_minimal_workbook(&report, &["System Test - 480_208"]);
         write_system_accuracy_csv(
-            &unit_folder.join("unit_STEP15_SYSTEM_ACCURACY_TEST_DATA_AVG.csv"),
+            &unit_folder.join("unit_STEP17_SYSTEM_ACCURACY_TEST_DATA_AVG.csv"),
             true,
         );
 
         let result = process_task_at(
             unit_folder.display().to_string(),
-            "208v-system-100% Load".to_string(),
+            "208v-system-20% Load".to_string(),
             u64::MAX,
         )
         .expect("task should return result");
 
         assert_eq!(result.state, "fail", "{}", result.message);
-        assert_eq!(fs::read(&report).expect("read report"), b"ORIGINAL REPORT");
+        let sheet_xml = worksheet_xml(&report, "xl/worksheets/sheet1.xml");
+        assert_numeric_cell(&sheet_xml, "E57", "1");
+        assert_numeric_cell(&sheet_xml, "F57", "2");
+        assert_numeric_cell(&sheet_xml, "G57", "-50");
+
+        let state = unit_state::load_or_default(&unit_folder).expect("state");
+        assert_eq!(
+            state
+                .tasks
+                .get("208v-system-20% Load")
+                .map(|entry| entry.state.as_str()),
+            Some("fail")
+        );
+    }
+
+    #[test]
+    fn breaker_verification_failure_writes_bad_values_and_remains_failed() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let report = unit_folder.join(format!(
+            "{}262343000072.xlsx",
+            reports::MAIN_REPORT_SN_PREFIX
+        ));
+        write_minimal_workbook(&report, &["Subfeed - 480_208"]);
+        write_failing_breaker_accuracy_csv(
+            &unit_folder.join("unit_STEP23_SUB_FEED_02_ACCURACY_TEST_DATA_AVG.csv"),
+        );
+
+        let result = process_task_at(
+            unit_folder.display().to_string(),
+            "208v-breaker-2-20% Load".to_string(),
+            u64::MAX,
+        )
+        .expect("task should return result");
+
+        assert_eq!(result.state, "fail", "{}", result.message);
+        assert_eq!(
+            result
+                .failure
+                .as_ref()
+                .and_then(|failure| failure.location.as_ref())
+                .map(|location| location.cell.as_str()),
+            Some("I31")
+        );
+        let sheet_xml = worksheet_xml(&report, "xl/worksheets/sheet1.xml");
+        assert_numeric_cell(&sheet_xml, "G31", "1");
+        assert_numeric_cell(&sheet_xml, "H31", "2");
+        assert_numeric_cell(&sheet_xml, "I31", "100");
+
+        let state = unit_state::load_or_default(&unit_folder).expect("state");
+        assert_eq!(
+            state
+                .tasks
+                .get("208v-breaker-2-20% Load")
+                .map(|entry| entry.state.as_str()),
+            Some("fail")
+        );
     }
 
     #[test]
@@ -2971,6 +3052,9 @@ mod smoke_tests {
                 .map(|entry| entry.state.as_str()),
             Some("fail")
         );
+        let sheet_xml = worksheet_xml(&report, "xl/worksheets/sheet1.xml");
+        assert_numeric_cell(&sheet_xml, "G57", "-50");
+        assert_workbook_package_is_valid_after_patch(&report);
     }
 
     #[test]
@@ -3215,6 +3299,37 @@ mod smoke_tests {
         }
 
         fs::write(path, format!("{}\n{}\n", headers.join(","), row.join(","))).expect("write csv");
+    }
+
+    fn write_failing_breaker_accuracy_csv(path: &Path) {
+        let column_count = csv_data::excel_col_to_index("EG").expect("EG index") + 1;
+        let headers = (0..column_count)
+            .map(|index| format!("col{index}"))
+            .collect::<Vec<_>>();
+        let mut row = vec!["1".to_string(); column_count];
+        let detect_voltage_a = csv_data::excel_col_to_index("DO").expect("DO index");
+        row[detect_voltage_a] = "2".to_string();
+
+        fs::write(path, format!("{}\n{}\n", headers.join(","), row.join(","))).expect("write csv");
+    }
+
+    fn worksheet_xml(path: &Path, sheet_path: &str) -> String {
+        let mut archive = ZipArchive::new(File::open(path).expect("open workbook")).expect("zip");
+        let mut xml = String::new();
+        archive
+            .by_name(sheet_path)
+            .expect("sheet")
+            .read_to_string(&mut xml)
+            .expect("read sheet");
+        xml
+    }
+
+    fn assert_numeric_cell(xml: &str, cell: &str, value: &str) {
+        let expected = format!(r#"<c r="{cell}"><v>{value}</v></c>"#);
+        assert!(
+            xml.contains(&expected),
+            "expected cell value {expected} in worksheet XML:\n{xml}"
+        );
     }
 
     fn copy_dir(source: &Path, destination: &Path) {

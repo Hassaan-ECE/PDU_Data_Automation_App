@@ -118,7 +118,7 @@ pub fn process_task(
         report_config,
     );
 
-    if output.result.state == "pass" && !output.patches.is_empty() {
+    if !output.patches.is_empty() {
         if let Err(error) = patch_workbooks_transactional(&output.patches) {
             return processor_error_result(ProcessorError::Report(error));
         }
@@ -410,14 +410,17 @@ fn process_system(
             failures.first(),
         );
 
-        Ok(ProcessorTaskOutput::result_only(failed(
-            message,
-            log,
-            Some(report_path),
-            None,
-            failure,
-            Some(csv_source),
-        )))
+        Ok(ProcessorTaskOutput::new(
+            failed(
+                message,
+                log,
+                Some(report_path.clone()),
+                None,
+                failure,
+                Some(csv_source),
+            ),
+            vec![WorkbookPatch::new(report_path, updates)],
+        ))
     }
 }
 
@@ -503,14 +506,17 @@ fn process_breaker(
             failures.first(),
         );
 
-        Ok(ProcessorTaskOutput::result_only(failed(
-            message,
-            log,
-            Some(report_path),
-            None,
-            failure,
-            Some(csv_source),
-        )))
+        Ok(ProcessorTaskOutput::new(
+            failed(
+                message,
+                log,
+                Some(report_path.clone()),
+                None,
+                failure,
+                Some(csv_source),
+            ),
+            vec![WorkbookPatch::new(report_path, updates)],
+        ))
     }
 }
 

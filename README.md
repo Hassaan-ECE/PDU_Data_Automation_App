@@ -25,7 +25,7 @@ Built for the real floor: wait for instrument files to finish writing, never tur
 - Optional Teams **Complete**, **Problem**, and **Changeover** cards across stations
 - Current-user Windows installer + signed updater path
 
-**[Download v0.2.15 →](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.15)** · [All releases](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases)
+**[Download v0.2.16 →](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.16)** · [All releases](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases)
 
 </td>
 <td width="48%" valign="middle" align="center">
@@ -43,7 +43,7 @@ Get the current pilot installer from the [latest GitHub release](https://github.
 
 | | |
 | --- | --- |
-| **Current release** | [v0.2.15](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.15) |
+| **Current release** | [v0.2.16](https://github.com/Hassaan-ECE/PDU_Data_Automation_App/releases/tag/v0.2.16) |
 | **Platform** | Windows · current-user NSIS installer |
 | **Updates** | Signed in-app updater (after the first install from the matching key era) |
 
