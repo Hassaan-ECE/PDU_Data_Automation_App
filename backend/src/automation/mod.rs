@@ -13,6 +13,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "windows")]
+use std::process::Stdio;
+#[cfg(target_os = "windows")]
+use std::thread;
+#[cfg(target_os = "windows")]
+use std::time::{Duration, Instant};
+
 use regex::Regex;
 use serde::Serialize;
 use thiserror::Error;
@@ -20,7 +27,9 @@ use thiserror::Error;
 use crate::config::{load_layout_profile, LayoutProfileError, ReportLayoutProfile, TaskDefinition};
 
 use self::csv_data::{csv_fingerprint, csv_metadata_matches_fingerprint};
-use self::processors::{FailureDetail, ProcessorResult, ProcessorTaskOutput};
+use self::processors::{
+    FailureDetail, ProcessorResult, ProcessorTaskOutput, ACCURACY_CHECK_FAILURE_TITLE,
+};
 use self::reports::{
     inspect_reports_with_config, patch_workbooks_transactional,
     read_transformer_serial_number_with_config, require_print_report_with_config,
@@ -44,6 +53,8 @@ pub enum AutomationError {
     LayoutProfile(#[from] LayoutProfileError),
     #[error("unknown automation task id: {0}")]
     UnknownTask(String),
+    #[error("{0}")]
+    TaskAcceptance(String),
     #[error("{0}")]
     OpenReport(String),
 }
@@ -84,7 +95,7 @@ impl AutomationCommandError {
                 error.to_string(),
             ),
             ReportError::WorkbookLocked(_) => Self::report(
-                "workbook_locked",
+                "workbook_busy",
                 "The main report workbook is locked by another app operation. Wait for the current write to finish and try again.",
                 error.to_string(),
             ),
@@ -138,7 +149,7 @@ impl AutomationCommandError {
                 error.to_string(),
             ),
             ReportError::WorkbookLocked(_) => Self::report(
-                "workbook_locked",
+                "workbook_busy",
                 "The print report workbook is locked by another app operation. Wait for the current write to finish and try again.",
                 error.to_string(),
             ),
@@ -229,7 +240,7 @@ impl AutomationCommandError {
         )
     }
 
-    fn from_automation_error(error: AutomationError) -> Self {
+    pub(crate) fn from_automation_error(error: AutomationError) -> Self {
         match error {
             AutomationError::Report(error) => Self::from_report_error(error),
             AutomationError::UnitState(error) => Self::from_unit_state_error(error),
@@ -238,6 +249,9 @@ impl AutomationCommandError {
                 "unknown_task",
                 format!("Unknown automation task id: {task_id}"),
             ),
+            AutomationError::TaskAcceptance(message) => {
+                Self::validation("task_not_acceptable", message)
+            }
             AutomationError::OpenReport(message) => Self::report(
                 "automation_failed",
                 "The requested automation action could not be completed.",
@@ -327,6 +341,7 @@ pub struct TaskProcessResult {
     pub task_id: String,
     pub state: String,
     pub code: u8,
+    pub continue_sequence: bool,
     pub message: String,
     pub log: Vec<String>,
     pub report_path: Option<String>,
@@ -353,6 +368,13 @@ pub struct TaskBatchProgress {
     pub message: String,
     pub index: usize,
     pub total: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CloseReportWorkbookResult {
+    pub closed: bool,
+    pub path: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -656,6 +678,28 @@ pub fn scan_unit_folder(unit_folder: String) -> Result<UnitFolderSummary, Automa
     build_summary_with_profile(&unit_folder, report_setup, &profile)
 }
 
+pub fn accept_task_failure(
+    unit_folder: String,
+    task_id: String,
+) -> Result<UnitFolderSummary, AutomationError> {
+    find_task(&task_id).ok_or_else(|| AutomationError::UnknownTask(task_id.clone()))?;
+    let unit_folder_path = PathBuf::from(&unit_folder);
+    unit_state::accept_task_failure(
+        &unit_folder_path,
+        &task_id,
+        "operator",
+        "Operator marked a negligible failed result as pass.",
+    )
+    .map_err(|error| match error.kind() {
+        io::ErrorKind::InvalidInput | io::ErrorKind::NotFound => {
+            AutomationError::TaskAcceptance(error.to_string())
+        }
+        _ => AutomationError::UnitState(error),
+    })?;
+
+    scan_unit_folder(unit_folder)
+}
+
 pub fn process_task(
     unit_folder: String,
     task_id: String,
@@ -692,20 +736,20 @@ pub fn process_task_at(
         .get(&task_id)
         .and_then(|entry| entry.already_processed_fingerprint())
         .map(ToOwned::to_owned);
-    let result = process_task_with_profile_mapping(
+    let result = match process_task_with_profile_mapping(
         &profile,
         &task_id,
         &unit_folder,
         already_processed_fingerprint.as_deref(),
-    )
-    .unwrap_or_else(|| {
-        processors::process_task(
+    )? {
+        Some(result) => result,
+        None => processors::process_task(
             &task,
             &unit_folder,
             already_processed_fingerprint.as_deref(),
             &report_config,
-        )
-    });
+        )?,
+    };
 
     unit_state::record_processor_result(&unit_folder, &task_id, &result)?;
 
@@ -758,9 +802,18 @@ where
     let mut stopped_task_id = None;
     let mut committed = true;
 
-    for task_id in task_ids {
+    for (task_position, task_id) in task_ids.into_iter().enumerate() {
         let task =
             find_task(&task_id).ok_or_else(|| AutomationError::UnknownTask(task_id.clone()))?;
+
+        on_progress(TaskBatchProgress {
+            unit_folder: unit_folder_display.clone(),
+            task_id: task_id.clone(),
+            state: "processing".to_string(),
+            message: format!("Processing {}", task.label),
+            index: task_position + 1,
+            total,
+        });
 
         let output = if let Some(result) =
             already_processed_result_from_state(&unit_folder, &task_id, &task.label, &state)
@@ -807,8 +860,10 @@ where
                 &unit_folder,
                 already_processed_fingerprint.as_deref(),
                 &report_config,
-            )
+            )?
         };
+
+        let continue_sequence = processor_result_continues_sequence(&output.result);
 
         if output.result.state == "pass" {
             pending.push(PendingTaskOutput {
@@ -827,6 +882,10 @@ where
                 patches: output.patches,
             });
 
+            if continue_sequence {
+                continue;
+            }
+
             if let Some(stopped) = flush_pending_task_outputs(
                 &unit_folder,
                 &mut pending,
@@ -837,9 +896,10 @@ where
             )? {
                 stopped_task_id = Some(stopped);
                 committed = false;
-            } else {
-                stopped_task_id = Some(stopped_after_commit);
+                break;
             }
+
+            stopped_task_id = Some(stopped_after_commit);
             break;
         }
 
@@ -889,10 +949,19 @@ where
         .iter()
         .filter(|result| result.state == "pass")
         .count();
+    let failed_count = results
+        .iter()
+        .filter(|result| result.state == "fail")
+        .count();
+    let processed_count = results.len();
     let message = if let Some(task_id) = &stopped_task_id {
         format!(
             "Batch stopped at {task_id} after finalizing {committed_count} task{}.",
             if committed_count == 1 { "" } else { "s" }
+        )
+    } else if failed_count > 0 {
+        format!(
+            "Batch processed {processed_count} tasks ({committed_count} passed, {failed_count} failed)."
         )
     } else {
         format!(
@@ -934,6 +1003,10 @@ fn flush_pending_task_outputs(
         .collect::<Vec<_>>();
 
     if let Err(error) = patch_workbooks_transactional(&patches) {
+        if is_external_workbook_lock_error(&error) {
+            return Err(AutomationError::Report(error));
+        }
+
         let failed_index = pending
             .iter()
             .position(|output| !output.patches.is_empty())
@@ -1105,6 +1178,44 @@ pub fn open_report_location(
     validate_cell_reference(&cell)?;
 
     open_excel_at_location(&report_path, &sheet, &cell)
+}
+
+pub fn close_report_workbook(
+    unit_folder: String,
+    path: String,
+) -> Result<CloseReportWorkbookResult, AutomationCommandError> {
+    let report_path = if path.trim().is_empty() {
+        let unit_folder_path = PathBuf::from(&unit_folder);
+        let profile =
+            load_layout_profile().map_err(AutomationCommandError::from_layout_profile_error)?;
+        let report_config = report_file_config(&profile);
+        let discovered_path =
+            self::reports::require_main_report_with_config(&unit_folder_path, &report_config)
+                .map_err(AutomationCommandError::from_report_error)?;
+
+        validate_report_path(&unit_folder, &discovered_path.display().to_string())
+            .map_err(AutomationCommandError::from_automation_error)?
+    } else {
+        validate_report_path(&unit_folder, &path)
+            .map_err(AutomationCommandError::from_automation_error)?
+    };
+    let closed = close_excel_workbook(&report_path).map_err(|error| {
+        AutomationCommandError::report(
+            "workbook_close_failed",
+            "The report workbook could not be closed automatically.",
+            error.to_string(),
+        )
+    })?;
+
+    Ok(CloseReportWorkbookResult {
+        closed,
+        path: report_path.display().to_string(),
+        message: if closed {
+            "The report workbook was saved and closed.".to_string()
+        } else {
+            "The report workbook was already closed.".to_string()
+        },
+    })
 }
 
 fn build_summary_with_profile(
@@ -1413,6 +1524,7 @@ fn process_preflight(
         task_id: task.id.clone(),
         state: "waiting".to_string(),
         code: 2,
+        continue_sequence: false,
         message: readiness_wait_message(task, readiness),
         log: vec![csv_match.reason],
         report_path: None,
@@ -1721,10 +1833,13 @@ fn current_time_millis() -> u64 {
 }
 
 fn to_task_process_result(task_id: String, result: ProcessorResult) -> TaskProcessResult {
+    let continue_sequence = processor_result_continues_sequence(&result);
+
     TaskProcessResult {
         task_id,
         state: result.state,
         code: result.code,
+        continue_sequence,
         message: result.message,
         log: result.log,
         report_path: result.report_path,
@@ -1735,24 +1850,37 @@ fn to_task_process_result(task_id: String, result: ProcessorResult) -> TaskProce
     }
 }
 
+fn is_external_workbook_lock_error(error: &ReportError) -> bool {
+    match error {
+        ReportError::Io(source) => is_locked_file_error(source),
+        ReportError::Zip(zip::result::ZipError::Io(source)) => is_locked_file_error(source),
+        _ => false,
+    }
+}
+
+fn processor_result_continues_sequence(result: &ProcessorResult) -> bool {
+    result.state == "fail"
+        && result
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.title == ACCURACY_CHECK_FAILURE_TITLE)
+}
+
 fn process_task_with_profile_mapping(
     profile: &ReportLayoutProfile,
     task_id: &str,
     unit_folder: &Path,
     already_processed_fingerprint: Option<&str>,
-) -> Option<ProcessorResult> {
-    let task = profile_task(profile, task_id)?;
+) -> Result<Option<ProcessorResult>, ReportError> {
+    let Some(task) = profile_task(profile, task_id) else {
+        return Ok(None);
+    };
 
     if task.mappings.is_empty() {
-        return None;
+        return Ok(None);
     }
 
-    Some(mapped::process_task(
-        profile,
-        task,
-        unit_folder,
-        already_processed_fingerprint,
-    ))
+    mapped::process_task(profile, task, unit_folder, already_processed_fingerprint).map(Some)
 }
 
 fn compute_task_output(
@@ -1762,16 +1890,22 @@ fn compute_task_output(
     unit_folder: &Path,
     already_processed_fingerprint: Option<&str>,
     report_config: &ReportFileConfig,
-) -> ProcessorTaskOutput {
-    compute_task_with_profile_mapping(profile, task_id, unit_folder, already_processed_fingerprint)
-        .unwrap_or_else(|| {
-            processors::compute_task(
-                task,
-                unit_folder,
-                already_processed_fingerprint,
-                report_config,
-            )
-        })
+) -> Result<ProcessorTaskOutput, ReportError> {
+    if let Some(output) = compute_task_with_profile_mapping(
+        profile,
+        task_id,
+        unit_folder,
+        already_processed_fingerprint,
+    )? {
+        return Ok(output);
+    }
+
+    processors::compute_task(
+        task,
+        unit_folder,
+        already_processed_fingerprint,
+        report_config,
+    )
 }
 
 fn compute_task_with_profile_mapping(
@@ -1779,19 +1913,16 @@ fn compute_task_with_profile_mapping(
     task_id: &str,
     unit_folder: &Path,
     already_processed_fingerprint: Option<&str>,
-) -> Option<ProcessorTaskOutput> {
-    let task = profile_task(profile, task_id)?;
+) -> Result<Option<ProcessorTaskOutput>, ReportError> {
+    let Some(task) = profile_task(profile, task_id) else {
+        return Ok(None);
+    };
 
     if task.mappings.is_empty() {
-        return None;
+        return Ok(None);
     }
 
-    Some(mapped::compute_task(
-        profile,
-        task,
-        unit_folder,
-        already_processed_fingerprint,
-    ))
+    mapped::compute_task(profile, task, unit_folder, already_processed_fingerprint).map(Some)
 }
 
 fn profile_task<'a>(profile: &'a ReportLayoutProfile, task_id: &str) -> Option<&'a TaskDefinition> {
@@ -1917,54 +2048,487 @@ fn open_path_with_default_app(path: &Path) -> Result<(), AutomationError> {
 }
 
 #[cfg(target_os = "windows")]
+const OPEN_EXCEL_AT_LOCATION_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$rawPath = $env:PDU_REPORT_PATH
+$sheet = $env:PDU_REPORT_SHEET
+$cell = $env:PDU_REPORT_CELL
+$statusPath = $env:PDU_REPORT_STATUS_PATH
+$launchedExcel = $false
+$excel = $null
+$workbook = $null
+$windowStateBefore = $null
+$targetWindowState = -4137
+
+Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class PduExcelLocationFocus {
+  public delegate bool EnumWindowProc(IntPtr hWnd, IntPtr parameter);
+  [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowProc callback, IntPtr parameter);
+  [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, EnumWindowProc callback, IntPtr parameter);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hWnd, StringBuilder className, int maxCount);
+  [DllImport("oleacc.dll")] public static extern int AccessibleObjectFromWindow(IntPtr hWnd, uint objectId, ref Guid interfaceId, [MarshalAs(UnmanagedType.Interface)] out object nativeObject);
+  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+  private static string WindowClassName(IntPtr hWnd) {
+    var className = new StringBuilder(256);
+    GetClassName(hWnd, className, className.Capacity);
+    return className.ToString();
+  }
+
+  public static IntPtr[] FindExcelDocumentWindows() {
+    var documentWindows = new List<IntPtr>();
+    EnumWindows((topLevelWindow, parameter) => {
+      if (!string.Equals(WindowClassName(topLevelWindow), "XLMAIN", StringComparison.OrdinalIgnoreCase)) {
+        return true;
+      }
+
+      EnumChildWindows(topLevelWindow, (childWindow, childParameter) => {
+        if (string.Equals(WindowClassName(childWindow), "EXCEL7", StringComparison.OrdinalIgnoreCase)) {
+          documentWindows.Add(childWindow);
+        }
+        return true;
+      }, IntPtr.Zero);
+      return true;
+    }, IntPtr.Zero);
+    return documentWindows.ToArray();
+  }
+}
+"@
+
+function Write-LocationStatus([string]$value) {
+  [System.IO.File]::WriteAllText($statusPath, $value, [System.Text.Encoding]::UTF8)
+}
+
+function Normalize-PduPath([string]$value) {
+  if ([string]::IsNullOrWhiteSpace($value)) {
+    return $value
+  }
+  if ($value.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
+    return '\\' + $value.Substring(8)
+  }
+  if ($value.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
+    return $value.Substring(4)
+  }
+  try {
+    return [System.IO.Path]::GetFullPath($value)
+  } catch {
+    return $value
+  }
+}
+
+function Release-PduComObject($value) {
+  if ($null -eq $value -or -not [Runtime.InteropServices.Marshal]::IsComObject($value)) {
+    return
+  }
+
+  try {
+    [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($value)
+  } catch {
+  }
+}
+
+function Get-ExcelWorkbookBinding([string]$targetPath) {
+  $interfaceId = [Guid]'00020400-0000-0000-C000-000000000046'
+  $nativeObjectId = [uint32]4294967280
+
+  foreach ($documentWindowHandle in [PduExcelLocationFocus]::FindExcelDocumentWindows()) {
+    $nativeWindow = $null
+    $excelApplication = $null
+    $candidate = $null
+
+    try {
+      $result = [PduExcelLocationFocus]::AccessibleObjectFromWindow(
+        $documentWindowHandle,
+        $nativeObjectId,
+        [ref]$interfaceId,
+        [ref]$nativeWindow
+      )
+
+      if ($result -eq 0 -and $null -ne $nativeWindow) {
+        $excelApplication = $nativeWindow.Application
+        for ($index = 1; $index -le $excelApplication.Workbooks.Count; $index += 1) {
+          $candidate = $excelApplication.Workbooks.Item($index)
+          $candidatePath = Normalize-PduPath $candidate.FullName
+          if ([string]::Equals($candidatePath, $targetPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return [PSCustomObject]@{
+              Excel = $excelApplication
+              Workbook = $candidate
+              NativeWindow = $nativeWindow
+            }
+          }
+
+          Release-PduComObject $candidate
+          $candidate = $null
+        }
+      }
+    } catch {
+    }
+
+    Release-PduComObject $candidate
+    Release-PduComObject $excelApplication
+    Release-PduComObject $nativeWindow
+  }
+
+  return $null
+}
+
+function Focus-ExcelWindow($excelApplication) {
+  try {
+    $hwnd = [IntPtr]$excelApplication.Hwnd
+    if ($hwnd -ne [IntPtr]::Zero) {
+      [void][PduExcelLocationFocus]::BringWindowToTop($hwnd)
+      [void][PduExcelLocationFocus]::SetForegroundWindow($hwnd)
+    }
+  } catch {
+  }
+}
+
+$path = Normalize-PduPath $rawPath
+
+function Select-ReportLocation($excelApplication, $workbookToFocus, [string]$sheetName, [string]$cellReference) {
+  [void]$workbookToFocus.Activate()
+  try {
+    [void]$workbookToFocus.Windows.Item(1).Activate()
+  } catch {
+  }
+  $worksheetToFocus = $workbookToFocus.Worksheets.Item($sheetName)
+  [void]$worksheetToFocus.Activate()
+  $rangeToFocus = $worksheetToFocus.Range($cellReference)
+  [void]$excelApplication.Goto($rangeToFocus, $false)
+  try {
+    $activeWindow = $excelApplication.ActiveWindow
+    if ($null -ne $activeWindow) {
+      $visibleRows = [int]$activeWindow.VisibleRange.Rows.Count
+      $visibleColumns = [int]$activeWindow.VisibleRange.Columns.Count
+      $rowOffset = [int][Math]::Floor($visibleRows / 2)
+      $columnOffset = [int][Math]::Floor($visibleColumns / 2)
+      $activeWindow.ScrollRow = [Math]::Max(1, [int]$rangeToFocus.Row - $rowOffset)
+      $activeWindow.ScrollColumn = [Math]::Max(1, [int]$rangeToFocus.Column - $columnOffset)
+    }
+  } catch {
+  }
+}
+
+function Test-ReportLocation($excelApplication, [string]$targetPath, [string]$sheetName, [string]$cellReference) {
+  try {
+    if ($null -eq $excelApplication.ActiveWorkbook -or
+        $null -eq $excelApplication.ActiveSheet -or
+        $null -eq $excelApplication.Selection) {
+      return $false
+    }
+
+    $activeWorkbookPath = Normalize-PduPath $excelApplication.ActiveWorkbook.FullName
+    $activeSheetName = [string]$excelApplication.ActiveSheet.Name
+    $activeCellAddress = [string]$excelApplication.Selection.Address($false, $false)
+
+    return [string]::Equals($activeWorkbookPath, $targetPath, [System.StringComparison]::OrdinalIgnoreCase) -and
+      [string]::Equals($activeSheetName, $sheetName, [System.StringComparison]::OrdinalIgnoreCase) -and
+      [string]::Equals($activeCellAddress, $cellReference, [System.StringComparison]::OrdinalIgnoreCase)
+  } catch {
+    return $false
+  }
+}
+
+try {
+  $binding = Get-ExcelWorkbookBinding $path
+  if ($null -eq $binding) {
+    Start-Process -FilePath $path | Out-Null
+    $launchedExcel = $true
+    $launchDeadline = [DateTime]::UtcNow.AddSeconds(20)
+
+    while ($null -eq $binding -and [DateTime]::UtcNow -lt $launchDeadline) {
+      Start-Sleep -Milliseconds 250
+      $binding = Get-ExcelWorkbookBinding $path
+    }
+  }
+
+  if ($null -eq $binding) {
+    throw "Excel did not expose the requested workbook window for cell selection."
+  }
+
+  $excel = $binding.Excel
+  $workbook = $binding.Workbook
+  $nativeWindow = $binding.NativeWindow
+  try {
+    $windowStateBefore = [int]$excel.WindowState
+  } catch {
+  }
+
+  $excel.Visible = $true
+  if (-not $launchedExcel -and $null -ne $windowStateBefore -and $windowStateBefore -ne -4140) {
+    $targetWindowState = $windowStateBefore
+  }
+  try {
+    $excel.WindowState = $targetWindowState
+  } catch {
+  }
+  $sheet = $sheet.Trim()
+  $cell = $cell.Trim().ToUpperInvariant()
+
+  $readyDeadline = [DateTime]::UtcNow.AddSeconds(15)
+  while (-not $excel.Ready -and [DateTime]::UtcNow -lt $readyDeadline) {
+    Start-Sleep -Milliseconds 250
+  }
+
+  Start-Sleep -Milliseconds 250
+  if (-not (Test-ReportLocation $excel $path $sheet $cell)) {
+    Select-ReportLocation $excel $workbook $sheet $cell
+    Start-Sleep -Milliseconds 250
+  }
+
+  if (-not (Test-ReportLocation $excel $path $sheet $cell)) {
+    Start-Sleep -Milliseconds 500
+    Select-ReportLocation $excel $workbook $sheet $cell
+    Start-Sleep -Milliseconds 250
+  }
+
+  if (-not (Test-ReportLocation $excel $path $sheet $cell)) {
+    throw "Excel opened the workbook but did not stay focused on $sheet!$cell."
+  }
+
+  try {
+    if ([int]$excel.WindowState -ne $targetWindowState) {
+      $excel.WindowState = $targetWindowState
+    }
+  } catch {
+  }
+  Focus-ExcelWindow $excel
+  Write-LocationStatus 'ok'
+  Release-PduComObject $workbook
+  Release-PduComObject $nativeWindow
+  Release-PduComObject $excel
+} catch {
+  Write-LocationStatus ("error:" + $_.Exception.Message)
+  Release-PduComObject $workbook
+  Release-PduComObject $nativeWindow
+  Release-PduComObject $excel
+  exit 1
+}
+"#;
+
+#[cfg(target_os = "windows")]
+const CLOSE_EXCEL_WORKBOOK_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$rawPath = $env:PDU_REPORT_PATH
+
+Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class PduExcelWorkbookClose {
+  public delegate bool EnumWindowProc(IntPtr hWnd, IntPtr parameter);
+  [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowProc callback, IntPtr parameter);
+  [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, EnumWindowProc callback, IntPtr parameter);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hWnd, StringBuilder className, int maxCount);
+  [DllImport("oleacc.dll")] public static extern int AccessibleObjectFromWindow(IntPtr hWnd, uint objectId, ref Guid interfaceId, [MarshalAs(UnmanagedType.Interface)] out object nativeObject);
+
+  private static string WindowClassName(IntPtr hWnd) {
+    var className = new StringBuilder(256);
+    GetClassName(hWnd, className, className.Capacity);
+    return className.ToString();
+  }
+
+  public static IntPtr[] FindExcelDocumentWindows() {
+    var documentWindows = new List<IntPtr>();
+    EnumWindows((topLevelWindow, parameter) => {
+      if (!string.Equals(WindowClassName(topLevelWindow), "XLMAIN", StringComparison.OrdinalIgnoreCase)) {
+        return true;
+      }
+
+      EnumChildWindows(topLevelWindow, (childWindow, childParameter) => {
+        if (string.Equals(WindowClassName(childWindow), "EXCEL7", StringComparison.OrdinalIgnoreCase)) {
+          documentWindows.Add(childWindow);
+        }
+        return true;
+      }, IntPtr.Zero);
+      return true;
+    }, IntPtr.Zero);
+    return documentWindows.ToArray();
+  }
+}
+"@
+
+function Normalize-PduPath([string]$value) {
+  if ([string]::IsNullOrWhiteSpace($value)) {
+    return $value
+  }
+  if ($value.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
+    return '\\' + $value.Substring(8)
+  }
+  if ($value.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
+    return $value.Substring(4)
+  }
+  try {
+    return [System.IO.Path]::GetFullPath($value)
+  } catch {
+    return $value
+  }
+}
+
+function Release-PduComObject($value) {
+  if ($null -eq $value -or -not [Runtime.InteropServices.Marshal]::IsComObject($value)) {
+    return
+  }
+
+  try {
+    [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($value)
+  } catch {
+  }
+}
+
+$path = Normalize-PduPath $rawPath
+$interfaceId = [Guid]'00020400-0000-0000-C000-000000000046'
+$nativeObjectId = [uint32]4294967280
+$closed = $false
+
+foreach ($documentWindowHandle in [PduExcelWorkbookClose]::FindExcelDocumentWindows()) {
+  $nativeWindow = $null
+  $excel = $null
+  $candidate = $null
+
+  try {
+    $result = [PduExcelWorkbookClose]::AccessibleObjectFromWindow(
+      $documentWindowHandle,
+      $nativeObjectId,
+      [ref]$interfaceId,
+      [ref]$nativeWindow
+    )
+
+    if ($result -eq 0 -and $null -ne $nativeWindow) {
+      $excel = $nativeWindow.Application
+      for ($index = 1; $index -le $excel.Workbooks.Count; $index += 1) {
+        $candidate = $excel.Workbooks.Item($index)
+        $candidatePath = Normalize-PduPath $candidate.FullName
+        if ([string]::Equals($candidatePath, $path, [System.StringComparison]::OrdinalIgnoreCase)) {
+          $displayAlertsBefore = [bool]$excel.DisplayAlerts
+          try {
+            $excel.DisplayAlerts = $false
+            [void]$candidate.Close($true)
+            $closed = $true
+            if ([int]$excel.Workbooks.Count -eq 0) {
+              $excel.Quit()
+            }
+          } finally {
+            try {
+              $excel.DisplayAlerts = $displayAlertsBefore
+            } catch {
+            }
+          }
+          break
+        }
+
+        Release-PduComObject $candidate
+        $candidate = $null
+      }
+    }
+  } finally {
+    Release-PduComObject $candidate
+    Release-PduComObject $excel
+    Release-PduComObject $nativeWindow
+  }
+
+  if ($closed) {
+    break
+  }
+}
+
+if ($closed) {
+  Write-Output 'closed'
+} else {
+  Write-Output 'not-open'
+}
+"#;
+
+#[cfg(target_os = "windows")]
+fn close_excel_workbook(path: &Path) -> Result<bool, AutomationError> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-Sta",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            CLOSE_EXCEL_WORKBOOK_SCRIPT,
+        ])
+        .env("PDU_REPORT_PATH", path)
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| {
+            AutomationError::OpenReport(format!(
+                "failed to start the Excel workbook close helper for {}: {error}",
+                path.display()
+            ))
+        })?;
+
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(AutomationError::OpenReport(format!(
+            "failed to close the Excel workbook {}{}",
+            path.display(),
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        )));
+    }
+
+    let status = String::from_utf8_lossy(&output.stdout);
+    let status = status.trim_start_matches('\u{feff}').trim();
+    match status.lines().last().unwrap_or_default().trim() {
+        "closed" => Ok(true),
+        "not-open" => Ok(false),
+        other => Err(AutomationError::OpenReport(format!(
+            "Excel workbook close helper returned an unexpected status for {}: {other}",
+            path.display()
+        ))),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn close_excel_workbook(_path: &Path) -> Result<bool, AutomationError> {
+    Ok(false)
+}
+
+#[cfg(target_os = "windows")]
 fn open_excel_at_location(path: &Path, sheet: &str, cell: &str) -> Result<(), AutomationError> {
     use std::os::windows::process::CommandExt;
 
     const CREATE_NO_WINDOW: u32 = 0x08000000;
-    const SCRIPT: &str = r#"
-$ErrorActionPreference = 'Stop'
-$path = $env:PDU_REPORT_PATH
-$sheet = $env:PDU_REPORT_SHEET
-$cell = $env:PDU_REPORT_CELL
-try {
-  $excel = [Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application')
-} catch {
-  $excel = New-Object -ComObject Excel.Application
-}
-$excel.Visible = $true
-$workbook = $null
-foreach ($candidate in @($excel.Workbooks)) {
-  if ([string]::Equals($candidate.FullName, $path, [System.StringComparison]::OrdinalIgnoreCase)) {
-    $workbook = $candidate
-    break
-  }
-}
-if ($null -eq $workbook) {
-  $workbook = $excel.Workbooks.Open($path)
-}
-$worksheet = $workbook.Worksheets.Item($sheet)
-$worksheet.Activate()
-$range = $worksheet.Range($cell)
-$range.Select()
-if ($excel.ActiveWindow -ne $null) {
-  $excel.ActiveWindow.ScrollRow = [Math]::Max(1, $range.Row - 5)
-  $excel.ActiveWindow.ScrollColumn = [Math]::Max(1, $range.Column - 3)
-}
-"#;
-
-    let output = Command::new("powershell.exe")
+    let status_path = std::env::temp_dir().join(format!(
+        "pdu-excel-location-{}-{}.status",
+        std::process::id(),
+        current_time_millis()
+    ));
+    let _ = fs::remove_file(&status_path);
+    let mut child = Command::new("powershell.exe")
         .args([
             "-NoProfile",
+            "-Sta",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            SCRIPT,
+            OPEN_EXCEL_AT_LOCATION_SCRIPT,
         ])
         .env("PDU_REPORT_PATH", path)
         .env("PDU_REPORT_SHEET", sheet)
         .env("PDU_REPORT_CELL", cell)
+        .env("PDU_REPORT_STATUS_PATH", &status_path)
         .creation_flags(CREATE_NO_WINDOW)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
         .map_err(|error| {
             AutomationError::OpenReport(format!(
                 "failed to open Excel location {}!{} in {}: {error}",
@@ -1974,23 +2538,43 @@ if ($excel.ActiveWindow -ne $null) {
             ))
         })?;
 
-    if output.status.success() {
-        return Ok(());
-    }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Ok(status) = fs::read_to_string(&status_path) {
+            let _ = fs::remove_file(&status_path);
+            let status = status.trim_start_matches('\u{feff}').trim();
 
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let detail = if !stderr.is_empty() { stderr } else { stdout };
+            if status == "ok" {
+                return Ok(());
+            }
 
-    Err(AutomationError::OpenReport(format!(
-        "failed to open Excel location {sheet}!{cell} in {}{}",
-        path.display(),
-        if detail.is_empty() {
-            String::new()
-        } else {
-            format!(": {detail}")
+            let _ = child.kill();
+            let detail = status.strip_prefix("error:").unwrap_or(status);
+            return Err(AutomationError::OpenReport(format!(
+                "failed to open Excel location {sheet}!{cell} in {}: {detail}",
+                path.display()
+            )));
         }
-    )))
+
+        if let Ok(Some(status)) = child.try_wait() {
+            let _ = fs::remove_file(&status_path);
+            return Err(AutomationError::OpenReport(format!(
+                "Excel location helper exited with {status} before selecting {sheet}!{cell} in {}",
+                path.display()
+            )));
+        }
+
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = fs::remove_file(&status_path);
+            return Err(AutomationError::OpenReport(format!(
+                "Excel did not confirm selection of {sheet}!{cell} in {} within 30 seconds",
+                path.display()
+            )));
+        }
+
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -2146,6 +2730,11 @@ mod smoke_tests {
     use std::io::{self, Read, Write};
     use std::path::Path;
 
+    #[cfg(target_os = "windows")]
+    use std::fs::OpenOptions;
+    #[cfg(target_os = "windows")]
+    use std::os::windows::fs::OpenOptionsExt;
+
     use tempfile::TempDir;
     use walkdir::WalkDir;
     use zip::write::SimpleFileOptions;
@@ -2192,6 +2781,27 @@ mod smoke_tests {
         assert!(error
             .to_string()
             .contains("outside the selected unit folder"));
+    }
+
+    #[test]
+    fn close_report_workbook_discovers_main_report_when_path_missing() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let report = unit_folder.join(format!(
+            "{}262343000072.xlsx",
+            reports::MAIN_REPORT_SN_PREFIX
+        ));
+        write_minimal_workbook(&report, &["Test Summary"]);
+
+        let result = close_report_workbook(unit_folder.display().to_string(), String::new())
+            .expect("main report should be discovered");
+
+        assert!(!result.closed);
+        assert_eq!(
+            PathBuf::from(result.path),
+            fs::canonicalize(report).expect("canonical report")
+        );
     }
 
     #[test]
@@ -2503,7 +3113,7 @@ mod smoke_tests {
             None,
         );
 
-        assert!(result.is_none());
+        assert!(result.expect("mapping lookup should not fail").is_none());
     }
 
     #[test]
@@ -2586,6 +3196,7 @@ mod smoke_tests {
         .expect("task should return result");
 
         assert_eq!(result.state, "fail", "{}", result.message);
+        assert!(result.continue_sequence);
         let sheet_xml = worksheet_xml(&report, "xl/worksheets/sheet1.xml");
         assert_numeric_cell(&sheet_xml, "E57", "1");
         assert_numeric_cell(&sheet_xml, "F57", "2");
@@ -2601,8 +3212,120 @@ mod smoke_tests {
         );
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
-    fn breaker_verification_failure_writes_bad_values_and_remains_failed() {
+    fn single_task_locked_report_returns_workbook_locked_command_error() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("262343000072");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let report = unit_folder.join(format!(
+            "{}262343000072.xlsx",
+            reports::MAIN_REPORT_SN_PREFIX
+        ));
+        write_minimal_workbook(&report, &["System Test - 480_208"]);
+        write_system_accuracy_csv(
+            &unit_folder.join("unit_STEP17_SYSTEM_ACCURACY_TEST_DATA_AVG.csv"),
+            false,
+        );
+        let _exclusive_report_handle = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(&report)
+            .expect("lock report exclusively");
+
+        let error = process_task_at(
+            unit_folder.display().to_string(),
+            "208v-system-20% Load".to_string(),
+            u64::MAX,
+        )
+        .expect_err("locked report should reject the task command");
+        let command_error = AutomationCommandError::from_automation_error(error);
+
+        assert_eq!(command_error.code, "workbook_locked");
+        assert!(command_error
+            .details
+            .as_deref()
+            .is_some_and(|details| details.contains("os error 32")));
+        let state = unit_state::load_or_default(&unit_folder).expect("state");
+        assert!(!state.tasks.contains_key("208v-system-20% Load"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn excel_location_launcher_uses_shell_owned_excel_session() {
+        assert!(OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("AccessibleObjectFromWindow"));
+        assert!(OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("FindExcelDocumentWindows"));
+        assert!(OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("Start-Process -FilePath $path"));
+        assert!(OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("Get-ExcelWorkbookBinding $path"));
+        assert!(OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("$workbookToFocus.Activate()"));
+        assert!(OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("function Test-ReportLocation"));
+        assert!(OPEN_EXCEL_AT_LOCATION_SCRIPT
+            .contains("if (-not (Test-ReportLocation $excel $path $sheet $cell))"));
+        assert!(OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("Goto($rangeToFocus, $false)"));
+        assert!(OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("VisibleRange.Rows.Count"));
+        assert!(OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("$excel.WindowState = $targetWindowState"));
+        assert!(
+            OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("return [System.IO.Path]::GetFullPath($value)")
+        );
+        assert!(OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("return $value"));
+        assert!(!OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("ShowWindow"));
+        assert!(!OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("for ($attempt"));
+        assert!(!OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("GetActiveObject"));
+        assert!(!OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("BindToMoniker"));
+        assert!(!OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("New-Object -ComObject Excel.Application"));
+        assert!(!OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("$excel.Quit()"));
+        assert!(!OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("while ($true)"));
+        assert!(OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("Write-LocationStatus 'ok'"));
+        assert!(OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("FinalReleaseComObject($value)"));
+        assert!(OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("Release-PduComObject $excel"));
+        assert!(OPEN_EXCEL_AT_LOCATION_SCRIPT.contains("SetForegroundWindow"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn excel_workbook_close_targets_only_the_matching_workbook() {
+        assert!(CLOSE_EXCEL_WORKBOOK_SCRIPT.contains("AccessibleObjectFromWindow"));
+        assert!(CLOSE_EXCEL_WORKBOOK_SCRIPT.contains("FindExcelDocumentWindows"));
+        assert!(CLOSE_EXCEL_WORKBOOK_SCRIPT.contains("$candidate.Close($true)"));
+        assert!(CLOSE_EXCEL_WORKBOOK_SCRIPT.contains("[int]$excel.Workbooks.Count -eq 0"));
+        assert!(CLOSE_EXCEL_WORKBOOK_SCRIPT.contains("$excel.Quit()"));
+        assert!(CLOSE_EXCEL_WORKBOOK_SCRIPT.contains("$candidate.FullName"));
+        assert!(CLOSE_EXCEL_WORKBOOK_SCRIPT.contains("OrdinalIgnoreCase"));
+        assert!(!CLOSE_EXCEL_WORKBOOK_SCRIPT.contains("GetActiveObject"));
+        assert!(!CLOSE_EXCEL_WORKBOOK_SCRIPT.contains("BindToMoniker"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "opens real Excel; set PDU_EXCEL_LOCATION_SMOKE_WORKBOOK"]
+    fn real_excel_location_launcher_selects_requested_cell() {
+        let workbook_path = std::env::var_os("PDU_EXCEL_LOCATION_SMOKE_WORKBOOK")
+            .map(PathBuf::from)
+            .expect("set PDU_EXCEL_LOCATION_SMOKE_WORKBOOK to a disposable workbook copy");
+        let sheet = std::env::var("PDU_EXCEL_LOCATION_SMOKE_SHEET")
+            .unwrap_or_else(|_| "Test Summary".to_string());
+        let cell =
+            std::env::var("PDU_EXCEL_LOCATION_SMOKE_CELL").unwrap_or_else(|_| "A1".to_string());
+
+        open_excel_at_location(&workbook_path, &sheet, &cell)
+            .expect("Excel should confirm the requested sheet and cell selection");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "closes a real Excel workbook; set PDU_EXCEL_CLOSE_SMOKE_WORKBOOK"]
+    fn real_excel_workbook_close_closes_requested_workbook() {
+        let workbook_path = std::env::var_os("PDU_EXCEL_CLOSE_SMOKE_WORKBOOK")
+            .map(PathBuf::from)
+            .expect("set PDU_EXCEL_CLOSE_SMOKE_WORKBOOK to an open disposable workbook");
+
+        assert!(close_excel_workbook(&workbook_path)
+            .expect("Excel should close the requested disposable workbook"));
+    }
+
+    #[test]
+    fn breaker_verification_failure_can_be_accepted_and_fails_again_when_reprocessed() {
         let temp = TempDir::new().expect("temp dir");
         let unit_folder = temp.path().join("262343000072");
         fs::create_dir_all(&unit_folder).expect("unit folder");
@@ -2623,6 +3346,7 @@ mod smoke_tests {
         .expect("task should return result");
 
         assert_eq!(result.state, "fail", "{}", result.message);
+        assert!(result.continue_sequence);
         assert_eq!(
             result
                 .failure
@@ -2644,6 +3368,37 @@ mod smoke_tests {
                 .map(|entry| entry.state.as_str()),
             Some("fail")
         );
+
+        let accepted = accept_task_failure(
+            unit_folder.display().to_string(),
+            "208v-breaker-2-20% Load".to_string(),
+        )
+        .expect("operator should be able to accept the accuracy failure");
+        let accepted_task = accepted
+            .tasks
+            .iter()
+            .find(|task| task.task_id == "208v-breaker-2-20% Load")
+            .expect("accepted task summary");
+        assert_eq!(accepted_task.state, "pass");
+        assert!(accepted_task.accepted);
+
+        let rerun = process_task_at(
+            unit_folder.display().to_string(),
+            "208v-breaker-2-20% Load".to_string(),
+            u64::MAX,
+        )
+        .expect("accepted data should be processed again");
+        assert_eq!(rerun.state, "fail");
+
+        let rerun_summary = scan_unit_folder(unit_folder.display().to_string())
+            .expect("summary after rerun failure");
+        let rerun_task = rerun_summary
+            .tasks
+            .iter()
+            .find(|task| task.task_id == "208v-breaker-2-20% Load")
+            .expect("rerun task summary");
+        assert_eq!(rerun_task.state, "fail");
+        assert!(!rerun_task.accepted);
     }
 
     #[test]
@@ -2999,7 +3754,7 @@ mod smoke_tests {
     }
 
     #[test]
-    fn batch_commits_prior_passes_before_stopping_on_verification_failure() {
+    fn batch_commits_verification_failure_and_continues() {
         let temp = TempDir::new().expect("temp dir");
         let unit_folder = temp.path().join("262343000072");
         fs::create_dir_all(&unit_folder).expect("unit folder");
@@ -3017,25 +3772,39 @@ mod smoke_tests {
             true,
         );
 
-        let batch = process_tasks_at(
+        let mut progress = Vec::new();
+        let batch = process_tasks_with_progress_at(
             unit_folder.display().to_string(),
             vec![
-                "208v-system-50% Load".to_string(),
                 "208v-system-20% Load".to_string(),
+                "208v-system-50% Load".to_string(),
             ],
             u64::MAX,
+            |event| progress.push(event),
         )
-        .expect("batch should stop on failed verification");
+        .expect("batch should continue after failed verification");
 
         assert_eq!(batch.results.len(), 2);
         assert!(batch.committed);
         assert_eq!(batch.committed_count, 1);
-        assert_eq!(
-            batch.stopped_task_id.as_deref(),
-            Some("208v-system-20% Load")
-        );
-        assert_eq!(batch.results[0].state, "pass");
-        assert_eq!(batch.results[1].state, "fail");
+        assert_eq!(batch.stopped_task_id, None);
+        assert_eq!(batch.results[0].state, "fail");
+        assert!(batch.results[0].continue_sequence);
+        assert_eq!(batch.results[1].state, "pass");
+        assert!(!batch.results[1].continue_sequence);
+        assert!(batch.message.contains("1 failed"));
+
+        let failed_commit_index = progress
+            .iter()
+            .position(|event| event.task_id == "208v-system-20% Load" && event.state == "fail")
+            .expect("failed task should emit committed progress");
+        let next_processing_index = progress
+            .iter()
+            .position(|event| {
+                event.task_id == "208v-system-50% Load" && event.state == "processing"
+            })
+            .expect("next task should emit processing progress");
+        assert!(next_processing_index < failed_commit_index);
 
         let state = unit_state::load_or_default(&unit_folder).expect("state");
         assert_eq!(
@@ -3054,6 +3823,7 @@ mod smoke_tests {
         );
         let sheet_xml = worksheet_xml(&report, "xl/worksheets/sheet1.xml");
         assert_numeric_cell(&sheet_xml, "G57", "-50");
+        assert_numeric_cell(&sheet_xml, "G37", "0");
         assert_workbook_package_is_valid_after_patch(&report);
     }
 

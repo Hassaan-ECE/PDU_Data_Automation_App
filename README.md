@@ -14,7 +14,7 @@ Windows desktop app for production test stations. Operators pick a unit folder; 
 
 It is the pilot replacement for the legacy Python automation scripts. Same workflow operators already know — unit selection, large countdown, 208V / 415V sections, expandable breakers, burn-in, manual rerun, Open Report, and Print Report — with a cleaner stack underneath (Tauri 2, React, Rust), data-driven report mappings, and signed in-app updates from GitHub Releases.
 
-Built for the real floor: wait for instrument files to finish writing, never turn missing values into silent zeros, check accuracy before patching Excel, and keep workbook formatting and formulas intact.
+Built for the real floor: wait for instrument files to finish writing, never turn missing values into silent zeros, preserve out-of-range readings in Excel while flagging the failed step, and keep workbook formatting and formulas intact.
 
 **What operators get**
 
@@ -75,22 +75,25 @@ Details: [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)
 
 1. **Detect** STEP-numbered CSVs from the instruments  
 2. **Wait** until files are stable and ready to read  
-3. **Validate** against accuracy thresholds before any write  
-4. **Patch** the Excel workbook (Open XML — formatting and formulas stay intact)  
+3. **Patch** valid and out-of-range readings into the Excel workbook
+4. **Validate** accuracy and visibly flag failed steps without stopping the sequence
 5. **Track** remaining time, section status, and breaker progress on the panel  
 
-Missing or bad values never become silent zeros. Report cell maps prefer config under `config/report-layouts/` over hardcoding in source.
+Missing values never become silent zeros. Out-of-range values remain visible in the report and are marked failed in the app. Report cell maps prefer config under `config/report-layouts/` over hardcoding in source.
 
 ## Develop
 
 ```powershell
 bun install
-bun run desktop          # full Tauri desktop app
+bun run desktop          # real Tauri app with live CSV/Excel processing
+bun run desktop:demo     # accelerated floor demo; no CSV/Excel files changed
 bun run dev:frontend     # UI only
 bun run test
 bun run lint
 bun run validate         # full local check before a release
 ```
+
+The floor demo auto-loads a synthetic unit, starts the sequence, and intentionally fails an early accuracy step in red while continuing to the next test. Release builds and `bun run desktop` never enable simulation mode.
 
 ```powershell
 cargo test --manifest-path backend\Cargo.toml

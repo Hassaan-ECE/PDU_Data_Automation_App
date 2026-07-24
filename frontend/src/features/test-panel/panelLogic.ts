@@ -190,12 +190,16 @@ export function readinessMessage(task: BackendTaskStatus) {
     case "waiting_unlock":
       return `Waiting for ${task.label} CSV to unlock`;
     case "timing":
-      return `Waiting for ${task.label} CSV timer`;
+      return `Waiting for ${task.label} test to finish`;
     case "awaiting_csv":
       return `Waiting for ${task.label} CSV`;
     case "ready":
       return `${task.label} ready`;
   }
+}
+
+export function runnerWaitingMessage(task: BackendTaskStatus | undefined, fallbackLabel: string) {
+  return task ? readinessMessage(task) : `Waiting for ${fallbackLabel} CSV`;
 }
 
 export function detectedCsvStillInProgress(task: BackendTaskStatus | undefined) {
@@ -286,6 +290,10 @@ export function failureNoticeFromResult(
   };
 }
 
+export function shouldRunnerContinueAfterResult(result: TaskProcessResult, fromRunner: boolean) {
+  return fromRunner && result.state === "fail" && result.continue_sequence === true;
+}
+
 export function detectedReadyMessage(count: number) {
   return count > 0
     ? `${count} detected test${count === 1 ? "" : "s"} ready. Press Start to choose how to continue.`
@@ -316,6 +324,23 @@ export function messageFromUnknownError(error: unknown) {
   }
 
   return String(error);
+}
+
+export function isWorkbookLockedError(error: unknown) {
+  if (error && typeof error === "object" && "code" in error) {
+    if ((error as { code?: unknown }).code === "workbook_locked") {
+      return true;
+    }
+  }
+
+  const message = messageFromUnknownError(error).toLowerCase();
+
+  return (
+    message.includes("os error 32") ||
+    message.includes("being used by another process") ||
+    message.includes("sharing violation") ||
+    message.includes("workbook is locked or open in another program")
+  );
 }
 
 export function detailedMessageFromUnknownError(error: unknown) {

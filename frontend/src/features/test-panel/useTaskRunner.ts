@@ -7,6 +7,7 @@ import {
 } from "react";
 
 import {
+  acceptAutomationTaskFailure,
   listenAutomationTaskBatchProgress,
   processAutomationTask,
   processAutomationTasks,
@@ -18,9 +19,11 @@ import {
 import {
   detectedTaskCountFromStates,
   findNextTaskForRunner,
+  isWorkbookLockedError,
   messageFromUnknownError,
-  readinessMessage,
   readyDetectedBacklogTaskIds,
+  runnerWaitingMessage,
+  shouldRunnerContinueAfterResult,
   shouldProcessDetectedCsv,
 } from "./panelLogic";
 import type {
@@ -38,13 +41,18 @@ type TaskRunnerRefs = {
   processingTaskRef: MutableRefObject<boolean>;
   isRunningRef: MutableRefObject<boolean>;
   detectedCountRef: MutableRefObject<number>;
+  heldFailureTaskIdRef: MutableRefObject<string | null>;
 };
 
 type TaskRunnerActions = {
   activateTask: (taskId: string | null) => void;
   updateTaskState: (taskId: string, state: TaskState) => void;
   setRunnerActive: (active: boolean) => void;
-  applyTaskProcessResult: (result: TaskProcessResult, fromRunner: boolean) => TaskState;
+  applyTaskProcessResult: (
+    result: TaskProcessResult,
+    fromRunner: boolean,
+    focusFailure?: boolean,
+  ) => TaskState;
   applyFolderSummary: (summary: UnitFolderSummary, replace?: boolean) => void;
   setFailureNotices: Dispatch<SetStateAction<Record<string, TaskFailureNotice>>>;
   setLastMessage: (message: string) => void;
@@ -54,6 +62,8 @@ type TaskRunnerActions = {
   requestBacklogChoice: (count: number) => Promise<boolean | null>;
   ensureReportSetupReady: (folder: string) => Promise<boolean>;
   enableCurrentStepFollow: () => void;
+  focusTaskForAttention: (taskId: string) => void;
+  requestWorkbookClose: (path: string, message: string) => Promise<boolean>;
 };
 
 type UseTaskRunnerProps = {
@@ -83,6 +93,7 @@ export function useTaskRunner({
     processingTaskRef,
     isRunningRef,
     detectedCountRef,
+    heldFailureTaskIdRef,
   } = refs;
   const {
     activateTask,
@@ -98,7 +109,45 @@ export function useTaskRunner({
     requestBacklogChoice,
     ensureReportSetupReady,
     enableCurrentStepFollow,
+    focusTaskForAttention,
+    requestWorkbookClose,
   } = actions;
+  const runWithWorkbookCloseRetry = useCallback(
+    async <Result,>(operation: () => Promise<Result>): Promise<Result> => {
+      try {
+        return await operation();
+      } catch (error) {
+        if (!isWorkbookLockedError(error)) {
+          throw error;
+        }
+
+        const shouldRetry = await requestWorkbookClose(reportPath, messageFromUnknownError(error));
+        if (!shouldRetry) {
+          throw error;
+        }
+
+        return operation();
+      }
+    },
+    [reportPath, requestWorkbookClose],
+  );
+  const releaseHeldFailure = useCallback(
+    (taskId: string) => {
+      if (heldFailureTaskIdRef.current !== taskId) {
+        return;
+      }
+
+      const nextFailure = allTaskOrder.find(
+        (task) => task.id !== taskId && Boolean(failureNotices[task.id]),
+      );
+      heldFailureTaskIdRef.current = nextFailure?.id ?? null;
+
+      if (nextFailure) {
+        focusTaskForAttention(nextFailure.id);
+      }
+    },
+    [allTaskOrder, failureNotices, focusTaskForAttention, heldFailureTaskIdRef],
+  );
   const runTask = useCallback(
     async (taskId: string, fromRunner = false): Promise<TaskState | null> => {
       if (!unitFolder || processingTaskRef.current) {
@@ -115,7 +164,9 @@ export function useTaskRunner({
       }
 
       processingTaskRef.current = true;
-      activateTask(taskId);
+      if (!fromRunner || !heldFailureTaskIdRef.current) {
+        activateTask(taskId);
+      }
       setFailureNotices((current) => {
         if (!current[taskId]) {
           return current;
@@ -129,15 +180,23 @@ export function useTaskRunner({
       setLastMessage("Processing report data");
 
       try {
-        const result: TaskProcessResult | null = await processAutomationTask(unitFolder, taskId);
+        const result: TaskProcessResult | null = await runWithWorkbookCloseRetry(() =>
+          processAutomationTask(unitFolder, taskId),
+        );
 
         if (!result) {
           updateTaskState(taskId, "pass");
+          releaseHeldFailure(taskId);
           setLastMessage("Mock task processed");
           return "pass";
         }
 
-        return applyTaskProcessResult(result, fromRunner);
+        const resultState = applyTaskProcessResult(result, fromRunner);
+        if (result.state === "pass") {
+          releaseHeldFailure(taskId);
+        }
+
+        return shouldRunnerContinueAfterResult(result, fromRunner) ? "pass" : resultState;
       } catch (error) {
         const message = messageFromUnknownError(error);
 
@@ -153,6 +212,10 @@ export function useTaskRunner({
             fromRunner,
           },
         }));
+        if (!heldFailureTaskIdRef.current) {
+          heldFailureTaskIdRef.current = taskId;
+          focusTaskForAttention(taskId);
+        }
         setLastMessage(message);
         setRunnerActive(false);
         return "fail";
@@ -164,9 +227,13 @@ export function useTaskRunner({
       activateTask,
       applyTaskProcessResult,
       ensureReportSetupReady,
+      focusTaskForAttention,
+      heldFailureTaskIdRef,
       isRunningRef,
       processingTaskRef,
+      releaseHeldFailure,
       reportPath,
+      runWithWorkbookCloseRetry,
       setFailureNotices,
       setLastMessage,
       setRunnerActive,
@@ -219,13 +286,19 @@ export function useTaskRunner({
             }
 
             updateTaskState(progress.task_id, progress.state);
-            setLastMessage(`${progress.index}/${progress.total} committed: ${progress.message}`);
+            setLastMessage(
+              progress.state === "processing"
+                ? `${progress.index}/${progress.total}: ${progress.message}`
+                : `${progress.index}/${progress.total} committed: ${progress.message}`,
+            );
           });
         } catch {
           unlistenBatchProgress = null;
         }
 
-        const batch = await processAutomationTasks(unitFolder, taskIds);
+        const batch = await runWithWorkbookCloseRetry(() =>
+          processAutomationTasks(unitFolder, taskIds),
+        );
 
         if (!batch) {
           for (const taskId of taskIds) {
@@ -239,7 +312,7 @@ export function useTaskRunner({
         const returnedTaskIds = new Set(batch.results.map((result) => result.task_id));
 
         for (const result of batch.results) {
-          lastState = applyTaskProcessResult(result, true);
+          lastState = applyTaskProcessResult(result, true, false);
         }
 
         for (const taskId of taskIds) {
@@ -249,6 +322,19 @@ export function useTaskRunner({
         }
 
         const lastResult = batch.results.at(-1);
+        const firstFailure = batch.results.find(
+          (result) => result.state !== "pass" && result.state !== "waiting",
+        );
+        const continuableFailure = batch.results.find((result) =>
+          shouldRunnerContinueAfterResult(result, true),
+        );
+
+        if (firstFailure) {
+          if (!heldFailureTaskIdRef.current) {
+            heldFailureTaskIdRef.current = firstFailure.task_id;
+            focusTaskForAttention(firstFailure.task_id);
+          }
+        }
 
         if (batch.stopped_task_id) {
           if (lastResult) {
@@ -258,7 +344,7 @@ export function useTaskRunner({
         }
 
         setLastMessage(batch.message);
-        return "pass";
+        return continuableFailure ? "warning" : "pass";
       } catch (error) {
         const message = messageFromUnknownError(error);
 
@@ -277,6 +363,10 @@ export function useTaskRunner({
             fromRunner: true,
           },
         }));
+        if (!heldFailureTaskIdRef.current) {
+          heldFailureTaskIdRef.current = firstTaskId;
+          focusTaskForAttention(firstTaskId);
+        }
         setLastMessage(message);
         setRunnerActive(false);
         return "fail";
@@ -288,8 +378,11 @@ export function useTaskRunner({
     [
       applyTaskProcessResult,
       ensureReportSetupReady,
+      focusTaskForAttention,
+      heldFailureTaskIdRef,
       processingTaskRef,
       reportPath,
+      runWithWorkbookCloseRetry,
       setFailureNotices,
       setLastMessage,
       setRunnerActive,
@@ -299,49 +392,45 @@ export function useTaskRunner({
     ],
   );
 
-  const handleSkipTask = useCallback(
-    (taskId: string) => {
-      const notice = failureNotices[taskId];
+  const handlePassTask = useCallback(
+    async (taskId: string) => {
       const task = allTaskOrder.find((item) => item.id === taskId);
 
-      updateTaskState(taskId, "skipped");
-      setFailureNotices((current) => {
-        if (!current[taskId]) {
-          return current;
-        }
-
-        const next = { ...current };
-        delete next[taskId];
-        return next;
-      });
-
-      if (!notice?.fromRunner) {
-        setLastMessage(`${task?.label ?? "Step"} skipped`);
+      if (!unitFolder) {
+        setLastMessage("No unit folder is selected");
         return;
       }
 
-      const nextTask = findNextTaskForRunner(
-        allTaskOrder,
-        taskStatesRef.current,
-        processDetectedBacklogRef.current === true,
-        latestTaskStatusesRef.current,
-      );
+      try {
+        const summary = await acceptAutomationTaskFailure(unitFolder, taskId);
 
-      activateTask(nextTask?.id ?? null);
-      setLastMessage(nextTask ? "Sequence running" : sequenceCompleteMessage());
-      setRunnerActive(Boolean(nextTask));
+        if (summary) {
+          applyFolderSummary(summary);
+        }
+
+        updateTaskState(taskId, "pass");
+        setFailureNotices((current) => {
+          if (!current[taskId]) {
+            return current;
+          }
+
+          const next = { ...current };
+          delete next[taskId];
+          return next;
+        });
+        releaseHeldFailure(taskId);
+        setLastMessage(`${task?.label ?? "Step"} accepted as pass`);
+      } catch (error) {
+        setLastMessage(messageFromUnknownError(error));
+      }
     },
     [
-      activateTask,
       allTaskOrder,
-      failureNotices,
-      latestTaskStatusesRef,
-      processDetectedBacklogRef,
-      sequenceCompleteMessage,
+      applyFolderSummary,
+      releaseHeldFailure,
       setFailureNotices,
       setLastMessage,
-      setRunnerActive,
-      taskStatesRef,
+      unitFolder,
       updateTaskState,
     ],
   );
@@ -369,7 +458,10 @@ export function useTaskRunner({
           if (backlogTaskIds.length > 0) {
             const resultState = await runTaskBatch(backlogTaskIds);
 
-            if (resultState === "pass" && !stopAfterCurrentTaskRef.current) {
+            if (
+              (resultState === "pass" || resultState === "warning") &&
+              !stopAfterCurrentTaskRef.current
+            ) {
               const hasDetectedBacklogRemaining = allTaskOrder.some((task) => {
                 const state = taskStatesRef.current[task.id] ?? task.state;
 
@@ -381,7 +473,11 @@ export function useTaskRunner({
                 setProcessDetectedBacklog(false);
               }
 
-              continue;
+              if (resultState === "pass") {
+                continue;
+              }
+
+              return;
             }
 
             if (stopAfterCurrentTaskRef.current) {
@@ -403,12 +499,16 @@ export function useTaskRunner({
 
         if (!nextTask) {
           setRunnerActive(false);
-          activateTask(null);
+          if (!heldFailureTaskIdRef.current) {
+            activateTask(null);
+          }
           setLastMessage(sequenceCompleteMessage());
           return;
         }
 
-        activateTask(nextTask.id);
+        if (!heldFailureTaskIdRef.current) {
+          activateTask(nextTask.id);
+        }
         const state = taskStatesRef.current[nextTask.id] ?? nextTask.state;
 
         if (
@@ -435,7 +535,9 @@ export function useTaskRunner({
         }
 
         updateTaskState(nextTask.id, "waiting");
-        setLastMessage(`Waiting for ${nextTask.label} CSV`);
+        setLastMessage(
+          runnerWaitingMessage(latestTaskStatusesRef.current[nextTask.id], nextTask.label),
+        );
 
         try {
           const summary = await scanUnitFolder(unitFolder);
@@ -469,10 +571,7 @@ export function useTaskRunner({
             }
           } else {
             updateTaskState(nextTask.id, "waiting");
-
-            if (latestTask) {
-              setLastMessage(readinessMessage(latestTask));
-            }
+            setLastMessage(runnerWaitingMessage(latestTask, nextTask.label));
           }
 
           return;
@@ -543,9 +642,11 @@ export function useTaskRunner({
       );
       const batchBacklogRun = shouldProcessBacklog === true;
 
-      activateTask(batchBacklogRun ? null : nextTask?.id ?? null);
-      if (nextTask && !batchBacklogRun) {
-        enableCurrentStepFollow();
+      if (!heldFailureTaskIdRef.current) {
+        activateTask(batchBacklogRun ? null : nextTask?.id ?? null);
+        if (nextTask && !batchBacklogRun) {
+          enableCurrentStepFollow();
+        }
       }
       setLastMessage(
         nextTask
@@ -562,6 +663,7 @@ export function useTaskRunner({
       detectedCountRef,
       enableCurrentStepFollow,
       ensureReportSetupReady,
+      heldFailureTaskIdRef,
       latestTaskStatusesRef,
       processDetectedBacklogRef,
       requestBacklogChoice,
@@ -578,6 +680,6 @@ export function useTaskRunner({
   return {
     runTask,
     startSequence,
-    handleSkipTask,
+    handlePassTask,
   };
 }

@@ -11,6 +11,7 @@
     "dev": "bun --bun vite --config frontend/vite.config.ts",
     "dev:frontend": "bun --bun vite --config frontend/vite.config.ts",
     "desktop": "cargo tauri dev --config backend/tauri.conf.json",
+    "desktop:demo": "bun scripts/run-desktop-demo.mjs",
     "dev:desktop": "cargo tauri dev --config backend/tauri.conf.json",
     "start:desktop": "cargo tauri dev --config backend/tauri.conf.json",
     "build": "bun --bun tsc -b && bun --bun vite build --config frontend/vite.config.ts",

@@ -47,10 +47,12 @@ pub fn run() {
             commands::open_print_report_dialog,
             commands::validate_ready_for_print,
             commands::scan_unit_folder,
+            commands::accept_automation_task_failure,
             commands::process_automation_task,
             commands::process_automation_tasks,
             commands::open_report_path,
-            commands::open_report_location
+            commands::open_report_location,
+            commands::close_report_workbook
         ])
         .run(tauri::generate_context!())
         .expect("error while running PDU Data Automation");

@@ -1,7 +1,22 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type {
+  TaskBatchProcessResult,
+  TaskBatchProgress,
+} from "@/integrations/tauri/backend";
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+
+  return { promise, resolve };
+}
+
 const mocks = vi.hoisted(() => ({
+  acceptAutomationTaskFailure: vi.fn(),
   chooseUnitFolder: vi.fn(),
   chooseSharedNotificationsFolder: vi.fn(),
   changeSettingsPassword: vi.fn(),
@@ -27,6 +42,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/integrations/tauri/backend", () => ({
+  acceptAutomationTaskFailure: mocks.acceptAutomationTaskFailure,
   chooseUnitFolder: mocks.chooseUnitFolder,
   chooseSharedNotificationsFolder: mocks.chooseSharedNotificationsFolder,
   changeSettingsPassword: mocks.changeSettingsPassword,
@@ -161,6 +177,7 @@ describe("OperatorPanel current-step scrolling", () => {
       detectedSystemTask(),
     ]);
     mocks.chooseUnitFolder.mockResolvedValue("C:\\PDU500\\262343000072");
+    mocks.acceptAutomationTaskFailure.mockResolvedValue(null);
     mocks.processAutomationTasks.mockResolvedValue(null);
     mocks.processAutomationTask.mockResolvedValue(null);
     mocks.saveTransformerSn.mockResolvedValue(undefined);
@@ -177,7 +194,7 @@ describe("OperatorPanel current-step scrolling", () => {
     delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView;
   });
 
-  it("does not auto-scroll when batch-running previous tests", async () => {
+  it("does not auto-scroll for an all-pass previous-test batch", async () => {
     render(<App />);
 
     expect(screen.getByPlaceholderText("Select Test Unit...")).toHaveValue("");
@@ -200,5 +217,171 @@ describe("OperatorPanel current-step scrolling", () => {
 
     expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
     expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it("pins the first batch failure until the operator passes it", async () => {
+    const readySystemTask = {
+      ...detectedSystemTask(),
+      phase_deadline_ms: Date.now() - 1,
+      process_ready: true,
+      wait_phase: "ready" as const,
+    };
+    const summary = unitSummary("C:\\PDU500\\262343000072", "262343000072", [
+      detectedTransformerTask(),
+      readySystemTask,
+    ]);
+    mocks.setupUnitFolder.mockResolvedValue(summary);
+    mocks.scanUnitFolder.mockResolvedValue(summary);
+    const batchResult = {
+      committed: true,
+      committed_count: 0,
+      message: "Batch processed 2 tasks (0 passed, 2 failed).",
+      results: [
+        {
+          code: 1,
+          continue_sequence: true,
+          csv_fingerprint: "failed-transformer",
+          failure: {
+            title: "Accuracy Check Failed",
+            message: "Voltage is outside the allowed range.",
+            location: {
+              workbook_path: "C:\\PDU500\\262343000072\\main.xlsx",
+              sheet: "System Test - 480_208",
+              cell: "G57",
+            },
+          },
+          log: [],
+          message: "208V Transformer Check failed verification",
+          print_report_path: null,
+          report_path: "C:\\PDU500\\262343000072\\main.xlsx",
+          source_csv_path: "C:\\PDU500\\262343000072\\STEP14.csv",
+          state: "fail",
+          task_id: "208v-transformer",
+        },
+        {
+          code: 1,
+          continue_sequence: true,
+          csv_fingerprint: "failed-system",
+          failure: {
+            title: "Current Check Failed",
+            message: "Current is outside the allowed range.",
+            location: {
+              workbook_path: "C:\\PDU500\\262343000072\\main.xlsx",
+              sheet: "System Test - 480_208",
+              cell: "G37",
+            },
+          },
+          log: [],
+          message: "100% Load failed verification",
+          print_report_path: null,
+          report_path: "C:\\PDU500\\262343000072\\main.xlsx",
+          source_csv_path: "C:\\PDU500\\262343000072\\STEP15.csv",
+          state: "fail",
+          task_id: "208v-system-100% Load",
+        },
+      ],
+      stopped_task_id: null,
+    } satisfies TaskBatchProcessResult;
+    const pendingBatch = deferred<TaskBatchProcessResult>();
+    let batchProgressHandler: ((progress: TaskBatchProgress) => void) | null = null;
+    mocks.listenAutomationTaskBatchProgress.mockImplementation(
+      async (handler: (progress: TaskBatchProgress) => void) => {
+        batchProgressHandler = handler;
+        return () => {};
+      },
+    );
+    mocks.processAutomationTasks.mockReturnValue(pendingBatch.promise);
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Browse unit folder" }));
+    await waitFor(() => {
+      expect(screen.getByLabelText("Selected test unit")).toHaveValue("262343000072");
+    });
+    fireEvent.change(screen.getByLabelText("Transformer SN"), {
+      target: { value: "TX-SCROLL" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    expect(await screen.findByText("Previous Tests Detected")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Batch Run Previous Tests" }));
+
+    await waitFor(() => {
+      expect(mocks.processAutomationTasks).toHaveBeenCalled();
+    });
+    act(() => {
+      batchProgressHandler?.({
+        unit_folder: "C:\\PDU500\\262343000072",
+        task_id: "208v-transformer",
+        state: "fail",
+        message: "208V Transformer Check failed verification",
+        index: 1,
+        total: 2,
+      });
+      batchProgressHandler?.({
+        unit_folder: "C:\\PDU500\\262343000072",
+        task_id: "208v-system-100% Load",
+        state: "processing",
+        message: "Processing 100% Load",
+        index: 2,
+        total: 2,
+      });
+      batchProgressHandler?.({
+        unit_folder: "C:\\PDU500\\262343000072",
+        task_id: "208v-system-100% Load",
+        state: "fail",
+        message: "100% Load failed verification",
+        index: 2,
+        total: 2,
+      });
+    });
+
+    const failedTask = screen.getByRole("button", { name: "208V Transformer Check" });
+    expect(failedTask).not.toHaveAttribute("data-current-task", "true");
+    expect(screen.queryByText("Accuracy Check Failed")).not.toBeInTheDocument();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    await act(async () => {
+      pendingBatch.resolve(batchResult);
+      await pendingBatch.promise;
+    });
+
+    expect(await screen.findByText("Accuracy Check Failed")).toBeInTheDocument();
+    expect(failedTask).toHaveAttribute("data-current-task", "true");
+    expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(scrollIntoView).toHaveBeenCalled();
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 3_200));
+    });
+
+    expect(failedTask).toHaveAttribute("data-current-task", "true");
+
+    mocks.acceptAutomationTaskFailure.mockResolvedValue({
+      ...summary,
+      tasks: [
+        { ...detectedTransformerTask(), accepted: true, state: "pass" },
+        { ...readySystemTask, accepted: false, state: "fail" },
+      ],
+    });
+    const firstFailureRow = failedTask.parentElement;
+    expect(firstFailureRow).not.toBeNull();
+    fireEvent.click(within(firstFailureRow as HTMLElement).getByRole("button", { name: "Pass" }));
+
+    await waitFor(() => {
+      expect(mocks.acceptAutomationTaskFailure).toHaveBeenCalledWith(
+        "C:\\PDU500\\262343000072",
+        "208v-transformer",
+      );
+    });
+    expect(screen.queryByText("Accuracy Check Failed")).not.toBeInTheDocument();
+    expect(screen.getByText("Current Check Failed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "100% Load" })).toHaveAttribute(
+      "data-current-task",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
   });
 });

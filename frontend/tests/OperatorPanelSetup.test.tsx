@@ -2,9 +2,11 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  acceptAutomationTaskFailure: vi.fn(),
   chooseUnitFolder: vi.fn(),
   chooseSharedNotificationsFolder: vi.fn(),
   changeSettingsPassword: vi.fn(),
+  closeReportWorkbook: vi.fn(),
   getAppNotificationSettings: vi.fn(),
   getBackendStatus: vi.fn(),
   getNotificationStatus: vi.fn(),
@@ -29,9 +31,11 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/integrations/tauri/backend", () => ({
+  acceptAutomationTaskFailure: mocks.acceptAutomationTaskFailure,
   chooseUnitFolder: mocks.chooseUnitFolder,
   chooseSharedNotificationsFolder: mocks.chooseSharedNotificationsFolder,
   changeSettingsPassword: mocks.changeSettingsPassword,
+  closeReportWorkbook: mocks.closeReportWorkbook,
   getAppNotificationSettings: mocks.getAppNotificationSettings,
   getBackendStatus: mocks.getBackendStatus,
   getNotificationStatus: mocks.getNotificationStatus,
@@ -77,7 +81,21 @@ type MockTask = {
   wait_phase: "awaiting_csv" | "timing" | "soaking" | "waiting_step72" | "capturing" | "waiting_unlock" | "ready";
 };
 
-function unitSummary(unitFolder: string, serialNumber: string, tasks: MockTask[] = []) {
+type MockUnitSummary = {
+  detected_count: number;
+  print_report_path: string | null;
+  report_path: string | null;
+  serial_number: string | null;
+  tasks: MockTask[];
+  unit_folder: string;
+  warnings: string[];
+};
+
+function unitSummary(
+  unitFolder: string,
+  serialNumber: string,
+  tasks: MockTask[] = [],
+): MockUnitSummary {
   return {
     detected_count: tasks.filter((task) => task.state === "detected").length,
     print_report_path: `${unitFolder}\\print.xlsx`,
@@ -204,6 +222,11 @@ describe("OperatorPanel inline Transformer SN setup", () => {
       },
     }));
     mocks.changeSettingsPassword.mockResolvedValue(undefined);
+    mocks.closeReportWorkbook.mockResolvedValue({
+      closed: true,
+      message: "The report workbook was saved and closed.",
+      path: "C:\\PDU500\\262343000072\\main.xlsx",
+    });
     mocks.sendNotificationTest.mockResolvedValue(undefined);
     mocks.previewShiftSummary.mockResolvedValue(null);
     mocks.postShiftSummary.mockResolvedValue(null);
@@ -308,23 +331,53 @@ describe("OperatorPanel inline Transformer SN setup", () => {
   });
 
   it("shows setup errors inline and does not fake a saved Transformer SN", async () => {
-    mocks.setupUnitFolder.mockRejectedValue({ code: "workbook_locked", message: "main report workbook is locked" });
+    mocks.setupUnitFolder.mockRejectedValue({
+      code: "report_io_failed",
+      message: "main report workbook could not be written",
+    });
 
     render(<App />);
 
     mocks.chooseUnitFolder.mockResolvedValue("C:\\PDU500\\262343000072");
     fireEvent.click(screen.getByRole("button", { name: "Browse unit folder" }));
 
-    await screen.findByText("main report workbook is locked");
+    await screen.findByText("main report workbook could not be written");
 
     fireEvent.change(screen.getByLabelText("Transformer SN"), {
       target: { value: "TX-LOCKED" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Save Transformer SN" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("main report workbook is locked");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "main report workbook could not be written",
+    );
     expect(screen.queryByText("Unit Setup")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument();
+  });
+
+  it("prompts to close the report when setup encounters a Windows file lock", async () => {
+    const summary = unitSummary("C:\\PDU500\\262343000072", "262343000072");
+    mocks.setupUnitFolder
+      .mockRejectedValueOnce(
+        "report I/O failed: The process cannot access the file because it is being used by another process. (os error 32)",
+      )
+      .mockResolvedValueOnce(summary);
+    mocks.chooseUnitFolder.mockResolvedValue("C:\\PDU500\\262343000072");
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Browse unit folder" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Close Report Workbook" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close Report" }));
+
+    await waitFor(() => {
+      expect(mocks.closeReportWorkbook).toHaveBeenCalledWith(
+        "C:\\PDU500\\262343000072",
+        "",
+      );
+      expect(mocks.setupUnitFolder).toHaveBeenCalledTimes(2);
+      expect(screen.getByLabelText("Selected test unit")).toHaveValue("262343000072");
+    });
   });
 
   it("uses the batch command when running detected previous tests", async () => {
@@ -371,6 +424,89 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     expect(mocks.processAutomationTask).not.toHaveBeenCalled();
   });
 
+  it("prompts to close only the selected report workbook and retries the batch", async () => {
+    const summary = unitSummary("C:\\PDU500\\262343000072", "262343000072", [
+      detectedTransformerTask(),
+    ]);
+    const successfulBatch = {
+      committed: true,
+      committed_count: 1,
+      message: "Batch processed 1 task",
+      results: [
+        {
+          code: 0,
+          continue_sequence: false,
+          csv_fingerprint: "fixture",
+          failure: null,
+          log: [],
+          message: "208V Transformer Check processed",
+          print_report_path: null,
+          report_path: "C:\\PDU500\\262343000072\\main.xlsx",
+          source_csv_path: "STEP14.csv",
+          state: "pass",
+          task_id: "208v-transformer",
+        },
+      ],
+      stopped_task_id: null,
+    };
+    mocks.setupUnitFolder.mockResolvedValue(summary);
+    mocks.processAutomationTasks
+      .mockRejectedValueOnce(
+        "report I/O failed: The process cannot access the file because it is being used by another process. (os error 32)",
+      )
+      .mockResolvedValueOnce(successfulBatch);
+
+    render(<App />);
+    await selectUnit("C:\\PDU500\\262343000072", "262343000072", summary);
+    fireEvent.change(screen.getByLabelText("Transformer SN"), {
+      target: { value: "TX-DETECTED" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Batch Run Previous Tests" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Close Report Workbook" });
+    expect(within(dialog).getByText("main.xlsx")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close Report" }));
+
+    await waitFor(() => {
+      expect(mocks.closeReportWorkbook).toHaveBeenCalledWith(
+        "C:\\PDU500\\262343000072",
+        "C:\\PDU500\\262343000072\\main.xlsx",
+      );
+      expect(mocks.processAutomationTasks).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("shows the close prompt even before the frontend has a report path", async () => {
+    const summary = {
+      ...unitSummary("C:\\PDU500\\262343000072", "262343000072", [detectedTransformerTask()]),
+      report_path: null,
+    };
+    mocks.setupUnitFolder.mockResolvedValue(summary);
+    mocks.processAutomationTasks.mockRejectedValueOnce(
+      "report I/O failed: The process cannot access the file because it is being used by another process. (os error 32)",
+    );
+
+    render(<App />);
+    await selectUnit("C:\\PDU500\\262343000072", "262343000072", summary);
+    fireEvent.change(screen.getByLabelText("Transformer SN"), {
+      target: { value: "TX-DETECTED" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Batch Run Previous Tests" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Close Report Workbook" });
+    expect(within(dialog).getByText("report workbook")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close Report" }));
+
+    await waitFor(() => {
+      expect(mocks.closeReportWorkbook).toHaveBeenCalledWith(
+        "C:\\PDU500\\262343000072",
+        "",
+      );
+    });
+  });
+
   it("processes a waiting task once a later scan marks it ready", async () => {
     const waitingSummary = unitSummary("C:\\PDU500\\262343000072", "262343000072", [
       waitingTransformerTask(false),
@@ -410,6 +546,57 @@ describe("OperatorPanel inline Transformer SN setup", () => {
         "208v-transformer",
       );
     });
+  });
+
+  it("prompts to close and retries a live task when the backend reports workbook_locked", async () => {
+    const waitingSummary = unitSummary("C:\\PDU500\\262343000072", "262343000072", [
+      waitingTransformerTask(false),
+    ]);
+    const readySummary = unitSummary("C:\\PDU500\\262343000072", "262343000072", [
+      waitingTransformerTask(true),
+    ]);
+    mocks.setupUnitFolder.mockResolvedValue(waitingSummary);
+    mocks.scanUnitFolder.mockResolvedValue(readySummary);
+    mocks.processAutomationTask
+      .mockRejectedValueOnce({
+        code: "workbook_locked",
+        details:
+          "report I/O failed: The process cannot access the file because it is being used by another process. (os error 32)",
+        message: "The main report workbook is locked or open in another program.",
+      })
+      .mockResolvedValueOnce({
+        code: 0,
+        continue_sequence: false,
+        csv_fingerprint: "fixture",
+        failure: null,
+        log: [],
+        message: "208V Transformer Check processed",
+        print_report_path: null,
+        report_path: "C:\\PDU500\\262343000072\\main.xlsx",
+        source_csv_path: "STEP14.csv",
+        state: "pass",
+        task_id: "208v-transformer",
+      });
+
+    render(<App />);
+    await selectUnit("C:\\PDU500\\262343000072", "262343000072", waitingSummary);
+    fireEvent.change(screen.getByLabelText("Transformer SN"), {
+      target: { value: "TX-WAITING" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Close Report Workbook" });
+    expect(within(dialog).getByText("main.xlsx")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close Report" }));
+
+    await waitFor(() => {
+      expect(mocks.closeReportWorkbook).toHaveBeenCalledWith(
+        "C:\\PDU500\\262343000072",
+        "C:\\PDU500\\262343000072\\main.xlsx",
+      );
+      expect(mocks.processAutomationTask).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.queryByText("Processing Error")).not.toBeInTheDocument();
   });
 
   it("can cancel the previous-tests prompt without starting", async () => {
@@ -606,7 +793,10 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Transformer SN is missing.");
     expect(screen.queryByLabelText("Operator name")).not.toBeInTheDocument();
 
-    mocks.saveTransformerSn.mockRejectedValueOnce({ code: "workbook_locked", message: "SN save failed" });
+    mocks.saveTransformerSn.mockRejectedValueOnce({
+      code: "report_io_failed",
+      message: "SN save failed",
+    });
     fireEvent.change(screen.getByLabelText("Transformer SN"), {
       target: { value: "TX-UNSAVED" },
     });
@@ -616,14 +806,69 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     expect(screen.queryByLabelText("Operator name")).not.toBeInTheDocument();
   });
 
-  it("saves a Transformer SN after setup and blocks report opening while missing", async () => {
+  it("closes the main report and retries Transformer SN saving after a file lock", async () => {
+    mocks.saveTransformerSn
+      .mockRejectedValueOnce(
+        "report I/O failed: The process cannot access the file because it is being used by another process. (os error 32)",
+      )
+      .mockResolvedValueOnce(undefined);
+
+    render(<App />);
+    await selectUnit();
+    fireEvent.change(screen.getByLabelText("Transformer SN"), {
+      target: { value: "TX-RETRY" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save Transformer SN" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Close Report Workbook" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close Report" }));
+
+    await waitFor(() => {
+      expect(mocks.closeReportWorkbook).toHaveBeenCalledWith(
+        "C:\\PDU500\\262343000072",
+        "C:\\PDU500\\262343000072\\main.xlsx",
+      );
+      expect(mocks.saveTransformerSn).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("closes only the print report and retries the final operator save after a file lock", async () => {
+    mocks.saveFinalOperatorName
+      .mockRejectedValueOnce(
+        "report I/O failed: The process cannot access the file because it is being used by another process. (os error 32)",
+      )
+      .mockResolvedValueOnce("C:\\PDU500\\262343000072\\print.xlsx");
+
+    render(<App />);
+    await setupUnitReadyForPrint();
+    fireEvent.click(screen.getByRole("button", { name: "Print Report" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm & Print" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Close Report Workbook" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close Report" }));
+
+    await waitFor(() => {
+      expect(mocks.closeReportWorkbook).toHaveBeenCalledWith(
+        "C:\\PDU500\\262343000072",
+        "C:\\PDU500\\262343000072\\print.xlsx",
+      );
+      expect(mocks.saveFinalOperatorName).toHaveBeenCalledTimes(2);
+      expect(mocks.openPrintReportDialog).toHaveBeenCalledWith("C:\\PDU500\\262343000072");
+    });
+  });
+
+  it("opens the report without a Transformer SN and still allows a later save", async () => {
     render(<App />);
 
     await selectUnit();
 
     fireEvent.click(screen.getByRole("button", { name: "Open Report" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Transformer SN is missing.");
-    expect(mocks.openReportPath).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(mocks.openReportPath).toHaveBeenCalledWith(
+        "C:\\PDU500\\262343000072",
+        "C:\\PDU500\\262343000072\\main.xlsx",
+      );
+    });
 
     fireEvent.change(screen.getByLabelText("Transformer SN"), {
       target: { value: "TX-LATE" },
@@ -636,14 +881,17 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     expect(await screen.findByText("Saved")).toBeInTheDocument();
   });
 
-  it("blocks failure report opening while Transformer SN is missing", async () => {
+  it("opens a failure report while Transformer SN is missing", async () => {
     mocks.processAutomationTask.mockResolvedValue({
       code: 1,
+      continue_sequence: false,
+      csv_fingerprint: "failure-fingerprint",
       failure: null,
       log: [],
       message: "Report step failed",
       print_report_path: null,
       report_path: "C:\\PDU500\\262343000072\\main.xlsx",
+      source_csv_path: "C:\\PDU500\\262343000072\\STEP14.csv",
       state: "fail",
       task_id: "208v-transformer",
     });
@@ -656,8 +904,52 @@ describe("OperatorPanel inline Transformer SN setup", () => {
     expect(await screen.findByText("Step Failed")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Transformer SN is missing.");
-    expect(mocks.openReportPath).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(mocks.openReportPath).toHaveBeenCalledWith(
+        "C:\\PDU500\\262343000072",
+        "C:\\PDU500\\262343000072\\main.xlsx",
+      );
+    });
+  });
+
+  it("opens the exact workbook location from an accuracy failure", async () => {
+    mocks.processAutomationTask.mockResolvedValue({
+      code: 1,
+      continue_sequence: false,
+      csv_fingerprint: "failure-fingerprint",
+      failure: {
+        title: "Accuracy Check Failed",
+        message: "Voltage is outside the allowed range.",
+        location: {
+          workbook_path: "C:\\PDU500\\262343000072\\main.xlsx",
+          sheet: "System Test - 480_208",
+          cell: "G57",
+        },
+      },
+      log: [],
+      message: "Report step failed",
+      print_report_path: null,
+      report_path: "C:\\PDU500\\262343000072\\main.xlsx",
+      source_csv_path: "C:\\PDU500\\262343000072\\STEP14.csv",
+      state: "fail",
+      task_id: "208v-transformer",
+    });
+
+    render(<App />);
+    await selectUnit();
+
+    fireEvent.click(screen.getByText("208V Transformer Check"));
+    expect(await screen.findByText("Accuracy Check Failed")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+    await waitFor(() => {
+      expect(mocks.openReportLocation).toHaveBeenCalledWith(
+        "C:\\PDU500\\262343000072",
+        "C:\\PDU500\\262343000072\\main.xlsx",
+        "System Test - 480_208",
+        "G57",
+      );
+    });
   });
 
   it("opens basic notification settings without password and gates advanced", async () => {

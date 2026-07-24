@@ -2,6 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
+import {
+  DEMO_UNIT_FOLDER,
+  FLOOR_SIMULATION_ENABLED,
+  floorSimulation,
+} from "./floorSimulation";
+
 export interface BackendStatus {
   app_name: string;
   version: string;
@@ -98,6 +104,7 @@ export interface TaskProcessResult {
   task_id: string;
   state: BackendTaskState;
   code: number;
+  continue_sequence: boolean;
   message: string;
   log: string[];
   report_path: string | null;
@@ -224,6 +231,12 @@ export interface TaskBatchProgress {
   total: number;
 }
 
+export interface CloseReportWorkbookResult {
+  closed: boolean;
+  path: string;
+  message: string;
+}
+
 export interface PrintReadinessBlocker {
   task_id: string | null;
   label: string | null;
@@ -238,10 +251,20 @@ export interface PrintReadinessResult {
 }
 
 export function isTauriRuntime() {
-  return Boolean(window.__TAURI_INTERNALS__);
+  return !FLOOR_SIMULATION_ENABLED && Boolean(window.__TAURI_INTERNALS__);
 }
 
 export async function getBackendStatus(): Promise<BackendStatus | null> {
+  if (FLOOR_SIMULATION_ENABLED) {
+    return {
+      app_name: "PDU Data Automation (Floor Demo)",
+      version: import.meta.env.VITE_PDU_SIMULATION_VERSION ?? "demo",
+      backend: "simulated-floor",
+      process_uptime_ms: 0,
+      window_setup_uptime_ms: 0,
+    };
+  }
+
   if (!isTauriRuntime()) {
     return null;
   }
@@ -250,6 +273,15 @@ export async function getBackendStatus(): Promise<BackendStatus | null> {
 }
 
 export async function loadLayoutProfile(): Promise<LayoutLoadResponse | null> {
+  if (FLOOR_SIMULATION_ENABLED) {
+    return {
+      profile_id: "pdu500.rev02.demo",
+      display_name: "PDU500 0.2CT Rev02 Floor Demo",
+      task_count: 65,
+      validation: { warnings: [], errors: [] },
+    };
+  }
+
   if (!isTauriRuntime()) {
     return null;
   }
@@ -259,7 +291,7 @@ export async function loadLayoutProfile(): Promise<LayoutLoadResponse | null> {
 
 export async function chooseUnitFolder(): Promise<string | null> {
   if (!isTauriRuntime()) {
-    return "C:\\PDU500\\DEMO_20260617";
+    return DEMO_UNIT_FOLDER;
   }
 
   const selected = await openDialog({
@@ -287,6 +319,10 @@ export async function chooseSharedNotificationsFolder(): Promise<string | null> 
 }
 
 export async function getSuggestedUnitFolder(): Promise<UnitFolderSuggestion | null> {
+  if (FLOOR_SIMULATION_ENABLED) {
+    return floorSimulation.suggestion();
+  }
+
   if (!isTauriRuntime()) {
     return mockUnitFolderSuggestion();
   }
@@ -301,6 +337,10 @@ export async function setupUnitFolder(
   transformerSn?: string,
   unitSerialNumber?: string | null,
 ): Promise<UnitFolderSummary | null> {
+  if (FLOOR_SIMULATION_ENABLED) {
+    return floorSimulation.setup(unitFolder);
+  }
+
   if (!isTauriRuntime()) {
     return mockUnitFolderSummary(unitFolder);
   }
@@ -358,6 +398,10 @@ export async function validateReadyForPrint(unitFolder: string): Promise<PrintRe
 }
 
 export async function scanUnitFolder(unitFolder: string): Promise<UnitFolderSummary | null> {
+  if (FLOOR_SIMULATION_ENABLED) {
+    return floorSimulation.scan(unitFolder);
+  }
+
   if (!isTauriRuntime()) {
     return mockUnitFolderSummary(unitFolder);
   }
@@ -365,10 +409,30 @@ export async function scanUnitFolder(unitFolder: string): Promise<UnitFolderSumm
   return invoke<UnitFolderSummary>("scan_unit_folder", { unitFolder });
 }
 
+export async function acceptAutomationTaskFailure(
+  unitFolder: string,
+  taskId: string,
+): Promise<UnitFolderSummary | null> {
+  if (FLOOR_SIMULATION_ENABLED) {
+    return floorSimulation.acceptTaskFailure(unitFolder, taskId);
+  }
+
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  return invoke<UnitFolderSummary>("accept_automation_task_failure", { unitFolder, taskId });
+}
+
 export async function processAutomationTask(
   unitFolder: string,
   taskId: string,
 ): Promise<TaskProcessResult | null> {
+  if (FLOOR_SIMULATION_ENABLED) {
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    return floorSimulation.processTask(unitFolder, taskId);
+  }
+
   if (!isTauriRuntime()) {
     await new Promise((resolve) => window.setTimeout(resolve, 250));
 
@@ -376,6 +440,7 @@ export async function processAutomationTask(
       task_id: taskId,
       state: "pass",
       code: 0,
+      continue_sequence: false,
       message: "Mock task processed",
       log: [],
       report_path: null,
@@ -555,6 +620,11 @@ export async function processAutomationTasks(
   unitFolder: string,
   taskIds: string[],
 ): Promise<TaskBatchProcessResult | null> {
+  if (FLOOR_SIMULATION_ENABLED) {
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    return floorSimulation.processTasks(unitFolder, taskIds);
+  }
+
   if (!isTauriRuntime()) {
     await new Promise((resolve) => window.setTimeout(resolve, 250));
 
@@ -566,6 +636,7 @@ export async function processAutomationTasks(
         task_id: taskId,
         state: "pass",
         code: 0,
+        continue_sequence: false,
         message: "Mock task processed",
         log: [],
         report_path: null,
@@ -614,6 +685,21 @@ export async function openReportLocation(
   await invoke("open_report_location", { unitFolder, path, sheet, cell });
 }
 
+export async function closeReportWorkbook(
+  unitFolder: string,
+  path: string,
+): Promise<CloseReportWorkbookResult> {
+  if (!isTauriRuntime()) {
+    return {
+      closed: false,
+      path,
+      message: "Mock report workbook was already closed.",
+    };
+  }
+
+  return invoke<CloseReportWorkbookResult>("close_report_workbook", { unitFolder, path });
+}
+
 function mockUnitFolderSummary(unitFolder: string): UnitFolderSummary {
   const folderName = unitFolder.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
   const serialNumber = folderName.match(/\d{6,}/)?.[0] ?? "262343000072";
@@ -630,7 +716,7 @@ function mockUnitFolderSummary(unitFolder: string): UnitFolderSummary {
 }
 
 function mockUnitFolderSuggestion(): UnitFolderSuggestion {
-  const unitFolder = "C:\\PDU500\\DEMO_20260617";
+  const unitFolder = DEMO_UNIT_FOLDER;
   const folderName = unitFolder.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
   const serialNumber = folderName.match(/\d{6,}/)?.[0] ?? "262343000072";
 

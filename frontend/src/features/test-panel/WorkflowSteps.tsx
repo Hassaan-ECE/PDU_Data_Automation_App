@@ -1,5 +1,5 @@
 import type { ReactNode, RefObject, UIEventHandler } from "react";
-import { ExternalLink, RotateCcw, SkipForward } from "lucide-react";
+import { CircleCheck, ExternalLink, RotateCcw } from "lucide-react";
 
 import { cn } from "@/shared/lib/utils";
 
@@ -85,13 +85,13 @@ function TaskFailureDialog({
   notice,
   depth,
   onRerun,
-  onSkip,
+  onPass,
   onOpenLocation,
 }: {
   notice: TaskFailureNotice;
   depth: number;
   onRerun: () => void;
-  onSkip: () => void;
+  onPass: () => void;
   onOpenLocation: () => void;
 }) {
   const locationLabel = notice.location
@@ -120,11 +120,11 @@ function TaskFailureDialog({
         </button>
         <button
           type="button"
-          onClick={onSkip}
-          className="inline-flex min-h-7 items-center justify-center gap-1 rounded bg-[#3d4142] px-1.5 text-[7.2pt] font-semibold text-white shadow-sm transition hover:bg-[#484d4e]"
+          onClick={onPass}
+          className="inline-flex min-h-7 items-center justify-center gap-1 rounded bg-[#1d7f47] px-1.5 text-[7.2pt] font-semibold text-white shadow-sm transition hover:bg-[#248d52]"
         >
-          <SkipForward className="h-3 w-3" aria-hidden="true" />
-          Skip
+          <CircleCheck className="h-3 w-3" aria-hidden="true" />
+          Pass
         </button>
         <button
           type="button"
@@ -151,7 +151,7 @@ function TaskRow({
   depth = 0,
   onRunTask,
   failureNotice,
-  onSkipTask,
+  onPassTask,
   onOpenFailureLocation,
 }: {
   task: TaskItem;
@@ -159,7 +159,7 @@ function TaskRow({
   depth?: number;
   onRunTask: (taskId: string) => void;
   failureNotice?: TaskFailureNotice;
-  onSkipTask: (taskId: string) => void;
+  onPassTask: (taskId: string) => void;
   onOpenFailureLocation: (notice: TaskFailureNotice) => void;
 }) {
   return (
@@ -176,7 +176,7 @@ function TaskRow({
           notice={failureNotice}
           depth={depth}
           onRerun={() => onRunTask(task.id)}
-          onSkip={() => onSkipTask(task.id)}
+          onPass={() => onPassTask(task.id)}
           onOpenLocation={() => onOpenFailureLocation(failureNotice)}
         />
       ) : null}
@@ -192,7 +192,7 @@ function SectionBlock({
   currentTaskId,
   onRunTask,
   failureNotices,
-  onSkipTask,
+  onPassTask,
   onOpenFailureLocation,
   depth = 0,
 }: {
@@ -203,7 +203,7 @@ function SectionBlock({
   currentTaskId: string | null;
   onRunTask: (taskId: string) => void;
   failureNotices: Record<string, TaskFailureNotice>;
-  onSkipTask: (taskId: string) => void;
+  onPassTask: (taskId: string) => void;
   onOpenFailureLocation: (notice: TaskFailureNotice) => void;
   depth?: number;
 }) {
@@ -237,7 +237,7 @@ function SectionBlock({
                 currentTaskId={currentTaskId}
                 onRunTask={onRunTask}
                 failureNotices={failureNotices}
-                onSkipTask={onSkipTask}
+                onPassTask={onPassTask}
                 onOpenFailureLocation={onOpenFailureLocation}
                 depth={depth + 1}
               />
@@ -248,7 +248,7 @@ function SectionBlock({
                 currentTaskId={currentTaskId}
                 onRunTask={onRunTask}
                 failureNotice={failureNotices[item.id]}
-                onSkipTask={onSkipTask}
+                onPassTask={onPassTask}
                 onOpenFailureLocation={onOpenFailureLocation}
                 depth={depth + 1}
               />
@@ -269,7 +269,7 @@ export function WorkflowSteps({
   failureNotices,
   onToggleSection,
   onRunTask,
-  onSkipTask,
+  onPassTask,
   onOpenFailureLocation,
   onOpenReport,
   onPrintReport,
@@ -285,7 +285,7 @@ export function WorkflowSteps({
   failureNotices: Record<string, TaskFailureNotice>;
   onToggleSection: (id: string) => void;
   onRunTask: (taskId: string) => void;
-  onSkipTask: (taskId: string) => void;
+  onPassTask: (taskId: string) => void;
   onOpenFailureLocation: (notice: TaskFailureNotice) => void;
   onOpenReport: () => void;
   onPrintReport: () => void;
@@ -321,7 +321,7 @@ export function WorkflowSteps({
                   currentTaskId={currentTaskId}
                   onRunTask={onRunTask}
                   failureNotices={failureNotices}
-                  onSkipTask={onSkipTask}
+                  onPassTask={onPassTask}
                   onOpenFailureLocation={onOpenFailureLocation}
                 />
               ) : (
@@ -331,7 +331,7 @@ export function WorkflowSteps({
                   currentTaskId={currentTaskId}
                   onRunTask={onRunTask}
                   failureNotice={failureNotices[item.id]}
-                  onSkipTask={onSkipTask}
+                  onPassTask={onPassTask}
                   onOpenFailureLocation={onOpenFailureLocation}
                 />
               ),

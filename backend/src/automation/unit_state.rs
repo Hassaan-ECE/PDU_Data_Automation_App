@@ -299,6 +299,71 @@ pub fn clear_problem_notification_receipts(
     Ok(changed)
 }
 
+pub fn accept_task_failure(
+    unit_folder: &Path,
+    task_id: &str,
+    accepted_by: &str,
+    reason: &str,
+) -> io::Result<bool> {
+    let _lock = UnitStateLock::acquire(unit_folder)?;
+    let mut state = load_or_default_unlocked(unit_folder)?;
+    let entry = state.tasks.get_mut(task_id).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("task '{task_id}' has no persisted processing result"),
+        )
+    })?;
+
+    if !matches!(entry.state.as_str(), "fail" | "warning") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "task '{task_id}' cannot be accepted because its persisted state is '{}'",
+                entry.state
+            ),
+        ));
+    }
+
+    if entry.accepted.accepted {
+        return Ok(false);
+    }
+
+    let at = now_string();
+    let accepted_by = accepted_by.trim();
+    let reason = reason.trim();
+    entry.accepted = TaskAcceptance {
+        accepted: true,
+        accepted_at: Some(at.clone()),
+        accepted_by: Some(if accepted_by.is_empty() {
+            "operator".to_string()
+        } else {
+            accepted_by.to_string()
+        }),
+        reason: Some(if reason.is_empty() {
+            "Operator accepted the failed result as pass.".to_string()
+        } else {
+            reason.to_string()
+        }),
+    };
+    entry.audit_log.push(UnitAuditEntry {
+        at,
+        event: "failure_accepted".to_string(),
+        message: entry
+            .accepted
+            .reason
+            .clone()
+            .unwrap_or_else(|| "Operator accepted the failed result as pass.".to_string()),
+        state: Some(entry.state.clone()),
+        code: entry.code,
+        source_csv_path: entry.source_csv_path.clone(),
+        csv_fingerprint: entry.csv_fingerprint.clone(),
+    });
+    state.notification_receipts.problems.remove(task_id);
+    save_unit_state_unlocked(unit_folder, &state)?;
+
+    Ok(true)
+}
+
 fn load_unit_state_unlocked(unit_folder: &Path) -> io::Result<Option<UnitState>> {
     let path = state_path(unit_folder);
     let content = match fs::read_to_string(&path) {
@@ -456,6 +521,19 @@ fn record_processor_result_unlocked(
             audit_log: Vec::new(),
         });
 
+    if entry.accepted.accepted {
+        entry.audit_log.push(UnitAuditEntry {
+            at: at.to_string(),
+            event: "acceptance_cleared_by_reprocess".to_string(),
+            message: "A new processing result cleared the previous operator acceptance."
+                .to_string(),
+            state: Some(entry.state.clone()),
+            code: entry.code,
+            source_csv_path: entry.source_csv_path.clone(),
+            csv_fingerprint: entry.csv_fingerprint.clone(),
+        });
+    }
+    entry.accepted = TaskAcceptance::default();
     entry.state = result.state.clone();
     entry.code = Some(result.code);
     entry.source_csv_path = result.source_csv_path.clone();
@@ -715,6 +793,63 @@ mod tests {
             fs::read_to_string(state_path(&unit_folder)).expect("no-op state content"),
             cleared_content
         );
+    }
+
+    #[test]
+    fn accepted_failure_stays_raw_fail_and_reprocessing_clears_acceptance() {
+        let temp = TempDir::new().expect("temp dir");
+        let unit_folder = temp.path().join("unit");
+        fs::create_dir_all(&unit_folder).expect("unit folder");
+        let mut failed = processor_result(1);
+        failed.state = "fail".to_string();
+        failed.code = 1;
+        failed.message = "accuracy check failed".to_string();
+
+        record_processor_result(&unit_folder, "system-208", &failed).expect("record failed result");
+        record_problem_notification_receipt(
+            &unit_folder,
+            "system-208",
+            "problem:system-208:fingerprint-1",
+        )
+        .expect("record problem receipt");
+
+        assert!(accept_task_failure(
+            &unit_folder,
+            "system-208",
+            "operator",
+            "Negligible measurement accepted by operator",
+        )
+        .expect("accept failure"));
+
+        let accepted_state = load_or_default(&unit_folder).expect("accepted state");
+        let accepted_entry = accepted_state
+            .tasks
+            .get("system-208")
+            .expect("accepted task entry");
+        assert_eq!(accepted_entry.state, "fail");
+        assert!(accepted_entry.accepted.accepted);
+        assert!(accepted_entry.is_print_ready());
+        assert_eq!(accepted_entry.already_processed_fingerprint(), None);
+        assert!(accepted_state
+            .notification_receipts
+            .problems
+            .get("system-208")
+            .is_none());
+
+        record_processor_result(&unit_folder, "system-208", &failed).expect("record rerun failure");
+
+        let reprocessed_state = load_or_default(&unit_folder).expect("reprocessed state");
+        let reprocessed_entry = reprocessed_state
+            .tasks
+            .get("system-208")
+            .expect("reprocessed task entry");
+        assert_eq!(reprocessed_entry.state, "fail");
+        assert!(!reprocessed_entry.accepted.accepted);
+        assert!(!reprocessed_entry.is_print_ready());
+        assert!(reprocessed_entry
+            .audit_log
+            .iter()
+            .any(|entry| entry.event == "acceptance_cleared_by_reprocess"));
     }
 
     #[test]

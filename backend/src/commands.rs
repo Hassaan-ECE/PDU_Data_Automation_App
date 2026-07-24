@@ -207,17 +207,31 @@ pub fn scan_unit_folder(unit_folder: String) -> Result<automation::UnitFolderSum
 }
 
 #[tauri::command]
+pub fn accept_automation_task_failure(
+    notifications: State<'_, notifications::NotificationService>,
+    unit_folder: String,
+    task_id: String,
+) -> Result<automation::UnitFolderSummary, String> {
+    let notification_folder = unit_folder.clone();
+    let result = automation::accept_task_failure(unit_folder, task_id);
+    if result.is_ok() {
+        notifications.enqueue_complete_check(notification_folder);
+    }
+    result.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn process_automation_task(
     notifications: State<'_, notifications::NotificationService>,
     unit_folder: String,
     task_id: String,
-) -> Result<automation::TaskProcessResult, String> {
+) -> Result<automation::TaskProcessResult, automation::AutomationCommandError> {
     let notification_folder = unit_folder.clone();
     let result = automation::process_task(unit_folder, task_id);
     if let Ok(processed) = &result {
         notifications.enqueue_task_results(notification_folder, vec![processed.clone()]);
     }
-    result.map_err(|error| error.to_string())
+    result.map_err(automation::AutomationCommandError::from_automation_error)
 }
 
 #[tauri::command]
@@ -226,7 +240,7 @@ pub fn process_automation_tasks(
     notifications: State<'_, notifications::NotificationService>,
     unit_folder: String,
     task_ids: Vec<String>,
-) -> Result<automation::TaskBatchProcessResult, String> {
+) -> Result<automation::TaskBatchProcessResult, automation::AutomationCommandError> {
     let notification_folder = unit_folder.clone();
     let result = automation::process_tasks_with_progress(unit_folder, task_ids, |progress| {
         let _ = app.emit(AUTOMATION_TASK_BATCH_PROGRESS_EVENT, progress);
@@ -234,7 +248,7 @@ pub fn process_automation_tasks(
     if let Ok(batch) = &result {
         notifications.enqueue_task_results(notification_folder, batch.results.clone());
     }
-    result.map_err(|error| error.to_string())
+    result.map_err(automation::AutomationCommandError::from_automation_error)
 }
 
 #[tauri::command]
@@ -251,4 +265,12 @@ pub fn open_report_location(
 ) -> Result<(), String> {
     automation::open_report_location(unit_folder, path, sheet, cell)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn close_report_workbook(
+    unit_folder: String,
+    path: String,
+) -> Result<automation::CloseReportWorkbookResult, automation::AutomationCommandError> {
+    automation::close_report_workbook(unit_folder, path)
 }

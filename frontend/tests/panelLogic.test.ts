@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import type { BackendTaskStatus } from "@/integrations/tauri/backend";
+import type { BackendTaskStatus, TaskProcessResult } from "@/integrations/tauri/backend";
 import {
+  isWorkbookLockedError,
   readinessMessage,
   readyDetectedBacklogTaskIds,
+  runnerWaitingMessage,
+  shouldRunnerContinueAfterResult,
   taskSecondsRemaining,
 } from "@/features/test-panel/panelLogic";
 import type { TaskItem } from "@/features/test-panel/types";
@@ -87,5 +90,48 @@ describe("backend-owned task readiness", () => {
       ),
     ).toEqual([]);
     expect(readinessMessage(waiting)).toContain("STEP72");
+  });
+
+  it("keeps countdown copy stable across identical timing scans", () => {
+    const firstScan = backendTask();
+    const secondScan = backendTask();
+
+    expect(runnerWaitingMessage(firstScan, firstScan.label)).toBe(
+      "Waiting for 208V Transformer Check test to finish",
+    );
+    expect(runnerWaitingMessage(secondScan, secondScan.label)).toBe(
+      runnerWaitingMessage(firstScan, firstScan.label),
+    );
+  });
+
+  it("continues the live runner only for backend-approved failed results", () => {
+    const result: TaskProcessResult = {
+      code: 1,
+      continue_sequence: true,
+      csv_fingerprint: "fixture",
+      failure: null,
+      log: [],
+      message: "Accuracy verification failed",
+      print_report_path: null,
+      report_path: "main.xlsx",
+      source_csv_path: "STEP23.csv",
+      state: "fail",
+      task_id: "208v-breaker-2-20% Load",
+    };
+
+    expect(shouldRunnerContinueAfterResult(result, true)).toBe(true);
+    expect(shouldRunnerContinueAfterResult(result, false)).toBe(false);
+    expect(shouldRunnerContinueAfterResult({ ...result, continue_sequence: false }, true)).toBe(false);
+  });
+
+  it("recognizes only external workbook lock command errors", () => {
+    expect(isWorkbookLockedError({ code: "workbook_locked", message: "Close Excel" })).toBe(true);
+    expect(
+      isWorkbookLockedError(
+        "report I/O failed: The process cannot access the file because it is being used by another process. (os error 32)",
+      ),
+    ).toBe(true);
+    expect(isWorkbookLockedError({ code: "workbook_busy", message: "Wait" })).toBe(false);
+    expect(isWorkbookLockedError(new Error("workbook is locked"))).toBe(false);
   });
 });

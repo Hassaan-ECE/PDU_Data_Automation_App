@@ -58,16 +58,14 @@ pub fn process_task(
     task: &TaskDefinition,
     unit_folder: &Path,
     already_processed_fingerprint: Option<&str>,
-) -> ProcessorResult {
-    let output = compute_task(profile, task, unit_folder, already_processed_fingerprint);
+) -> Result<ProcessorResult, ReportError> {
+    let output = compute_task(profile, task, unit_folder, already_processed_fingerprint)?;
 
     if output.result.state == "pass" && !output.patches.is_empty() {
-        if let Err(error) = patch_workbooks_transactional(&output.patches) {
-            return mapped_error_result(MappedProcessorError::Report(error));
-        }
+        patch_workbooks_transactional(&output.patches)?;
     }
 
-    output.result
+    Ok(output.result)
 }
 
 pub fn compute_task(
@@ -75,10 +73,11 @@ pub fn compute_task(
     task: &TaskDefinition,
     unit_folder: &Path,
     already_processed_fingerprint: Option<&str>,
-) -> ProcessorTaskOutput {
+) -> Result<ProcessorTaskOutput, ReportError> {
     match process_task_inner(profile, task, unit_folder, already_processed_fingerprint) {
-        Ok(output) => output,
-        Err(error) => ProcessorTaskOutput::result_only(mapped_error_result(error)),
+        Ok(output) => Ok(output),
+        Err(MappedProcessorError::Report(error)) => Err(error),
+        Err(error) => Ok(ProcessorTaskOutput::result_only(mapped_error_result(error))),
     }
 }
 

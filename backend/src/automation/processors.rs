@@ -98,6 +98,7 @@ type ProcessorAttempt<T> = Result<T, ProcessorError>;
 
 const CSV_STABLE_FOR: Duration = Duration::from_millis(400);
 const CSV_MAX_WAIT: Duration = Duration::from_millis(1_500);
+pub(crate) const ACCURACY_CHECK_FAILURE_TITLE: &str = "Accuracy Check Failed";
 
 #[derive(Debug, Clone)]
 struct CsvSource {
@@ -110,21 +111,19 @@ pub fn process_task(
     unit_folder: &Path,
     already_processed_fingerprint: Option<&str>,
     report_config: &ReportFileConfig,
-) -> ProcessorResult {
+) -> Result<ProcessorResult, ReportError> {
     let output = compute_task(
         task,
         unit_folder,
         already_processed_fingerprint,
         report_config,
-    );
+    )?;
 
     if !output.patches.is_empty() {
-        if let Err(error) = patch_workbooks_transactional(&output.patches) {
-            return processor_error_result(ProcessorError::Report(error));
-        }
+        patch_workbooks_transactional(&output.patches)?;
     }
 
-    output.result
+    Ok(output.result)
 }
 
 pub fn compute_task(
@@ -132,15 +131,18 @@ pub fn compute_task(
     unit_folder: &Path,
     already_processed_fingerprint: Option<&str>,
     report_config: &ReportFileConfig,
-) -> ProcessorTaskOutput {
+) -> Result<ProcessorTaskOutput, ReportError> {
     match process_task_inner(
         task,
         unit_folder,
         already_processed_fingerprint,
         report_config,
     ) {
-        Ok(output) => output,
-        Err(error) => ProcessorTaskOutput::result_only(processor_error_result(error)),
+        Ok(output) => Ok(output),
+        Err(ProcessorError::Report(error)) => Err(error),
+        Err(error) => Ok(ProcessorTaskOutput::result_only(processor_error_result(
+            error,
+        ))),
     }
 }
 
@@ -404,7 +406,7 @@ fn process_system(
             failure_text
         );
         let failure = failure_detail(
-            "Accuracy Check Failed",
+            ACCURACY_CHECK_FAILURE_TITLE,
             &message,
             report_path.as_path(),
             failures.first(),
@@ -500,7 +502,7 @@ fn process_breaker(
             failure_text
         );
         let failure = failure_detail(
-            "Accuracy Check Failed",
+            ACCURACY_CHECK_FAILURE_TITLE,
             &message,
             report_path.as_path(),
             failures.first(),

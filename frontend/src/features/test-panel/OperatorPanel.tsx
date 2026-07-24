@@ -5,6 +5,7 @@ import {
   changeSettingsPassword,
   chooseSharedNotificationsFolder,
   chooseUnitFolder,
+  closeReportWorkbook,
   getAppNotificationSettings,
   getBackendStatus,
   getNotificationStatus,
@@ -49,12 +50,14 @@ import {
   findTaskPath,
   flattenTasks,
   formatTime,
+  isWorkbookLockedError,
   isTerminalState,
   messageFromUnknownError,
   panelControlState,
   printReadinessMessage,
   remainingSecondsForTasks,
   resetButtonLabel,
+  shouldRunnerContinueAfterResult,
   serialNumberFromFolder,
 } from "./panelLogic";
 import { legacyPanelItems } from "./taskModel";
@@ -69,6 +72,14 @@ import { UpdateActionButton } from "./UpdateActionButton";
 import { useDesktopUpdates } from "./useDesktopUpdates";
 import { WorkflowSteps } from "./WorkflowSteps";
 import { useTaskRunner } from "./useTaskRunner";
+
+const FLOOR_SIMULATION_ENABLED = import.meta.env.VITE_PDU_SIMULATION_MODE === "true";
+
+type WorkbookClosePromptState = {
+  path: string;
+  message: string;
+  resolve: (closed: boolean) => void;
+} | null;
 
 export function OperatorPanel() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -90,6 +101,9 @@ export function OperatorPanel() {
   const savedTransformerSnRef = useRef("");
   const transformerSnDraftRef = useRef("");
   const detectedCountRef = useRef(0);
+  const floorSimulationSetupStartedRef = useRef(false);
+  const floorSimulationAutoStartedRef = useRef(false);
+  const heldFailureTaskIdRef = useRef<string | null>(null);
   const allTaskOrder = useMemo(() => flattenTasks(legacyPanelItems), []);
   const [unitFolder, setUnitFolder] = useState("");
   const [serialNumber, setSerialNumber] = useState("");
@@ -117,6 +131,9 @@ export function OperatorPanel() {
   const [isSettingUpReports, setIsSettingUpReports] = useState(false);
   const [isChoosingFolder, setIsChoosingFolder] = useState(false);
   const [backlogPrompt, setBacklogPrompt] = useState<BacklogPromptState>(null);
+  const [workbookClosePrompt, setWorkbookClosePrompt] = useState<WorkbookClosePromptState>(null);
+  const [workbookCloseError, setWorkbookCloseError] = useState("");
+  const [isClosingReportWorkbook, setIsClosingReportWorkbook] = useState(false);
   const [transformerSnDraft, setTransformerSnDraft] = useState("");
   const [savedTransformerSn, setSavedTransformerSn] = useState("");
   const [transformerSnSaveStatus, setTransformerSnSaveStatus] = useState<TransformerSnSaveStatus>("idle");
@@ -267,6 +284,69 @@ export function OperatorPanel() {
       return null;
     });
   }, []);
+
+  const requestWorkbookClose = useCallback((path: string, message: string) => {
+    return new Promise<boolean>((resolve) => {
+      setWorkbookCloseError("");
+      setWorkbookClosePrompt({ path, message, resolve });
+    });
+  }, []);
+
+  const runPanelReportWriteWithRetry = useCallback(
+    async <Result,>(path: string, operation: () => Promise<Result>): Promise<Result> => {
+      try {
+        return await operation();
+      } catch (error) {
+        if (!isWorkbookLockedError(error)) {
+          throw error;
+        }
+
+        const shouldRetry = await requestWorkbookClose(path, messageFromUnknownError(error));
+        if (!shouldRetry) {
+          throw error;
+        }
+
+        return operation();
+      }
+    },
+    [requestWorkbookClose],
+  );
+
+  const cancelWorkbookClosePrompt = useCallback(() => {
+    if (isClosingReportWorkbook) {
+      return;
+    }
+
+    setWorkbookCloseError("");
+    setWorkbookClosePrompt((current) => {
+      current?.resolve(false);
+      return null;
+    });
+  }, [isClosingReportWorkbook]);
+
+  const handleCloseReportWorkbook = useCallback(async () => {
+    if (!workbookClosePrompt || !unitFolder || isClosingReportWorkbook) {
+      return;
+    }
+
+    setIsClosingReportWorkbook(true);
+    setWorkbookCloseError("");
+
+    try {
+      const result = await closeReportWorkbook(unitFolder, workbookClosePrompt.path);
+      setLastMessage(`${result.message} Retrying report processing.`);
+      setWorkbookClosePrompt((current) => {
+        current?.resolve(true);
+        return null;
+      });
+    } catch (error) {
+      const message = detailedMessageFromUnknownError(error);
+      setWorkbookCloseError(message);
+      setLastMessage(message);
+    } finally {
+      setIsClosingReportWorkbook(false);
+    }
+  }, [isClosingReportWorkbook, unitFolder, workbookClosePrompt]);
 
   useEffect(() => {
     if (!isRunning) {
@@ -448,6 +528,18 @@ export function OperatorPanel() {
     [expandForTask],
   );
 
+  const focusTaskForAttention = useCallback(
+    (taskId: string) => {
+      activateTask(taskId);
+      lastFollowScrolledTaskRef.current = taskId;
+      setCurrentStepFollowMode(false);
+      window.requestAnimationFrame(() => {
+        scrollCurrentTaskIntoView("smooth");
+      });
+    },
+    [activateTask, scrollCurrentTaskIntoView],
+  );
+
   const replaceTaskStates = useCallback(
     (states: Record<string, TaskState>) => {
       taskStatesRef.current = states;
@@ -480,6 +572,7 @@ export function OperatorPanel() {
     setNowMs(Date.now());
 
     if (replace) {
+      heldFailureTaskIdRef.current = null;
       setFailureNotices({});
     }
 
@@ -509,7 +602,9 @@ export function OperatorPanel() {
       setIsSettingUpReports(true);
       const trimmedTransformerSn = transformerSn.trim();
 
-      const setupPromise = setupUnitFolder(selected, trimmedTransformerSn, unitSerialNumber)
+      const setupPromise = runPanelReportWriteWithRetry("", () =>
+        setupUnitFolder(selected, trimmedTransformerSn, unitSerialNumber),
+      )
         .then((summary) => {
           if (selectedFolderRef.current !== selected) {
             return true;
@@ -568,7 +663,7 @@ export function OperatorPanel() {
 
       return setupPromise;
     },
-    [applyFolderSummary, setConfirmedSetupFolder],
+    [applyFolderSummary, runPanelReportWriteWithRetry, setConfirmedSetupFolder],
   );
 
   const updateTransformerSnDraft = useCallback((value: string) => {
@@ -656,7 +751,9 @@ export function OperatorPanel() {
     setTransformerSnError("");
 
     try {
-      await saveTransformerSn(selected, transformerSn);
+      await runPanelReportWriteWithRetry(reportPath, () =>
+        saveTransformerSn(selected, transformerSn),
+      );
       savedTransformerSnRef.current = transformerSn;
       setSavedTransformerSn(transformerSn);
       setTransformerSnSaveStatus("saved");
@@ -669,7 +766,7 @@ export function OperatorPanel() {
       setLastMessage(message);
       return false;
     }
-  }, [transformerSnDraft]);
+  }, [reportPath, runPanelReportWriteWithRetry, transformerSnDraft]);
 
   const ensureReportSetupReady = useCallback(async (expectedFolder?: string) => {
     if (expectedFolder && selectedFolderRef.current !== expectedFolder) {
@@ -715,19 +812,20 @@ export function OperatorPanel() {
     const transformerSn = transformerSnDraftRef.current.trim();
 
     if (!transformerSn) {
-      return "Sequence complete. Transformer SN is missing before report opening.";
+      return "Sequence complete. Transformer SN is missing before final printing.";
     }
 
     if (transformerSn !== savedTransformerSnRef.current) {
-      return "Sequence complete. Transformer SN is unsaved before report opening.";
+      return "Sequence complete. Transformer SN is unsaved before final printing.";
     }
 
     return "Sequence complete";
   }, []);
 
   const applyTaskProcessResult = useCallback(
-    (result: TaskProcessResult, fromRunner: boolean): TaskState => {
+    (result: TaskProcessResult, fromRunner: boolean, focusFailure = true): TaskState => {
       const taskId = result.task_id;
+      const continueRunner = shouldRunnerContinueAfterResult(result, fromRunner);
 
       updateTaskState(taskId, result.state);
       setLastMessage(result.message);
@@ -741,19 +839,27 @@ export function OperatorPanel() {
       }
 
       if (result.state !== "pass" && result.state !== "waiting") {
+        if (focusFailure) {
+          if (!fromRunner || !heldFailureTaskIdRef.current) {
+            heldFailureTaskIdRef.current = taskId;
+            focusTaskForAttention(taskId);
+          }
+        }
         setFailureNotices((current) => ({
           ...current,
           [taskId]: failureNoticeFromResult(taskId, result, fromRunner),
         }));
-        setRunnerActive(false);
+        if (!continueRunner) {
+          setRunnerActive(false);
+        }
       }
 
       return result.state;
     },
-    [setRunnerActive, updateTaskState],
+    [focusTaskForAttention, setRunnerActive, updateTaskState],
   );
 
-  const { runTask, startSequence, handleSkipTask } = useTaskRunner({
+  const { runTask, startSequence, handlePassTask } = useTaskRunner({
     unitFolder,
     reportPath,
     allTaskOrder,
@@ -767,6 +873,7 @@ export function OperatorPanel() {
       processingTaskRef,
       isRunningRef,
       detectedCountRef,
+      heldFailureTaskIdRef,
     },
     actions: {
       activateTask,
@@ -782,6 +889,8 @@ export function OperatorPanel() {
       requestBacklogChoice,
       ensureReportSetupReady,
       enableCurrentStepFollow,
+      focusTaskForAttention,
+      requestWorkbookClose,
     },
   });
 
@@ -800,23 +909,6 @@ export function OperatorPanel() {
       if (setupConfirmedFolderRef.current !== unitFolder) {
         setLastMessage("Report setup must finish before opening the report.");
         return;
-      }
-
-      const transformerSn = transformerSnDraftRef.current.trim();
-
-      if (!transformerSn) {
-        setLastMessage("Transformer SN is missing. Enter and save it before opening the report.");
-        setTransformerSnSaveStatus("error");
-        setTransformerSnError("Transformer SN is missing.");
-        return;
-      }
-
-      if (transformerSn !== savedTransformerSnRef.current) {
-        const saved = await saveTransformerSnDraft();
-
-        if (!saved) {
-          return;
-        }
       }
 
       try {
@@ -842,10 +934,10 @@ export function OperatorPanel() {
         setLastMessage(messageFromUnknownError(error));
       }
     },
-    [saveTransformerSnDraft, unitFolder],
+    [unitFolder],
   );
 
-  async function handleChooseFolder() {
+  const handleChooseFolder = useCallback(async () => {
     setIsChoosingFolder(true);
     const selected = await chooseUnitFolder().finally(() => setIsChoosingFolder(false));
 
@@ -853,6 +945,7 @@ export function OperatorPanel() {
       return;
     }
 
+    heldFailureTaskIdRef.current = null;
     setUnitFolder(selected);
     setSerialNumber(serialNumberFromFolder(selected));
     setRunnerActive(false);
@@ -882,7 +975,36 @@ export function OperatorPanel() {
       setTaskStates({});
       setFailureNotices({});
     }
-  }
+  }, [
+    activateTask,
+    beginReportSetup,
+    resetTransformerSnState,
+    setConfirmedSetupFolder,
+    setRunnerActive,
+  ]);
+
+  useEffect(() => {
+    if (!FLOOR_SIMULATION_ENABLED || floorSimulationSetupStartedRef.current) {
+      return;
+    }
+
+    floorSimulationSetupStartedRef.current = true;
+    void handleChooseFolder();
+  }, [handleChooseFolder]);
+
+  useEffect(() => {
+    if (
+      !FLOOR_SIMULATION_ENABLED ||
+      floorSimulationAutoStartedRef.current ||
+      !unitFolder ||
+      setupConfirmedFolder !== unitFolder
+    ) {
+      return;
+    }
+
+    floorSimulationAutoStartedRef.current = true;
+    void startSequence(unitFolder);
+  }, [setupConfirmedFolder, startSequence, unitFolder]);
 
   async function handleRunClick() {
     if (controlState.primaryAction === "current-step") {
@@ -948,16 +1070,14 @@ export function OperatorPanel() {
     enableCurrentStepFollow();
   }
 
-  async function ensureTransformerSnReadyForReport(action: "opening" | "printing" = "opening") {
-    const actionText = action === "printing" ? "printing the report" : "opening the report";
-
+  async function ensureTransformerSnReadyForPrint() {
     if (!unitFolder || setupConfirmedFolderRef.current !== unitFolder) {
-      setLastMessage(`Report setup must finish before ${actionText}.`);
+      setLastMessage("Report setup must finish before printing the report.");
       return false;
     }
 
     if (!transformerSnDraft.trim()) {
-      setLastMessage(`Transformer SN is missing. Enter and save it before ${actionText}.`);
+      setLastMessage("Transformer SN is missing. Enter and save it before printing the report.");
       setTransformerSnSaveStatus("error");
       setTransformerSnError("Transformer SN is missing.");
       return false;
@@ -972,6 +1092,7 @@ export function OperatorPanel() {
 
   async function handleResetPanel() {
     if (!unitFolder) {
+      heldFailureTaskIdRef.current = null;
       setTaskStates({});
       setFailureNotices({});
       setExpandedIds(new Set());
@@ -986,6 +1107,7 @@ export function OperatorPanel() {
     }
 
     if (resetClearsSelectionNext && !isRunningRef.current && !processingTaskRef.current) {
+      heldFailureTaskIdRef.current = null;
       setUnitFolder("");
       setSerialNumber("");
       setReportPath("");
@@ -1032,6 +1154,7 @@ export function OperatorPanel() {
     setCurrentStepFollowMode(false);
     latestTaskStatusesRef.current = {};
     setLatestTaskStatuses({});
+    heldFailureTaskIdRef.current = null;
     setFailureNotices({});
     activateTask(null);
     setExpandedIds(new Set());
@@ -1065,10 +1188,6 @@ export function OperatorPanel() {
       return;
     }
 
-    if (!(await ensureTransformerSnReadyForReport())) {
-      return;
-    }
-
     try {
       await openReportPath(unitFolder, reportPath);
       setLastMessage("Opened report");
@@ -1098,7 +1217,7 @@ export function OperatorPanel() {
       return;
     }
 
-    if (!(await ensureTransformerSnReadyForReport("printing"))) {
+    if (!(await ensureTransformerSnReadyForPrint())) {
       return;
     }
 
@@ -1181,7 +1300,9 @@ export function OperatorPanel() {
         return;
       }
 
-      await saveFinalOperatorName(unitFolder, operatorName);
+      await runPanelReportWriteWithRetry(printReportPath, () =>
+        saveFinalOperatorName(unitFolder, operatorName),
+      );
       setOperatorNames((current) => storeOperatorNames(addOperatorName(current, operatorName)));
       setLastMessage("Opening print dialog");
       await openPrintReportDialog(unitFolder);
@@ -1276,7 +1397,10 @@ export function OperatorPanel() {
     isOpeningPrintDialog ||
     Boolean(backlogPrompt) ||
     printOperatorPromptOpen ||
+    Boolean(workbookClosePrompt) ||
     printReadinessBlockers.length > 0;
+  const workbookCloseName =
+    workbookClosePrompt?.path.split(/[\\/]/).filter(Boolean).at(-1) ?? "report workbook";
 
   if (panelView === "notification-settings") {
     return (
@@ -1407,7 +1531,7 @@ export function OperatorPanel() {
         failureNotices={failureNotices}
         onToggleSection={toggleSection}
         onRunTask={(taskId) => void runTask(taskId)}
-        onSkipTask={handleSkipTask}
+        onPassTask={(taskId) => void handlePassTask(taskId)}
         onOpenFailureLocation={(notice) => void handleOpenFailureLocation(notice)}
         onOpenReport={() => void handleOpenReport()}
         onPrintReport={() => void handlePrintReportClick()}
@@ -1461,6 +1585,54 @@ export function OperatorPanel() {
           <span className="font-medium">Built by Syed Hassaan Shah</span>
         </div>
       </footer>
+
+      {workbookClosePrompt ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="close-report-workbook-title"
+            className="w-full max-w-[360px] rounded-md border border-[#6b4d24] bg-[#292928] p-4 text-white shadow-2xl"
+          >
+            <div
+              id="close-report-workbook-title"
+              className="text-center text-[12pt] font-semibold leading-tight"
+            >
+              Close Report Workbook
+            </div>
+            <p className="mt-3 text-center text-[8.5pt] leading-snug text-[#f1d5aa]">
+              {workbookClosePrompt.message}
+            </p>
+            <div className="mt-3 rounded border border-[#454542] bg-[#1f1f1e] px-2 py-2 text-center text-[8pt] font-semibold text-white">
+              {workbookCloseName}
+            </div>
+            {workbookCloseError ? (
+              <div role="alert" className="mt-2 text-center text-[7.5pt] leading-tight text-[#f4b1a9]">
+                {workbookCloseError}
+              </div>
+            ) : null}
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={cancelWorkbookClosePrompt}
+                disabled={isClosingReportWorkbook}
+                className="inline-flex min-h-9 items-center justify-center rounded-md bg-[#3a3a38] px-3 py-2 text-[9pt] font-semibold text-white shadow-sm transition hover:bg-[#454542] disabled:cursor-not-allowed disabled:opacity-65"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                autoFocus
+                onClick={() => void handleCloseReportWorkbook()}
+                disabled={isClosingReportWorkbook}
+                className="inline-flex min-h-9 items-center justify-center rounded-md bg-[#9b630c] px-3 py-2 text-[9pt] font-semibold text-white shadow-sm transition hover:bg-[#ad7111] disabled:cursor-not-allowed disabled:opacity-65"
+              >
+                {isClosingReportWorkbook ? "Closing..." : "Close Report"}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {printReadinessBlockers.length > 0 && !printOperatorPromptOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">

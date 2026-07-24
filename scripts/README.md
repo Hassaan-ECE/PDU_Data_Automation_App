@@ -17,6 +17,7 @@ This layout is intentional for the current pilot. Moving `package.json` into `fr
 | Script | Purpose |
 | ------ | ------- |
 | `validate-local.mjs` | Runs the full local validation sequence used before cleanup/release work |
+| `run-desktop-demo.mjs` | Starts Tauri with the accelerated, no-file floor simulation enabled |
 | `fixtures/validate-report-layout-schema.mjs` | Validates report-layout JSON files against `shared/schemas/report-layout.schema.json` |
 | `release/check-version-consistency.mjs` | Confirms root package, Cargo, and Tauri versions match |
 

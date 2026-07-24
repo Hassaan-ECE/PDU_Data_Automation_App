@@ -2,6 +2,7 @@ import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const backendMocks = vi.hoisted(() => ({
+  acceptAutomationTaskFailure: vi.fn(),
   chooseUnitFolder: vi.fn(),
   chooseSharedNotificationsFolder: vi.fn(),
   changeSettingsPassword: vi.fn(),
@@ -31,6 +32,7 @@ const updaterMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/integrations/tauri/backend", () => ({
+  acceptAutomationTaskFailure: backendMocks.acceptAutomationTaskFailure,
   chooseUnitFolder: backendMocks.chooseUnitFolder,
   chooseSharedNotificationsFolder: backendMocks.chooseSharedNotificationsFolder,
   changeSettingsPassword: backendMocks.changeSettingsPassword,
