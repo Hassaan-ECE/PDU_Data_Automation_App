@@ -5737,7 +5737,7 @@ dependencies = [
 
 [[package]]
 name = "pdu-data-automation-app"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "chrono",
  "csv",
